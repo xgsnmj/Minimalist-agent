@@ -72,6 +72,22 @@ export function App() {
           </div>
         </article>
       </section>
+      <section className="admin-panel" aria-labelledby="model-configurations-title">
+        <div>
+          <p className="eyebrow">Administrator Console</p>
+          <h2 id="model-configurations-title">Model Configurations</h2>
+        </div>
+        <div className="provider-grid" aria-label="Model Provider Catalog">
+          {["OpenAI", "DeepSeek", "MiniMax", "Custom OpenAI-compatible endpoint"].map((provider) => (
+            <span className="provider-chip" key={provider}>
+              {provider}
+            </span>
+          ))}
+        </div>
+        <button className="secondary-button" type="button">
+          Create Model Configuration
+        </button>
+      </section>
     </main>
   );
 }

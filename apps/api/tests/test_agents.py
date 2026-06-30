@@ -44,6 +44,7 @@ def test_administrator_can_view_initialized_default_agent():
             "is_default": True,
             "instruction": "Help the user complete work inside Minimalist Agent.",
             "process_visibility": "standard",
+            "default_model_configuration_id": None,
             "allowed_model_configuration_ids": [],
             "capability_policy": {
                 "mcp_server_ids": [],
@@ -148,6 +149,7 @@ def test_agent_run_preparation_records_current_agent_instruction_snapshot():
         "agent_id": 1,
         "agent_instruction_snapshot": "Answer with concise operational steps.",
         "process_visibility": "standard",
+        "default_model_configuration_id": None,
         "allowed_model_configuration_ids": [],
         "capability_policy": {
             "mcp_server_ids": [],

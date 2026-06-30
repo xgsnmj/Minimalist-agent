@@ -21,6 +21,15 @@ from apps.api.app.auth import (
     local_account_store,
     to_user_response,
 )
+from apps.api.app.model_configurations import (
+    MODEL_PROVIDER_CATALOG,
+    ModelConfigurationMutationRequest,
+    ModelConfigurationResponse,
+    ModelConfigurationUpdateRequest,
+    ModelProviderCatalogEntry,
+    model_configuration_store,
+    to_model_configuration_response,
+)
 
 
 app = FastAPI(title="Minimalist Agent API")
@@ -125,3 +134,46 @@ def prepare_agent_run(
     _administrator: LocalAccount = Depends(current_administrator),
 ) -> AgentRunPreparationResponse:
     return to_agent_run_preparation_response(agent_store.get(agent_id))
+
+
+@app.get("/admin/model-providers", response_model=list[ModelProviderCatalogEntry])
+def list_model_providers(
+    _administrator: LocalAccount = Depends(current_administrator),
+) -> list[ModelProviderCatalogEntry]:
+    return MODEL_PROVIDER_CATALOG
+
+
+@app.get("/admin/model-configurations", response_model=list[ModelConfigurationResponse])
+def list_model_configurations(
+    _administrator: LocalAccount = Depends(current_administrator),
+) -> list[ModelConfigurationResponse]:
+    return [
+        to_model_configuration_response(configuration)
+        for configuration in model_configuration_store.list_configurations()
+    ]
+
+
+@app.post(
+    "/admin/model-configurations",
+    response_model=ModelConfigurationResponse,
+    status_code=status.HTTP_201_CREATED,
+)
+def create_model_configuration(
+    request: ModelConfigurationMutationRequest,
+    _administrator: LocalAccount = Depends(current_administrator),
+) -> ModelConfigurationResponse:
+    return to_model_configuration_response(model_configuration_store.create(request))
+
+
+@app.patch(
+    "/admin/model-configurations/{configuration_id}",
+    response_model=ModelConfigurationResponse,
+)
+def update_model_configuration(
+    configuration_id: int,
+    request: ModelConfigurationUpdateRequest,
+    _administrator: LocalAccount = Depends(current_administrator),
+) -> ModelConfigurationResponse:
+    return to_model_configuration_response(
+        model_configuration_store.update(configuration_id, request)
+    )
