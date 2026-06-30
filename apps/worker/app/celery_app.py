@@ -1,6 +1,7 @@
 from celery import Celery
 
 from apps.api.app.agent_runs import agent_run_store
+from apps.api.app.runtime import runtime_store
 from apps.worker.app.settings import get_redis_url
 
 
@@ -18,8 +19,8 @@ def worker_health() -> dict[str, str]:
 
 @celery_app.task(name="minimalist_agent_worker.process_agent_run")
 def process_agent_run(run_id: int) -> dict[str, str | int]:
-    run = agent_run_store.process_with_mock_runtime(run_id)
+    run = runtime_store.execute(run_id)
     return {
-        "id": run.id,
-        "status": run.status.value,
+        "id": run["id"],
+        "status": run["status"],
     }

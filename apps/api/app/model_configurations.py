@@ -174,6 +174,9 @@ class ModelConfigurationStore:
     def list_configurations(self) -> list[ModelConfiguration]:
         return sorted(self._configurations.values(), key=lambda configuration: configuration.id)
 
+    def get(self, configuration_id: int) -> ModelConfiguration:
+        return self._configuration_or_404(configuration_id)
+
     def create(self, request: ModelConfigurationMutationRequest) -> ModelConfiguration:
         configuration = ModelConfiguration(
             id=self._next_id,

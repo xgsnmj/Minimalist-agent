@@ -112,11 +112,12 @@ def test_run_event_stream_resume_does_not_duplicate_completed_visible_events():
         },
     )
 
-    assert ["id: 1", "id: 2", "id: 3", "id: 4", "id: 5"] == [
+    assert ["id: 1", "id: 2", "id: 3", "id: 4", "id: 5", "id: 6", "id: 7"] == [
         line for line in full_response.text.splitlines() if line.startswith("id:")
     ]
+    assert "event: process.summary" in full_response.text
     assert "event: message.completed" in full_response.text
     assert "id: 3" not in resume_response.text
-    assert ["id: 4", "id: 5"] == [
+    assert ["id: 4", "id: 5", "id: 6", "id: 7"] == [
         line for line in resume_response.text.splitlines() if line.startswith("id:")
     ]

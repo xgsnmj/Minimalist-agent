@@ -50,6 +50,7 @@ class AgentRunResponse(BaseModel):
     capability_snapshot: RunCapabilitySnapshotResponse
     user_message: str
     assistant_message: str | None
+    process_summaries: list[str]
     error: str | None
     worker_enqueued: bool
     status_events: list[str]
@@ -75,6 +76,8 @@ class AgentRun:
     capability_snapshot: RunCapabilitySnapshot
     user_message: str
     assistant_message: str | None = None
+    process_summaries: list[str] = field(default_factory=list)
+    full_trace: dict[str, object] = field(default_factory=dict)
     error: str | None = None
     worker_enqueued: bool = False
     events: list[str] = field(default_factory=list)
@@ -147,6 +150,9 @@ class AgentRunStore:
             )
         return run
 
+    def get(self, run_id: int) -> AgentRun:
+        return self._run_or_404(run_id)
+
     def cancel_for_user(self, *, owner_user_id: int, run_id: int) -> AgentRun:
         run = self.get_for_user(owner_user_id=owner_user_id, run_id=run_id)
         if run.status in ACTIVE_RUN_STATUSES:
@@ -196,11 +202,21 @@ class AgentRunStore:
             return run
 
         run.assistant_message = f"Mock Agent Runtime response for: {run.user_message}"
+        run.process_summaries = [
+            f"Reviewed the Agent Instruction snapshot for conversation {run.conversation_id}.",
+            "Used the selected model configuration and completed the request without tool calls.",
+        ]
         conversation_store.append_message(
             conversation_id=run.conversation_id,
             role="assistant",
             content=run.assistant_message,
         )
+        for summary in run.process_summaries:
+            self._append_event(
+                run,
+                event_type="process.summary",
+                data={"summary": summary},
+            )
         self._append_event(
             run,
             event_type="message.completed",
@@ -323,6 +339,8 @@ def to_agent_run_response(run: AgentRun) -> AgentRunResponse:
         user_message=run.user_message,
         assistant_message=run.assistant_message,
         error=run.error,
+        process_summaries=list(run.process_summaries),
+        full_trace=run.full_trace,
         worker_enqueued=run.worker_enqueued,
         status_events=list(run.events),
     )

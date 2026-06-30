@@ -91,6 +91,7 @@ export function useAgentRunStream(runId: number | null) {
     const eventNames = [
       "run.status",
       "run.error",
+      "process.summary",
       "message.completed",
       "tool.call",
       "artifact.ready",

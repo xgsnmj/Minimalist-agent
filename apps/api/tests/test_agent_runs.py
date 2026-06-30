@@ -87,8 +87,15 @@ def test_starting_background_agent_run_records_snapshot_and_mock_runtime_respons
     ]
     assert detail_response.json()["messages"][-1] == {
         "role": "assistant",
-        "content": "Mock Agent Runtime response for: Find recent market signals.",
+        "content": "openai:gpt-5 handled Find recent market signals.",
     }
+    assert client.get(
+        f"/runs/{run_id}",
+        headers={"Authorization": f"Bearer {token}"},
+    ).json()["process_summaries"] == [
+        "Reviewed the Agent Instruction snapshot for conversation 1.",
+        "Used model gpt-5 from openai.",
+    ]
 
 
 def test_user_can_cancel_active_background_agent_run():
@@ -181,6 +188,5 @@ def test_mock_runtime_failure_marks_background_agent_run_failed():
     assert detail_response.json()["status_events"] == [
         "queued",
         "worker_enqueued",
-        "running",
         "failed",
     ]
