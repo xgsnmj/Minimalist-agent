@@ -48,6 +48,30 @@ export function App() {
           </div>
         ) : null}
       </section>
+      <section className="admin-panel" aria-labelledby="agent-lifecycle-title">
+        <div>
+          <p className="eyebrow">Administrator Console</p>
+          <h2 id="agent-lifecycle-title">Agent Lifecycle</h2>
+        </div>
+        <article className="agent-row">
+          <div>
+            <h3>Default Agent</h3>
+            <p>Primary Agent Conversation entry point.</p>
+            <p>Process visibility: standard</p>
+          </div>
+          <div className="button-row">
+            <button className="secondary-button" type="button">
+              Create Agent
+            </button>
+            <button className="secondary-button" type="button">
+              Disable Agent
+            </button>
+            <button className="secondary-button" type="button">
+              Retire Agent
+            </button>
+          </div>
+        </article>
+      </section>
     </main>
   );
 }

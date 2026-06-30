@@ -1,5 +1,15 @@
 from fastapi import Depends, FastAPI, status
 
+from apps.api.app.agents import (
+    AgentMutationRequest,
+    AgentRunPreparationResponse,
+    AgentResponse,
+    AgentStatus,
+    AgentUpdateRequest,
+    agent_store,
+    to_agent_run_preparation_response,
+    to_agent_response,
+)
 from apps.api.app.auth import (
     LocalAccount,
     LoginRequest,
@@ -59,3 +69,59 @@ def disable_local_account(
     _administrator: LocalAccount = Depends(current_administrator),
 ) -> UserResponse:
     return to_user_response(local_account_store.disable(account_id))
+
+
+@app.get("/admin/agents", response_model=list[AgentResponse])
+def list_agents(
+    _administrator: LocalAccount = Depends(current_administrator),
+) -> list[AgentResponse]:
+    return [to_agent_response(agent) for agent in agent_store.list_agents()]
+
+
+@app.post("/admin/agents", response_model=AgentResponse, status_code=status.HTTP_201_CREATED)
+def create_agent(
+    request: AgentMutationRequest,
+    _administrator: LocalAccount = Depends(current_administrator),
+) -> AgentResponse:
+    return to_agent_response(agent_store.create(request))
+
+
+@app.patch("/admin/agents/{agent_id}", response_model=AgentResponse)
+def update_agent(
+    agent_id: int,
+    request: AgentUpdateRequest,
+    _administrator: LocalAccount = Depends(current_administrator),
+) -> AgentResponse:
+    return to_agent_response(agent_store.update(agent_id, request))
+
+
+@app.post("/admin/agents/{agent_id}/disable", response_model=AgentResponse)
+def disable_agent(
+    agent_id: int,
+    _administrator: LocalAccount = Depends(current_administrator),
+) -> AgentResponse:
+    return to_agent_response(agent_store.set_status(agent_id, AgentStatus.DISABLED))
+
+
+@app.post("/admin/agents/{agent_id}/enable", response_model=AgentResponse)
+def enable_agent(
+    agent_id: int,
+    _administrator: LocalAccount = Depends(current_administrator),
+) -> AgentResponse:
+    return to_agent_response(agent_store.set_status(agent_id, AgentStatus.ENABLED))
+
+
+@app.post("/admin/agents/{agent_id}/retire", response_model=AgentResponse)
+def retire_agent(
+    agent_id: int,
+    _administrator: LocalAccount = Depends(current_administrator),
+) -> AgentResponse:
+    return to_agent_response(agent_store.set_status(agent_id, AgentStatus.RETIRED))
+
+
+@app.post("/admin/agents/{agent_id}/prepare-run", response_model=AgentRunPreparationResponse)
+def prepare_agent_run(
+    agent_id: int,
+    _administrator: LocalAccount = Depends(current_administrator),
+) -> AgentRunPreparationResponse:
+    return to_agent_run_preparation_response(agent_store.get(agent_id))
