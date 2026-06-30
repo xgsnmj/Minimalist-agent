@@ -54,3 +54,47 @@ p {
   line-height: 1.6;
   margin: 0;
 }
+
+.stack {
+  display: grid;
+  gap: 18px;
+}
+
+h2 {
+  font-size: 28px;
+  letter-spacing: 0;
+  line-height: 1.1;
+  margin: 0;
+}
+
+label {
+  color: #4d4943;
+  display: grid;
+  font-size: 14px;
+  font-weight: 650;
+  gap: 8px;
+}
+
+input {
+  background: #fbfaf7;
+  border: 1px solid #d7d3ca;
+  border-radius: 10px;
+  color: #1f2328;
+  font: inherit;
+  padding: 12px 14px;
+}
+
+.primary-button {
+  background: #1f2328;
+  border: 0;
+  border-radius: 999px;
+  color: #ffffff;
+  cursor: pointer;
+  font: inherit;
+  font-weight: 750;
+  padding: 12px 18px;
+}
+
+.primary-button:active {
+  transform: translateY(1px);
+}
