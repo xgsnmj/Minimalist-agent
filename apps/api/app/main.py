@@ -1,5 +1,11 @@
 from fastapi import Depends, FastAPI, status
 
+from apps.api.app.agent_runs import (
+    AgentRunCreateRequest,
+    AgentRunResponse,
+    agent_run_store,
+    to_agent_run_response,
+)
 from apps.api.app.agents import (
     AgentMutationRequest,
     AgentRunPreparationResponse,
@@ -246,5 +252,53 @@ def delete_conversation(
         conversation_store.soft_delete_for_user(
             owner_user_id=account.id,
             conversation_id=conversation_id,
+        )
+    )
+
+
+@app.post(
+    "/conversations/{conversation_id}/runs",
+    response_model=AgentRunResponse,
+    status_code=status.HTTP_201_CREATED,
+)
+def start_agent_run(
+    conversation_id: int,
+    request: AgentRunCreateRequest,
+    account: LocalAccount = Depends(current_user),
+) -> AgentRunResponse:
+    conversation = conversation_store.get_for_user(
+        owner_user_id=account.id,
+        conversation_id=conversation_id,
+    )
+    run = agent_run_store.create_for_conversation(
+        conversation=conversation,
+        request=request,
+    )
+    agent_run_store.mark_worker_enqueued(run.id)
+    return to_agent_run_response(run)
+
+
+@app.get("/runs/{run_id}", response_model=AgentRunResponse)
+def get_agent_run(
+    run_id: int,
+    account: LocalAccount = Depends(current_user),
+) -> AgentRunResponse:
+    return to_agent_run_response(
+        agent_run_store.get_for_user(
+            owner_user_id=account.id,
+            run_id=run_id,
+        )
+    )
+
+
+@app.post("/runs/{run_id}/cancel", response_model=AgentRunResponse)
+def cancel_agent_run(
+    run_id: int,
+    account: LocalAccount = Depends(current_user),
+) -> AgentRunResponse:
+    return to_agent_run_response(
+        agent_run_store.cancel_for_user(
+            owner_user_id=account.id,
+            run_id=run_id,
         )
     )

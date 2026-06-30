@@ -136,6 +136,38 @@ class ConversationStore:
         conversation.updated_at = "just now"
         return conversation
 
+    def append_message(
+        self,
+        *,
+        conversation_id: int,
+        role: str,
+        content: str,
+    ) -> AgentConversation:
+        conversation = self._conversation_or_404(conversation_id)
+        conversation.messages.append(ConversationMessage(role=role, content=content))
+        conversation.updated_at = "just now"
+        return conversation
+
+    def set_status(
+        self,
+        *,
+        conversation_id: int,
+        conversation_status: ConversationStatus,
+    ) -> AgentConversation:
+        conversation = self._conversation_or_404(conversation_id)
+        conversation.status = conversation_status
+        conversation.updated_at = "just now"
+        return conversation
+
+    def _conversation_or_404(self, conversation_id: int) -> AgentConversation:
+        conversation = self._conversations.get(conversation_id)
+        if conversation is None or conversation.deleted:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Agent Conversation not found.",
+            )
+        return conversation
+
 
 conversation_store = ConversationStore()
 
