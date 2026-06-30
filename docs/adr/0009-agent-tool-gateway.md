@@ -1,0 +1,3 @@
+# Agent Tool Gateway as the controlled tool boundary
+
+Minimalist Agent will route MCP tools, sandbox capability, search capability, file access, and other external capabilities through an Agent Tool Gateway rather than giving Agents direct access to raw tool inventories or credentials. The gateway is the project's policy enforcement point for per-Agent tool allowlists, credential isolation, audit logs, safe input and output projection, error normalization, and AG-UI event translation. MCP and the OpenAI Agents SDK provide mature tool abstractions; the gateway is the product governance layer around those abstractions.

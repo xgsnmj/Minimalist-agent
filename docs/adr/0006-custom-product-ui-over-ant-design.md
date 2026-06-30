@@ -1,0 +1,3 @@
+# Custom product UI over Ant Design
+
+Minimalist Agent will use React, TypeScript, Vite, pnpm workspace, TanStack Query, and Zustand, but it will not use Ant Design as the primary UI system. The Agent Conversation workspace needs a WorkBuddy-like product feel with a quiet sidebar, custom composer, message stream, process summaries, tool call rows, artifact preview, and card rendering; Ant Design would push the core experience toward a generic enterprise admin surface. The frontend will use Tailwind CSS with Radix primitives or shadcn-style owned components, while dense administrator tables and forms can still use purpose-built primitives rather than defining the whole app around Ant Design.
