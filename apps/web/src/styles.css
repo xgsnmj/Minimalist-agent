@@ -305,6 +305,16 @@ textarea {
   padding: 20px;
 }
 
+.stream-banner {
+  background: #fbfaf7;
+  border: 1px solid #e5e1d9;
+  border-radius: 8px;
+  color: #68635b;
+  display: grid;
+  gap: 4px;
+  padding: 12px 14px;
+}
+
 .message-row {
   border: 1px solid #e5e1d9;
   border-radius: 8px;

@@ -6,6 +6,7 @@ from apps.api.app.auth import local_account_store
 from apps.api.app.conversations import conversation_store
 from apps.api.app.main import app
 from apps.api.app.model_configurations import model_configuration_store
+from apps.api.app.run_event_log import run_event_log_store
 from apps.worker.app.celery_app import process_agent_run
 
 
@@ -15,6 +16,7 @@ def setup_function():
     model_configuration_store.reset()
     conversation_store.reset()
     agent_run_store.reset()
+    run_event_log_store.reset_for_tests()
 
 
 def approved_user_token(client: TestClient, username: str = "user") -> str:

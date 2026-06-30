@@ -1,5 +1,6 @@
 from dataclasses import dataclass, field
 from enum import StrEnum
+import json
 
 from fastapi import HTTPException, status
 from pydantic import BaseModel, Field
@@ -10,6 +11,7 @@ from apps.api.app.conversations import (
     ConversationStatus,
     conversation_store,
 )
+from apps.api.app.run_event_log import RunEvent, run_event_log_store
 
 
 class AgentRunStatus(StrEnum):
@@ -76,6 +78,7 @@ class AgentRun:
     error: str | None = None
     worker_enqueued: bool = False
     events: list[str] = field(default_factory=list)
+    event_log: list[RunEvent] = field(default_factory=list)
 
 
 class AgentRunStore:
@@ -116,6 +119,11 @@ class AgentRunStore:
         )
         self._next_id += 1
         self._runs[run.id] = run
+        self._append_event(
+            run,
+            event_type="run.status",
+            data={"status": AgentRunStatus.QUEUED.value},
+        )
         return run
 
     def mark_worker_enqueued(self, run_id: int) -> AgentRun:
@@ -123,6 +131,11 @@ class AgentRunStore:
         run.worker_enqueued = True
         if "worker_enqueued" not in run.events:
             run.events.append("worker_enqueued")
+        self._append_event(
+            run,
+            event_type="run.status",
+            data={"status": AgentRunStatus.QUEUED.value, "worker_enqueued": True},
+        )
         return run
 
     def get_for_user(self, *, owner_user_id: int, run_id: int) -> AgentRun:
@@ -139,6 +152,11 @@ class AgentRunStore:
         if run.status in ACTIVE_RUN_STATUSES:
             run.status = AgentRunStatus.CANCELLED
             run.events.append("cancelled")
+            self._append_event(
+                run,
+                event_type="run.status",
+                data={"status": AgentRunStatus.CANCELLED.value},
+            )
             conversation_store.set_status(
                 conversation_id=run.conversation_id,
                 conversation_status=ConversationStatus.IDLE,
@@ -154,10 +172,23 @@ class AgentRunStore:
 
         run.status = AgentRunStatus.RUNNING
         run.events.append("running")
+        self._append_event(
+            run,
+            event_type="run.status",
+            data={"status": AgentRunStatus.RUNNING.value},
+        )
         if "failure" in run.user_message.lower():
             run.status = AgentRunStatus.FAILED
             run.error = "Mock Agent Runtime failed."
             run.events.append("failed")
+            self._append_event(
+                run,
+                event_type="run.error",
+                data={
+                    "status": AgentRunStatus.FAILED.value,
+                    "message": run.error,
+                },
+            )
             conversation_store.set_status(
                 conversation_id=run.conversation_id,
                 conversation_status=ConversationStatus.IDLE,
@@ -170,13 +201,52 @@ class AgentRunStore:
             role="assistant",
             content=run.assistant_message,
         )
+        self._append_event(
+            run,
+            event_type="message.completed",
+            data={
+                "role": "assistant",
+                "content": run.assistant_message,
+            },
+        )
         run.status = AgentRunStatus.COMPLETED
         run.events.append("completed")
+        self._append_event(
+            run,
+            event_type="run.status",
+            data={"status": AgentRunStatus.COMPLETED.value},
+        )
         conversation_store.set_status(
             conversation_id=run.conversation_id,
             conversation_status=ConversationStatus.IDLE,
         )
         return run
+
+    def list_events_after_for_user(
+        self,
+        *,
+        owner_user_id: int,
+        run_id: int,
+        after_sequence: int,
+    ) -> list[RunEvent]:
+        self.get_for_user(owner_user_id=owner_user_id, run_id=run_id)
+        return run_event_log_store.list_after(run_id=run_id, after_sequence=after_sequence)
+
+    def format_sse_events(
+        self,
+        *,
+        owner_user_id: int,
+        run_id: int,
+        after_sequence: int,
+    ) -> str:
+        return "".join(
+            format_sse_event(event)
+            for event in self.list_events_after_for_user(
+                owner_user_id=owner_user_id,
+                run_id=run_id,
+                after_sequence=after_sequence,
+            )
+        )
 
     def _raise_if_conversation_has_active_run(self, conversation_id: int) -> None:
         for run in self._runs.values():
@@ -194,6 +264,21 @@ class AgentRunStore:
                 detail="Agent Run not found.",
             )
         return run
+
+    def _append_event(
+        self,
+        run: AgentRun,
+        *,
+        event_type: str,
+        data: dict[str, object],
+    ) -> RunEvent:
+        event = run_event_log_store.append(
+            run_id=run.id,
+            event_type=event_type,
+            data=data,
+        )
+        run.event_log.append(event)
+        return event
 
 
 agent_run_store = AgentRunStore()
@@ -240,4 +325,16 @@ def to_agent_run_response(run: AgentRun) -> AgentRunResponse:
         error=run.error,
         worker_enqueued=run.worker_enqueued,
         status_events=list(run.events),
+    )
+
+
+def format_sse_event(event: RunEvent) -> str:
+    return "\n".join(
+        [
+            f"id: {event.sequence}",
+            f"event: {event.event_type}",
+            f"data: {json.dumps(event.data, separators=(',', ':'))}",
+            "",
+            "",
+        ]
     )

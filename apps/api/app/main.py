@@ -1,4 +1,5 @@
-from fastapi import Depends, FastAPI, status
+from fastapi import Depends, FastAPI, Header, Query, status
+from fastapi.responses import StreamingResponse
 
 from apps.api.app.agent_runs import (
     AgentRunCreateRequest,
@@ -288,6 +289,28 @@ def get_agent_run(
             owner_user_id=account.id,
             run_id=run_id,
         )
+    )
+
+
+@app.get("/runs/{run_id}/events")
+def stream_agent_run_events(
+    run_id: int,
+    after: int | None = Query(default=None),
+    last_event_id: str | None = Header(default=None, alias="Last-Event-ID"),
+    account: LocalAccount = Depends(current_user),
+) -> StreamingResponse:
+    after_sequence = after if after is not None else int(last_event_id or "0")
+    return StreamingResponse(
+        content=iter(
+            [
+                agent_run_store.format_sse_events(
+                    owner_user_id=account.id,
+                    run_id=run_id,
+                    after_sequence=after_sequence,
+                )
+            ]
+        ),
+        media_type="text/event-stream",
     )
 
 

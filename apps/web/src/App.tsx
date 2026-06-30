@@ -1,5 +1,7 @@
 import { FormEvent, useMemo, useState } from "react";
 
+import { useAgentRunStream } from "./ag-ui-stream";
+
 type AccessMode = "intro" | "register" | "pending";
 
 type ModelOption = {
@@ -88,6 +90,8 @@ export function App() {
   const selectedConversation = conversations.find(
     (conversation) => conversation.id === selectedConversationId,
   );
+  const activeRunId = selectedConversation ? 1 : null;
+  const { lastSeenSequence, status: streamStatus, streamUrl } = useAgentRunStream(activeRunId);
   const activeAgent = getAgent(selectedConversation?.agentId ?? draftAgentId);
   const allowedModels = activeAgent.allowedModels;
   const selectedModelId = selectedConversation?.selectedModelId ?? draftModelId;
@@ -305,6 +309,16 @@ export function App() {
         ) : null}
 
         <section className="message-stream" aria-label="Conversation messages">
+          {selectedConversation ? (
+            <div className="stream-banner" role="status" aria-live="polite">
+              <span>{streamStatus === "connected" ? "AG-UI SSE connected" : "AG-UI SSE idle"}</span>
+              <span>{selectedConversation ? `Run ${activeRunId ?? 0}` : "No active run"}</span>
+              <span>
+                {lastSeenSequence > 0 ? `Last seen event ${lastSeenSequence}` : "Last seen event 0"}
+              </span>
+              {streamUrl ? <span>{streamUrl}</span> : null}
+            </div>
+          ) : null}
           {(selectedConversation?.messages ?? []).map((message) => (
             <article className={`message-row ${message.role}`} key={message.id}>
               <span className="message-role">{message.role}</span>
