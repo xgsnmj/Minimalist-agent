@@ -21,6 +21,13 @@ from apps.api.app.auth import (
     local_account_store,
     to_user_response,
 )
+from apps.api.app.conversations import (
+    ConversationCreateRequest,
+    ConversationRenameRequest,
+    ConversationResponse,
+    conversation_store,
+    to_conversation_response,
+)
 from apps.api.app.model_configurations import (
     MODEL_PROVIDER_CATALOG,
     ModelConfigurationMutationRequest,
@@ -176,4 +183,68 @@ def update_model_configuration(
 ) -> ModelConfigurationResponse:
     return to_model_configuration_response(
         model_configuration_store.update(configuration_id, request)
+    )
+
+
+@app.post("/conversations", response_model=ConversationResponse, status_code=status.HTTP_201_CREATED)
+def create_conversation(
+    request: ConversationCreateRequest,
+    account: LocalAccount = Depends(current_user),
+) -> ConversationResponse:
+    conversation = conversation_store.create(
+        owner_user_id=account.id,
+        request=request,
+        agent=agent_store.get(request.agent_id),
+    )
+    return to_conversation_response(conversation)
+
+
+@app.get("/conversations", response_model=list[ConversationResponse])
+def list_conversations(
+    account: LocalAccount = Depends(current_user),
+) -> list[ConversationResponse]:
+    return [
+        to_conversation_response(conversation)
+        for conversation in conversation_store.list_for_user(account.id)
+    ]
+
+
+@app.get("/conversations/{conversation_id}", response_model=ConversationResponse)
+def get_conversation(
+    conversation_id: int,
+    account: LocalAccount = Depends(current_user),
+) -> ConversationResponse:
+    return to_conversation_response(
+        conversation_store.get_for_user(
+            owner_user_id=account.id,
+            conversation_id=conversation_id,
+        )
+    )
+
+
+@app.patch("/conversations/{conversation_id}", response_model=ConversationResponse)
+def rename_conversation(
+    conversation_id: int,
+    request: ConversationRenameRequest,
+    account: LocalAccount = Depends(current_user),
+) -> ConversationResponse:
+    return to_conversation_response(
+        conversation_store.rename_for_user(
+            owner_user_id=account.id,
+            conversation_id=conversation_id,
+            request=request,
+        )
+    )
+
+
+@app.delete("/conversations/{conversation_id}", response_model=ConversationResponse)
+def delete_conversation(
+    conversation_id: int,
+    account: LocalAccount = Depends(current_user),
+) -> ConversationResponse:
+    return to_conversation_response(
+        conversation_store.soft_delete_for_user(
+            owner_user_id=account.id,
+            conversation_id=conversation_id,
+        )
     )
