@@ -1,0 +1,12 @@
+.DS_Store
+.env
+.env.local
+.venv/
+.codex-run/
+node_modules/
+dist/
+coverage/
+__pycache__/
+.pytest_cache/
+*.pyc
+apps/web/tsconfig.tsbuildinfo

@@ -1,0 +1,66 @@
+services:
+  api:
+    image: python:3.13-slim
+    working_dir: /workspace
+    command: bash scripts/dev-api.sh
+    volumes:
+      - ..:/workspace
+    env_file:
+      - ../.env.example
+    ports:
+      - "8000:8000"
+    depends_on:
+      - redis
+      - mysql
+      - minio
+
+  worker:
+    image: python:3.13-slim
+    working_dir: /workspace
+    command: bash scripts/dev-worker.sh
+    volumes:
+      - ..:/workspace
+    env_file:
+      - ../.env.example
+    depends_on:
+      - redis
+      - mysql
+      - minio
+
+  web:
+    image: node:24-slim
+    working_dir: /workspace
+    command: bash scripts/dev-web.sh
+    volumes:
+      - ..:/workspace
+    env_file:
+      - ../.env.example
+    ports:
+      - "5173:5173"
+    depends_on:
+      - api
+
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+
+  mysql:
+    image: mysql:8.4
+    environment:
+      MYSQL_ROOT_PASSWORD: minimalist_agent
+      MYSQL_DATABASE: minimalist_agent
+      MYSQL_USER: minimalist_agent
+      MYSQL_PASSWORD: minimalist_agent
+    ports:
+      - "3306:3306"
+
+  minio:
+    image: minio/minio:RELEASE.2026-06-13T11-33-47Z
+    command: server /data --console-address ":9001"
+    environment:
+      MINIO_ROOT_USER: minioadmin
+      MINIO_ROOT_PASSWORD: minioadmin
+    ports:
+      - "9000:9000"
+      - "9001:9001"
