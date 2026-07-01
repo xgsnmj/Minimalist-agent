@@ -173,6 +173,9 @@ class AgentToolGatewayStore:
 
     def list_for_user(self, *, owner_user_id: int, run_id: int) -> list[ToolCall]:
         agent_run_store.get_for_user(owner_user_id=owner_user_id, run_id=run_id)
+        return self.list_for_run(run_id=run_id)
+
+    def list_for_run(self, *, run_id: int) -> list[ToolCall]:
         return [
             tool_call
             for tool_call in sorted(self._tool_calls.values(), key=lambda item: item.id)

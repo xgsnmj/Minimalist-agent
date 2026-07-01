@@ -639,6 +639,44 @@ textarea {
   padding: 10px;
 }
 
+.audit-overview,
+.audit-chip-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.audit-overview span,
+.audit-chip {
+  background: #fbfaf7;
+  border: 1px solid #e5e1d9;
+  border-radius: 8px;
+  color: #4b4740;
+  font-size: 12px;
+  font-weight: 740;
+  line-height: 1.25;
+  padding: 7px 9px;
+}
+
+.run-audit-row {
+  border: 1px solid #e5e1d9;
+  border-radius: 8px;
+  display: grid;
+  gap: 12px;
+  padding: 14px;
+}
+
+.run-audit-row > div:first-child {
+  display: grid;
+  gap: 6px;
+}
+
+.audit-chip.success {
+  background: #eaf4e4;
+  border-color: #c7dfbc;
+  color: #2f5d25;
+}
+
 @media (max-width: 1180px) {
   .app-shell {
     grid-template-columns: minmax(220px, 260px) minmax(0, 1fr);

@@ -153,6 +153,9 @@ class AgentRunStore:
     def get(self, run_id: int) -> AgentRun:
         return self._run_or_404(run_id)
 
+    def list_all(self) -> list[AgentRun]:
+        return sorted(self._runs.values(), key=lambda run: run.id)
+
     def cancel_for_user(self, *, owner_user_id: int, run_id: int) -> AgentRun:
         run = self.get_for_user(owner_user_id=owner_user_id, run_id=run_id)
         if run.status in ACTIVE_RUN_STATUSES:

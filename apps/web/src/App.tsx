@@ -736,6 +736,32 @@ export function App() {
             Create Model Configuration
           </button>
         </section>
+        <section className="admin-panel" aria-labelledby="run-audit-title" aria-label="Run Audit">
+          <div>
+            <p className="eyebrow">Administrator Console</p>
+            <h2 id="run-audit-title">Run Audit</h2>
+          </div>
+          <div className="audit-overview" aria-label="Run Audit overview">
+            <span>Full Trace retained for 90 days</span>
+            <span>Storage: 1 artifact</span>
+            <span>Recent failed runs: 1</span>
+          </div>
+          <article className="run-audit-row">
+            <div>
+              <h3>Run 1 · completed</h3>
+              <p>Default Agent · OpenAI GPT-5 · User 2</p>
+              <p>Capability snapshot: sandbox enabled</p>
+            </div>
+            <div className="audit-chip-row">
+              <span className="audit-chip success">completed</span>
+              <span className="audit-chip">sandbox.exec</span>
+              <span className="audit-chip">audit-report.md</span>
+            </div>
+            <button className="secondary-button" type="button">
+              Full Trace
+            </button>
+          </article>
+        </section>
       </aside>
     </main>
   );

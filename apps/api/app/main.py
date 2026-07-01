@@ -5,6 +5,7 @@ from fastapi import File, UploadFile
 from apps.api.app.agent_runs import (
     AgentRunCreateRequest,
     AgentRunResponse,
+    AgentRunStatus,
     agent_run_store,
     to_agent_run_response,
 )
@@ -42,6 +43,12 @@ from apps.api.app.run_attachments import (
     RunAttachmentPreviewResponse,
     RunAttachmentResponse,
     run_attachment_store,
+)
+from apps.api.app.run_audit import (
+    FullTraceResponse,
+    RunAuditDetailResponse,
+    RunAuditListResponse,
+    run_audit_store,
 )
 from apps.api.app.tool_gateway import (
     ToolCallRequest,
@@ -205,6 +212,38 @@ def authorize_agent_mcp_tool(
             request=request,
         )
     )
+
+
+@app.get("/admin/run-audit", response_model=RunAuditListResponse)
+def list_run_audit(
+    status_filter: AgentRunStatus | None = Query(default=None, alias="status"),
+    user_id: int | None = Query(default=None),
+    agent_id: int | None = Query(default=None),
+    model_configuration_id: int | None = Query(default=None),
+    _administrator: LocalAccount = Depends(current_administrator),
+) -> RunAuditListResponse:
+    return run_audit_store.list_runs(
+        status_filter=status_filter,
+        user_id=user_id,
+        agent_id=agent_id,
+        model_configuration_id=model_configuration_id,
+    )
+
+
+@app.get("/admin/run-audit/{run_id}", response_model=RunAuditDetailResponse)
+def get_run_audit_detail(
+    run_id: int,
+    _administrator: LocalAccount = Depends(current_administrator),
+) -> RunAuditDetailResponse:
+    return run_audit_store.detail(run_id)
+
+
+@app.get("/admin/run-audit/{run_id}/full-trace", response_model=FullTraceResponse)
+def get_run_audit_full_trace(
+    run_id: int,
+    _administrator: LocalAccount = Depends(current_administrator),
+) -> FullTraceResponse:
+    return run_audit_store.full_trace(run_id)
 
 
 @app.get("/admin/model-providers", response_model=list[ModelProviderCatalogEntry])
