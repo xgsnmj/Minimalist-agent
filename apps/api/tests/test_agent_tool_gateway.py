@@ -9,6 +9,7 @@ from apps.api.app.main import app
 from apps.api.app.model_configurations import model_configuration_store
 from apps.api.app.run_attachments import run_attachment_store
 from apps.api.app.run_event_log import run_event_log_store
+from apps.api.app.search_providers import search_provider_store
 from apps.api.app.tool_gateway import agent_tool_gateway_store
 
 
@@ -22,6 +23,7 @@ def setup_function():
     run_attachment_store.reset_for_tests()
     run_event_log_store.reset_for_tests()
     agent_tool_gateway_store.reset()
+    search_provider_store.reset()
 
 
 def approved_user_token(client: TestClient, username: str = "user") -> str:
@@ -133,10 +135,14 @@ def test_allowed_tool_invocation_records_tool_call_and_streams_safe_event():
     assert invoke_response.json()["safe_input"] == {
         "query": "Minimalist Agent WorkBuddy patterns"
     }
-    assert invoke_response.json()["safe_output"]["summary"] == "search.web completed."
+    assert invoke_response.json()["safe_output"]["summary"].startswith(
+        "Doubao Search Provider returned 3 results"
+    )
+    assert len(invoke_response.json()["safe_output"]["results"]) == 3
     assert invoke_response.json()["provenance"] == {
         "gateway": "agent_tool_gateway",
-        "provider": "mock",
+        "provider": "doubao",
+        "provider_configuration_id": "1",
     }
     assert list_response.json() == [invoke_response.json()]
     assert "event: tool.call" in stream_response.text

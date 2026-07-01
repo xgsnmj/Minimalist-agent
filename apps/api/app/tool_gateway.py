@@ -9,6 +9,10 @@ from pydantic import BaseModel, Field
 
 from apps.api.app.agent_runs import AgentRun, agent_run_store
 from apps.api.app.mcp_servers import mcp_server_store
+from apps.api.app.search_providers import (
+    search_provider_store,
+    to_search_execution_response,
+)
 
 
 class ToolCapability(StrEnum):
@@ -134,19 +138,32 @@ class AgentToolGatewayStore:
                 detail=tool_call.error_summary,
             )
 
-        safe_output = {"summary": f"{definition.name} completed."}
+        try:
+            execution = self._execute_provider(run, definition, request.tool_name, safe_input)
+            safe_output = execution or {"summary": f"{definition.name} completed."}
+            status_value = ToolCallStatus.COMPLETED
+            error_summary = None
+        except HTTPException as exc:
+            safe_output = None
+            status_value = ToolCallStatus.FAILED
+            error_summary = str(exc.detail)
         tool_call = self._record(
             run=run,
             definition=definition,
-            status=ToolCallStatus.COMPLETED,
+            status=status_value,
             started_at=started_at,
             ended_at=ended_at,
             safe_input=safe_input,
             safe_output=safe_output,
             provenance=self._provenance_for_definition(run, definition),
-            error_summary=None,
+            error_summary=error_summary,
         )
         self._emit_tool_event(owner_user_id=owner_user_id, tool_call=tool_call)
+        if tool_call.status == ToolCallStatus.FAILED:
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail=tool_call.error_summary,
+            )
         return tool_call
 
     def list_for_user(self, *, owner_user_id: int, run_id: int) -> list[ToolCall]:
@@ -250,11 +267,34 @@ class AgentToolGatewayStore:
             "gateway": "agent_tool_gateway",
             "provider": definition.provider,
         }
+        if definition.capability == ToolCapability.SEARCH:
+            configuration = search_provider_store.get_provenance_configuration()
+            provenance["provider"] = configuration.provider_id.value
+            provenance["provider_configuration_id"] = str(configuration.id)
         if definition.capability == ToolCapability.MCP:
             server_id = self._mcp_server_id_for_tool(run, definition.name)
             if server_id is not None:
                 provenance["server_id"] = str(server_id)
         return provenance
+
+    def _execute_provider(
+        self,
+        run: AgentRun,
+        definition: ToolDefinition,
+        tool_name: str,
+        safe_input: dict[str, Any],
+    ) -> dict[str, Any] | None:
+        if definition.capability == ToolCapability.SEARCH and tool_name == "search.web":
+            query = str(safe_input.get("query", ""))
+            execution = search_provider_store.search(query)
+            return to_search_execution_response(execution).model_dump(mode="json")
+        if definition.capability == ToolCapability.MCP:
+            server_id = self._mcp_server_id_for_tool(run, tool_name)
+            return {
+                "summary": f"{tool_name} completed.",
+                "server_id": server_id,
+            }
+        return None
 
 
 def project_safe_payload(payload: dict[str, Any]) -> dict[str, Any]:

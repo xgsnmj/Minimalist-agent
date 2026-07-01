@@ -70,6 +70,12 @@ from apps.api.app.mcp_servers import (
     to_mcp_server_response,
     to_mcp_tool_authorization_response,
 )
+from apps.api.app.search_providers import (
+    SearchProviderResponse,
+    SearchProviderUpdateRequest,
+    search_provider_store,
+    to_search_provider_response,
+)
 
 
 app = FastAPI(title="Minimalist Agent API")
@@ -283,6 +289,33 @@ def list_mcp_server_tools(
         to_mcp_discovered_tool_response(tool)
         for tool in mcp_server_store.list_tools(server_id)
     ]
+
+
+@app.get(
+    "/admin/search-provider-configurations",
+    response_model=list[SearchProviderResponse],
+)
+def list_search_provider_configurations(
+    _administrator: LocalAccount = Depends(current_administrator),
+) -> list[SearchProviderResponse]:
+    return [
+        to_search_provider_response(configuration)
+        for configuration in search_provider_store.list_configurations()
+    ]
+
+
+@app.patch(
+    "/admin/search-provider-configurations/{configuration_id}",
+    response_model=SearchProviderResponse,
+)
+def update_search_provider_configuration(
+    configuration_id: int,
+    request: SearchProviderUpdateRequest,
+    _administrator: LocalAccount = Depends(current_administrator),
+) -> SearchProviderResponse:
+    return to_search_provider_response(
+        search_provider_store.update(configuration_id, request)
+    )
 
 
 @app.post(
