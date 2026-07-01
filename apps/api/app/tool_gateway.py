@@ -13,6 +13,7 @@ from apps.api.app.page_read_providers import (
     page_read_provider_store,
     to_page_read_execution_response,
 )
+from apps.api.app.sandbox_runtime import sandbox_runtime_store
 from apps.api.app.search_providers import (
     search_provider_store,
     to_search_execution_response,
@@ -279,6 +280,8 @@ class AgentToolGatewayStore:
             configuration = page_read_provider_store.get_provenance_configuration()
             provenance["provider"] = configuration.provider_id.value
             provenance["provider_configuration_id"] = str(configuration.id)
+        if definition.capability == ToolCapability.SANDBOX:
+            provenance["provider"] = sandbox_runtime_store.provider
         if definition.capability == ToolCapability.MCP:
             server_id = self._mcp_server_id_for_tool(run, definition.name)
             if server_id is not None:
@@ -300,6 +303,35 @@ class AgentToolGatewayStore:
             url = str(safe_input.get("url", ""))
             execution = page_read_provider_store.read(url)
             return to_page_read_execution_response(execution).model_dump(mode="json")
+        if definition.capability == ToolCapability.SANDBOX and tool_name == "sandbox.exec":
+            execution = sandbox_runtime_store.execute(
+                run_id=run.id,
+                conversation_id=run.conversation_id,
+                command=str(safe_input.get("command", "")),
+                artifact_filename=(
+                    str(safe_input["artifact_filename"])
+                    if "artifact_filename" in safe_input
+                    else None
+                ),
+                artifact_body=(
+                    str(safe_input["artifact_body"])
+                    if "artifact_body" in safe_input
+                    else None
+                ),
+            )
+            return {
+                "summary": execution.summary,
+                "stdout": execution.stdout,
+                "artifact": (
+                    {
+                        "artifact_id": execution.artifact.artifact_id,
+                        "filename": execution.artifact.filename,
+                        "preview_type": execution.artifact.preview_type,
+                    }
+                    if execution.artifact is not None
+                    else None
+                ),
+            }
         if definition.capability == ToolCapability.MCP:
             server_id = self._mcp_server_id_for_tool(run, tool_name)
             return {
