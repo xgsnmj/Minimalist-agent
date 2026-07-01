@@ -70,6 +70,12 @@ from apps.api.app.mcp_servers import (
     to_mcp_server_response,
     to_mcp_tool_authorization_response,
 )
+from apps.api.app.page_read_providers import (
+    PageReadProviderResponse,
+    PageReadProviderUpdateRequest,
+    page_read_provider_store,
+    to_page_read_provider_response,
+)
 from apps.api.app.search_providers import (
     SearchProviderResponse,
     SearchProviderUpdateRequest,
@@ -315,6 +321,33 @@ def update_search_provider_configuration(
 ) -> SearchProviderResponse:
     return to_search_provider_response(
         search_provider_store.update(configuration_id, request)
+    )
+
+
+@app.get(
+    "/admin/page-read-provider-configurations",
+    response_model=list[PageReadProviderResponse],
+)
+def list_page_read_provider_configurations(
+    _administrator: LocalAccount = Depends(current_administrator),
+) -> list[PageReadProviderResponse]:
+    return [
+        to_page_read_provider_response(configuration)
+        for configuration in page_read_provider_store.list_configurations()
+    ]
+
+
+@app.patch(
+    "/admin/page-read-provider-configurations/{configuration_id}",
+    response_model=PageReadProviderResponse,
+)
+def update_page_read_provider_configuration(
+    configuration_id: int,
+    request: PageReadProviderUpdateRequest,
+    _administrator: LocalAccount = Depends(current_administrator),
+) -> PageReadProviderResponse:
+    return to_page_read_provider_response(
+        page_read_provider_store.update(configuration_id, request)
     )
 
 

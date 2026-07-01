@@ -9,6 +9,10 @@ from pydantic import BaseModel, Field
 
 from apps.api.app.agent_runs import AgentRun, agent_run_store
 from apps.api.app.mcp_servers import mcp_server_store
+from apps.api.app.page_read_providers import (
+    page_read_provider_store,
+    to_page_read_execution_response,
+)
 from apps.api.app.search_providers import (
     search_provider_store,
     to_search_execution_response,
@@ -271,6 +275,10 @@ class AgentToolGatewayStore:
             configuration = search_provider_store.get_provenance_configuration()
             provenance["provider"] = configuration.provider_id.value
             provenance["provider_configuration_id"] = str(configuration.id)
+        if definition.capability == ToolCapability.PAGE_READ:
+            configuration = page_read_provider_store.get_provenance_configuration()
+            provenance["provider"] = configuration.provider_id.value
+            provenance["provider_configuration_id"] = str(configuration.id)
         if definition.capability == ToolCapability.MCP:
             server_id = self._mcp_server_id_for_tool(run, definition.name)
             if server_id is not None:
@@ -288,6 +296,10 @@ class AgentToolGatewayStore:
             query = str(safe_input.get("query", ""))
             execution = search_provider_store.search(query)
             return to_search_execution_response(execution).model_dump(mode="json")
+        if definition.capability == ToolCapability.PAGE_READ and tool_name == "page.read":
+            url = str(safe_input.get("url", ""))
+            execution = page_read_provider_store.read(url)
+            return to_page_read_execution_response(execution).model_dump(mode="json")
         if definition.capability == ToolCapability.MCP:
             server_id = self._mcp_server_id_for_tool(run, tool_name)
             return {
