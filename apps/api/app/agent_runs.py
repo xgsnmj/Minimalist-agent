@@ -264,6 +264,26 @@ class AgentRunStore:
             )
         )
 
+    def append_card_event_for_user(
+        self,
+        *,
+        owner_user_id: int,
+        run_id: int,
+        conversation_id: int,
+        card: dict[str, object],
+    ) -> RunEvent:
+        run = self.get_for_user(owner_user_id=owner_user_id, run_id=run_id)
+        if run.conversation_id != conversation_id:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Agent Run not found.",
+            )
+        return self._append_event(
+            run,
+            event_type="card.rendered",
+            data={"card": card},
+        )
+
     def _raise_if_conversation_has_active_run(self, conversation_id: int) -> None:
         for run in self._runs.values():
             if run.conversation_id == conversation_id and run.status in ACTIVE_RUN_STATUSES:

@@ -1,4 +1,4 @@
-import { cleanup, render, screen } from "@testing-library/react";
+import { cleanup, render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach } from "vitest";
 import { describe, expect, it } from "vitest";
@@ -29,5 +29,24 @@ describe("App", () => {
     expect(await screen.findByText("hello")).toBeInTheDocument();
     expect(screen.getByText("brief.md")).toBeInTheDocument();
     expect(screen.getByText("markdown")).toBeInTheDocument();
+  });
+
+  it("renders approved cards inside the conversation stream", () => {
+    render(<App />);
+    const messageStream = screen.getByLabelText("Conversation messages");
+
+    expect(within(messageStream).getByText("Card ready: artifact_card")).toBeInTheDocument();
+    expect(within(messageStream).getByText("Artifact")).toBeInTheDocument();
+    expect(within(messageStream).getByText("brief.md", { selector: ".artifact-card h3" })).toBeInTheDocument();
+    expect(within(messageStream).getByText("Tool Result")).toBeInTheDocument();
+    expect(within(messageStream).getByText("doubao_search")).toBeInTheDocument();
+    expect(within(messageStream).getByText("Choice")).toBeInTheDocument();
+    expect(within(messageStream).getByRole("button", { name: "Brief" })).toBeInTheDocument();
+    expect(within(messageStream).getByText("Citation")).toBeInTheDocument();
+    expect(within(messageStream).getByRole("link", { name: "https://docs.ag-ui.com/" })).toBeInTheDocument();
+    expect(within(messageStream).getByText("Status")).toBeInTheDocument();
+    expect(within(messageStream).getByText("Reading sources")).toBeInTheDocument();
+    expect(within(messageStream).getByText("Form Request")).toBeInTheDocument();
+    expect(within(messageStream).getByText("Audience")).toBeInTheDocument();
   });
 });

@@ -25,6 +25,10 @@ type ConversationMessage = {
     filename: string;
     previewType: string;
   };
+  card?: {
+    schema: string;
+    payload: Record<string, unknown>;
+  };
 };
 
 type PreviewType = "markdown" | "plaintext" | "image" | "pdf" | "code" | "table" | "json" | "html" | "download";
@@ -94,6 +98,88 @@ const initialConversations: Conversation[] = [
           artifactId: 1,
           filename: "brief.md",
           previewType: "markdown",
+        },
+      },
+      {
+        id: "message-4",
+        role: "assistant",
+        content: "Card ready: artifact_card",
+        card: {
+          schema: "artifact_card",
+          payload: {
+            artifact_id: 1,
+            filename: "brief.md",
+            preview_type: "markdown",
+          },
+        },
+      },
+      {
+        id: "message-5",
+        role: "assistant",
+        content: "Card ready: tool_result_card",
+        card: {
+          schema: "tool_result_card",
+          payload: {
+            tool_name: "doubao_search",
+            status: "completed",
+            summary: "Found 4 relevant results.",
+          },
+        },
+      },
+      {
+        id: "message-6",
+        role: "assistant",
+        content: "Card ready: choice_card",
+        card: {
+          schema: "choice_card",
+          payload: {
+            prompt: "Choose the output format.",
+            options: [
+              { id: "brief", label: "Brief" },
+              { id: "table", label: "Table", description: "Structured comparison." },
+            ],
+          },
+        },
+      },
+      {
+        id: "message-7",
+        role: "assistant",
+        content: "Card ready: citation_card",
+        card: {
+          schema: "citation_card",
+          payload: {
+            title: "AG-UI protocol",
+            url: "https://docs.ag-ui.com/",
+            source: "AG-UI docs",
+            snippet: "Event streams carry agent state.",
+          },
+        },
+      },
+      {
+        id: "message-8",
+        role: "assistant",
+        content: "Card ready: status_card",
+        card: {
+          schema: "status_card",
+          payload: {
+            status: "running",
+            title: "Reading sources",
+            detail: "The Agent is collecting evidence.",
+          },
+        },
+      },
+      {
+        id: "message-9",
+        role: "assistant",
+        content: "Card ready: form_request_card",
+        card: {
+          schema: "form_request_card",
+          payload: {
+            title: "Need launch inputs",
+            fields: [
+              { id: "audience", label: "Audience", type: "text", required: true },
+            ],
+          },
         },
       },
     ],
@@ -412,6 +498,11 @@ export function App() {
             <article className={`message-row ${message.role}`} key={message.id}>
               <span className="message-role">{message.role}</span>
               <p>{message.content}</p>
+              {message.card ? (
+                <div className="card-shell" data-card-schema={message.card.schema}>
+                  {renderConversationCard(message.card)}
+                </div>
+              ) : null}
               {message.artifactReference ? (
                 <button
                   className="artifact-pill"
@@ -726,6 +817,101 @@ function renderPreviewTableRows(text: string) {
       </tr>
     );
   });
+}
+
+function renderConversationCard(card: { schema: string; payload: Record<string, unknown> }) {
+  if (card.schema === "artifact_card") {
+    return (
+      <div className="conversation-card artifact-card">
+        <p className="card-label">Artifact</p>
+        <h3>{String(card.payload.filename ?? "Untitled artifact")}</h3>
+        <p className="preview-text">{String(card.payload.preview_type ?? "download")}</p>
+      </div>
+    );
+  }
+
+  if (card.schema === "tool_result_card") {
+    return (
+      <div className="conversation-card tool-result-card">
+        <p className="card-label">Tool Result</p>
+        <h3>{String(card.payload.tool_name ?? "Tool")}</h3>
+        <p className="card-status">{String(card.payload.status ?? "completed")}</p>
+        <p className="preview-text">{String(card.payload.summary ?? "Tool call finished.")}</p>
+      </div>
+    );
+  }
+
+  if (card.schema === "choice_card") {
+    const options = Array.isArray(card.payload.options) ? card.payload.options : [];
+    return (
+      <div className="conversation-card choice-card">
+        <p className="card-label">Choice</p>
+        <h3>{String(card.payload.prompt ?? "Choose an option")}</h3>
+        <div className="card-choice-list">
+          {options.map((option, index) => {
+            const typedOption = option as Record<string, unknown>;
+            return (
+              <button className="card-choice" key={String(typedOption.id ?? index)} type="button">
+                <span>{String(typedOption.label ?? "Option")}</span>
+                {typedOption.description ? <small>{String(typedOption.description)}</small> : null}
+              </button>
+            );
+          })}
+        </div>
+      </div>
+    );
+  }
+
+  if (card.schema === "citation_card") {
+    return (
+      <div className="conversation-card citation-card">
+        <p className="card-label">Citation</p>
+        <h3>{String(card.payload.title ?? "Source")}</h3>
+        {card.payload.source ? <p className="card-status">{String(card.payload.source)}</p> : null}
+        {card.payload.snippet ? <p className="preview-text">{String(card.payload.snippet)}</p> : null}
+        <a className="card-link" href={String(card.payload.url ?? "#")}>
+          {String(card.payload.url ?? "Open source")}
+        </a>
+      </div>
+    );
+  }
+
+  if (card.schema === "status_card") {
+    return (
+      <div className="conversation-card status-card">
+        <p className="card-label">Status</p>
+        <h3>{String(card.payload.title ?? "Agent Run update")}</h3>
+        <p className="card-status">{String(card.payload.status ?? "running")}</p>
+        {card.payload.detail ? <p className="preview-text">{String(card.payload.detail)}</p> : null}
+      </div>
+    );
+  }
+
+  if (card.schema === "form_request_card") {
+    const fields = Array.isArray(card.payload.fields) ? card.payload.fields : [];
+    return (
+      <div className="conversation-card form-request-card">
+        <p className="card-label">Form Request</p>
+        <h3>{String(card.payload.title ?? "More information needed")}</h3>
+        <div className="card-field-list">
+          {fields.map((field, index) => {
+            const typedField = field as Record<string, unknown>;
+            return (
+              <span className="card-field" key={String(typedField.id ?? index)}>
+                {String(typedField.label ?? "Field")}
+              </span>
+            );
+          })}
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <div className="conversation-card unsupported-card">
+      <p className="preview-text">Unsupported card schema.</p>
+    </div>
+  );
 }
 
 function inferPreviewType(filename: string, contentType: string): PreviewType {

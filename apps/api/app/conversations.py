@@ -6,6 +6,7 @@ from pydantic import BaseModel, Field
 
 from apps.api.app.agents import Agent, AgentResponse, to_agent_response
 from apps.api.app.artifacts import ArtifactMessageReference
+from apps.api.app.card_schema_registry import CardResponse
 
 
 class ConversationStatus(StrEnum):
@@ -17,6 +18,7 @@ class ConversationMessageResponse(BaseModel):
     role: str
     content: str
     artifact_reference: ArtifactMessageReference | None = None
+    card: CardResponse | None = None
 
 
 class ConversationCreateRequest(BaseModel):
@@ -46,6 +48,7 @@ class ConversationMessage:
     role: str
     content: str
     artifact_reference: ArtifactMessageReference | None = None
+    card: CardResponse | None = None
 
 
 @dataclass
@@ -146,6 +149,7 @@ class ConversationStore:
         role: str,
         content: str,
         artifact_reference: ArtifactMessageReference | None = None,
+        card: CardResponse | None = None,
     ) -> AgentConversation:
         conversation = self._conversation_or_404(conversation_id)
         conversation.messages.append(
@@ -153,6 +157,7 @@ class ConversationStore:
                 role=role,
                 content=content,
                 artifact_reference=artifact_reference,
+                card=card,
             )
         )
         conversation.updated_at = "just now"
@@ -196,6 +201,7 @@ def to_conversation_response(conversation: AgentConversation) -> ConversationRes
                 role=message.role,
                 content=message.content,
                 artifact_reference=message.artifact_reference,
+                card=message.card,
             )
             for message in conversation.messages
         ],

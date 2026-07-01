@@ -36,6 +36,7 @@ from apps.api.app.conversations import (
     conversation_store,
     to_conversation_response,
 )
+from apps.api.app.card_schema_registry import card_schema_registry_store, CardResponse
 from apps.api.app.artifacts import ArtifactCreateRequest, ArtifactPreviewResponse, ArtifactResponse, artifact_store, to_artifact_reference
 from apps.api.app.run_attachments import (
     RunAttachmentPreviewResponse,
@@ -463,6 +464,40 @@ def download_artifact(
             "Content-Disposition": f'attachment; filename="{artifact.filename}"',
         },
     )
+
+
+@app.post(
+    "/conversations/{conversation_id}/cards",
+    response_model=CardResponse,
+    response_model_exclude_none=True,
+    status_code=status.HTTP_201_CREATED,
+)
+def create_card(
+    conversation_id: int,
+    payload: dict[str, object],
+    account: LocalAccount = Depends(current_user),
+) -> CardResponse:
+    conversation = conversation_store.get_for_user(
+        owner_user_id=account.id,
+        conversation_id=conversation_id,
+    )
+    run_id = payload.get("run_id")
+    card_payload = payload.get("card") if isinstance(payload.get("card"), dict) else payload
+    card = card_schema_registry_store.accept_card(card_payload)
+    conversation_store.append_message(
+        conversation_id=conversation.id,
+        role="assistant",
+        content=f"Card ready: {card.card_schema}",
+        card=card,
+    )
+    if isinstance(run_id, int):
+        agent_run_store.append_card_event_for_user(
+            owner_user_id=account.id,
+            run_id=run_id,
+            conversation_id=conversation.id,
+            card=card.model_dump(mode="json", by_alias=True),
+        )
+    return card
 
 
 @app.post(
