@@ -43,6 +43,12 @@ from apps.api.app.run_attachments import (
     RunAttachmentResponse,
     run_attachment_store,
 )
+from apps.api.app.tool_gateway import (
+    ToolCallRequest,
+    ToolCallResponse,
+    agent_tool_gateway_store,
+    to_tool_call_response,
+)
 from apps.api.app.object_storage import object_storage
 from apps.api.app.model_configurations import (
     MODEL_PROVIDER_CATALOG,
@@ -533,6 +539,44 @@ def get_agent_run(
             run_id=run_id,
         )
     )
+
+
+@app.post(
+    "/runs/{run_id}/tool-calls",
+    response_model=ToolCallResponse,
+    response_model_exclude_none=True,
+    status_code=status.HTTP_201_CREATED,
+)
+def invoke_tool_call(
+    run_id: int,
+    request: ToolCallRequest,
+    account: LocalAccount = Depends(current_user),
+) -> ToolCallResponse:
+    return to_tool_call_response(
+        agent_tool_gateway_store.invoke_for_user(
+            owner_user_id=account.id,
+            run_id=run_id,
+            request=request,
+        )
+    )
+
+
+@app.get(
+    "/runs/{run_id}/tool-calls",
+    response_model=list[ToolCallResponse],
+    response_model_exclude_none=True,
+)
+def list_tool_calls(
+    run_id: int,
+    account: LocalAccount = Depends(current_user),
+) -> list[ToolCallResponse]:
+    return [
+        to_tool_call_response(tool_call)
+        for tool_call in agent_tool_gateway_store.list_for_user(
+            owner_user_id=account.id,
+            run_id=run_id,
+        )
+    ]
 
 
 @app.get("/runs/{run_id}/events")

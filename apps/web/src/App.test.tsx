@@ -49,4 +49,17 @@ describe("App", () => {
     expect(within(messageStream).getByText("Form Request")).toBeInTheDocument();
     expect(within(messageStream).getByText("Audience")).toBeInTheDocument();
   });
+
+  it("renders tool calls without exposing user tool toggles in the composer", () => {
+    render(<App />);
+    const messageStream = screen.getByLabelText("Conversation messages");
+
+    expect(within(messageStream).getByText("Tool Call")).toBeInTheDocument();
+    expect(within(messageStream).getByText("search.web")).toBeInTheDocument();
+    expect(within(messageStream).getByText("search.web completed.")).toBeInTheDocument();
+    expect(within(messageStream).getByText("Gateway: agent_tool_gateway · Provider: mock")).toBeInTheDocument();
+    expect(screen.queryByLabelText("Enable Search Capability")).not.toBeInTheDocument();
+    expect(screen.queryByLabelText("Enable Sandbox Capability")).not.toBeInTheDocument();
+    expect(screen.queryByLabelText("Enable MCP Tools")).not.toBeInTheDocument();
+  });
 });

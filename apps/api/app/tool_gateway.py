@@ -1,0 +1,251 @@
+from __future__ import annotations
+
+from dataclasses import dataclass
+from enum import StrEnum
+from typing import Any
+
+from fastapi import HTTPException, status
+from pydantic import BaseModel, Field
+
+from apps.api.app.agent_runs import AgentRun, agent_run_store
+
+
+class ToolCapability(StrEnum):
+    MCP = "mcp"
+    SANDBOX = "sandbox"
+    SEARCH = "search"
+    PAGE_READ = "page_read"
+    FILE_ACCESS = "file_access"
+    ARTIFACT = "artifact"
+
+
+class ToolCallStatus(StrEnum):
+    COMPLETED = "completed"
+    FAILED = "failed"
+    REJECTED = "rejected"
+
+
+class ToolCallRequest(BaseModel):
+    tool_name: str = Field(min_length=1, max_length=160)
+    input: dict[str, Any] = Field(default_factory=dict)
+
+
+class ToolCallResponse(BaseModel):
+    id: int
+    run_id: int
+    conversation_id: int
+    tool_name: str
+    capability: ToolCapability
+    status: ToolCallStatus
+    started_at: str
+    ended_at: str
+    safe_input: dict[str, Any]
+    safe_output: dict[str, Any] | None
+    provenance: dict[str, str]
+    error_summary: str | None = None
+
+
+@dataclass
+class ToolCall:
+    id: int
+    run_id: int
+    conversation_id: int
+    tool_name: str
+    capability: ToolCapability
+    status: ToolCallStatus
+    started_at: str
+    ended_at: str
+    safe_input: dict[str, Any]
+    safe_output: dict[str, Any] | None
+    provenance: dict[str, str]
+    error_summary: str | None = None
+
+
+@dataclass(frozen=True)
+class ToolDefinition:
+    name: str
+    capability: ToolCapability
+    provider: str = "mock"
+
+
+REGISTERED_TOOLS = {
+    "search.web": ToolDefinition(
+        name="search.web",
+        capability=ToolCapability.SEARCH,
+    ),
+    "page.read": ToolDefinition(
+        name="page.read",
+        capability=ToolCapability.PAGE_READ,
+    ),
+    "sandbox.exec": ToolDefinition(
+        name="sandbox.exec",
+        capability=ToolCapability.SANDBOX,
+    ),
+}
+
+SENSITIVE_INPUT_KEYS = {
+    "api_key",
+    "authorization",
+    "cookie",
+    "password",
+    "secret",
+    "token",
+}
+
+
+class AgentToolGatewayStore:
+    def __init__(self) -> None:
+        self.reset()
+
+    def reset(self) -> None:
+        self._next_id = 1
+        self._tool_calls: dict[int, ToolCall] = {}
+
+    def invoke_for_user(
+        self,
+        *,
+        owner_user_id: int,
+        run_id: int,
+        request: ToolCallRequest,
+    ) -> ToolCall:
+        run = agent_run_store.get_for_user(owner_user_id=owner_user_id, run_id=run_id)
+        definition = self._tool_definition(request.tool_name)
+        safe_input = project_safe_payload(request.input)
+        started_at = "just now"
+        ended_at = "just now"
+        if not self._is_authorized(run, definition.capability):
+            tool_call = self._record(
+                run=run,
+                definition=definition,
+                status=ToolCallStatus.REJECTED,
+                started_at=started_at,
+                ended_at=ended_at,
+                safe_input=safe_input,
+                safe_output=None,
+                error_summary="Tool is not authorized for this Agent Run.",
+            )
+            self._emit_tool_event(owner_user_id=owner_user_id, tool_call=tool_call)
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail=tool_call.error_summary,
+            )
+
+        safe_output = {"summary": f"{definition.name} completed."}
+        tool_call = self._record(
+            run=run,
+            definition=definition,
+            status=ToolCallStatus.COMPLETED,
+            started_at=started_at,
+            ended_at=ended_at,
+            safe_input=safe_input,
+            safe_output=safe_output,
+            error_summary=None,
+        )
+        self._emit_tool_event(owner_user_id=owner_user_id, tool_call=tool_call)
+        return tool_call
+
+    def list_for_user(self, *, owner_user_id: int, run_id: int) -> list[ToolCall]:
+        agent_run_store.get_for_user(owner_user_id=owner_user_id, run_id=run_id)
+        return [
+            tool_call
+            for tool_call in sorted(self._tool_calls.values(), key=lambda item: item.id)
+            if tool_call.run_id == run_id
+        ]
+
+    def _record(
+        self,
+        *,
+        run: AgentRun,
+        definition: ToolDefinition,
+        status: ToolCallStatus,
+        started_at: str,
+        ended_at: str,
+        safe_input: dict[str, Any],
+        safe_output: dict[str, Any] | None,
+        error_summary: str | None,
+    ) -> ToolCall:
+        tool_call = ToolCall(
+            id=self._next_id,
+            run_id=run.id,
+            conversation_id=run.conversation_id,
+            tool_name=definition.name,
+            capability=definition.capability,
+            status=status,
+            started_at=started_at,
+            ended_at=ended_at,
+            safe_input=safe_input,
+            safe_output=safe_output,
+            provenance={
+                "gateway": "agent_tool_gateway",
+                "provider": definition.provider,
+            },
+            error_summary=error_summary,
+        )
+        self._next_id += 1
+        self._tool_calls[tool_call.id] = tool_call
+        return tool_call
+
+    def _emit_tool_event(self, *, owner_user_id: int, tool_call: ToolCall) -> None:
+        agent_run_store.append_tool_call_event_for_user(
+            owner_user_id=owner_user_id,
+            run_id=tool_call.run_id,
+            tool_call=to_tool_call_response(tool_call).model_dump(mode="json"),
+        )
+
+    def _tool_definition(self, tool_name: str) -> ToolDefinition:
+        definition = REGISTERED_TOOLS.get(tool_name)
+        if definition is None:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Tool not found.",
+            )
+        return definition
+
+    def _is_authorized(self, run: AgentRun, capability: ToolCapability) -> bool:
+        policy = run.capability_snapshot.capability_policy
+        if capability == ToolCapability.SEARCH:
+            return policy.search_enabled
+        if capability == ToolCapability.PAGE_READ:
+            return policy.page_read_enabled
+        if capability == ToolCapability.SANDBOX:
+            return policy.sandbox_enabled
+        if capability == ToolCapability.MCP:
+            return bool(policy.mcp_server_ids)
+        return False
+
+
+def project_safe_payload(payload: dict[str, Any]) -> dict[str, Any]:
+    safe_payload: dict[str, Any] = {}
+    for key, value in payload.items():
+        if key.lower() in SENSITIVE_INPUT_KEYS:
+            continue
+        if isinstance(value, dict):
+            safe_payload[key] = project_safe_payload(value)
+        elif isinstance(value, list):
+            safe_payload[key] = [
+                project_safe_payload(item) if isinstance(item, dict) else item
+                for item in value
+            ]
+        else:
+            safe_payload[key] = value
+    return safe_payload
+
+
+def to_tool_call_response(tool_call: ToolCall) -> ToolCallResponse:
+    return ToolCallResponse(
+        id=tool_call.id,
+        run_id=tool_call.run_id,
+        conversation_id=tool_call.conversation_id,
+        tool_name=tool_call.tool_name,
+        capability=tool_call.capability,
+        status=tool_call.status,
+        started_at=tool_call.started_at,
+        ended_at=tool_call.ended_at,
+        safe_input=tool_call.safe_input,
+        safe_output=tool_call.safe_output,
+        provenance=tool_call.provenance,
+        error_summary=tool_call.error_summary,
+    )
+
+
+agent_tool_gateway_store = AgentToolGatewayStore()

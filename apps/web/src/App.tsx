@@ -20,6 +20,14 @@ type ConversationMessage = {
   id: string;
   role: "user" | "assistant";
   content: string;
+  toolCall?: {
+    toolName: string;
+    status: "completed" | "failed" | "rejected";
+    safeInput: Record<string, unknown>;
+    safeOutput?: Record<string, unknown>;
+    provenance: Record<string, string>;
+    errorSummary?: string;
+  };
   artifactReference?: {
     artifactId: number;
     filename: string;
@@ -103,6 +111,25 @@ const initialConversations: Conversation[] = [
       {
         id: "message-4",
         role: "assistant",
+        content: "Tool Call: search.web completed",
+        toolCall: {
+          toolName: "search.web",
+          status: "completed",
+          safeInput: {
+            query: "Minimalist Agent WorkBuddy patterns",
+          },
+          safeOutput: {
+            summary: "search.web completed.",
+          },
+          provenance: {
+            gateway: "agent_tool_gateway",
+            provider: "mock",
+          },
+        },
+      },
+      {
+        id: "message-5",
+        role: "assistant",
         content: "Card ready: artifact_card",
         card: {
           schema: "artifact_card",
@@ -114,7 +141,7 @@ const initialConversations: Conversation[] = [
         },
       },
       {
-        id: "message-5",
+        id: "message-6",
         role: "assistant",
         content: "Card ready: tool_result_card",
         card: {
@@ -127,7 +154,7 @@ const initialConversations: Conversation[] = [
         },
       },
       {
-        id: "message-6",
+        id: "message-7",
         role: "assistant",
         content: "Card ready: choice_card",
         card: {
@@ -142,7 +169,7 @@ const initialConversations: Conversation[] = [
         },
       },
       {
-        id: "message-7",
+        id: "message-8",
         role: "assistant",
         content: "Card ready: citation_card",
         card: {
@@ -156,7 +183,7 @@ const initialConversations: Conversation[] = [
         },
       },
       {
-        id: "message-8",
+        id: "message-9",
         role: "assistant",
         content: "Card ready: status_card",
         card: {
@@ -169,7 +196,7 @@ const initialConversations: Conversation[] = [
         },
       },
       {
-        id: "message-9",
+        id: "message-10",
         role: "assistant",
         content: "Card ready: form_request_card",
         card: {
@@ -498,6 +525,7 @@ export function App() {
             <article className={`message-row ${message.role}`} key={message.id}>
               <span className="message-role">{message.role}</span>
               <p>{message.content}</p>
+              {message.toolCall ? renderToolCall(message.toolCall) : null}
               {message.card ? (
                 <div className="card-shell" data-card-schema={message.card.schema}>
                   {renderConversationCard(message.card)}
@@ -817,6 +845,34 @@ function renderPreviewTableRows(text: string) {
       </tr>
     );
   });
+}
+
+function renderToolCall(toolCall: NonNullable<ConversationMessage["toolCall"]>) {
+  return (
+    <div className="tool-call-row">
+      <div>
+        <p className="card-label">Tool Call</p>
+        <h3>{toolCall.toolName}</h3>
+      </div>
+      <span className={`tool-call-status ${toolCall.status}`}>{toolCall.status}</span>
+      <p className="preview-text">{formatToolCallSummary(toolCall)}</p>
+      <p className="tool-call-meta">
+        Gateway: {toolCall.provenance.gateway} · Provider: {toolCall.provenance.provider}
+      </p>
+    </div>
+  );
+}
+
+function formatToolCallSummary(toolCall: NonNullable<ConversationMessage["toolCall"]>) {
+  if (toolCall.errorSummary) {
+    return toolCall.errorSummary;
+  }
+  const outputSummary = toolCall.safeOutput?.summary;
+  if (typeof outputSummary === "string") {
+    return outputSummary;
+  }
+  const query = toolCall.safeInput.query;
+  return typeof query === "string" ? `Input: ${query}` : "Tool call recorded.";
 }
 
 function renderConversationCard(card: { schema: string; payload: Record<string, unknown> }) {

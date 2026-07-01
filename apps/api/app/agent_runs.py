@@ -284,6 +284,20 @@ class AgentRunStore:
             data={"card": card},
         )
 
+    def append_tool_call_event_for_user(
+        self,
+        *,
+        owner_user_id: int,
+        run_id: int,
+        tool_call: dict[str, object],
+    ) -> RunEvent:
+        run = self.get_for_user(owner_user_id=owner_user_id, run_id=run_id)
+        return self._append_event(
+            run,
+            event_type="tool.call",
+            data={"tool_call": tool_call},
+        )
+
     def _raise_if_conversation_has_active_run(self, conversation_id: int) -> None:
         for run in self._runs.values():
             if run.conversation_id == conversation_id and run.status in ACTIVE_RUN_STATUSES:
