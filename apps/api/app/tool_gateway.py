@@ -8,6 +8,7 @@ from fastapi import HTTPException, status
 from pydantic import BaseModel, Field
 
 from apps.api.app.agent_runs import AgentRun, agent_run_store
+from apps.api.app.mcp_servers import mcp_server_store
 
 
 class ToolCapability(StrEnum):
@@ -83,6 +84,8 @@ REGISTERED_TOOLS = {
     ),
 }
 
+MCP_TOOL_PREFIX = "mcp."
+
 SENSITIVE_INPUT_KEYS = {
     "api_key",
     "authorization",
@@ -109,11 +112,11 @@ class AgentToolGatewayStore:
         request: ToolCallRequest,
     ) -> ToolCall:
         run = agent_run_store.get_for_user(owner_user_id=owner_user_id, run_id=run_id)
-        definition = self._tool_definition(request.tool_name)
+        definition = self._tool_definition(run, request.tool_name)
         safe_input = project_safe_payload(request.input)
         started_at = "just now"
         ended_at = "just now"
-        if not self._is_authorized(run, definition.capability):
+        if not self._is_authorized(run, definition.capability, definition.name):
             tool_call = self._record(
                 run=run,
                 definition=definition,
@@ -122,6 +125,7 @@ class AgentToolGatewayStore:
                 ended_at=ended_at,
                 safe_input=safe_input,
                 safe_output=None,
+                provenance=self._provenance_for_definition(run, definition),
                 error_summary="Tool is not authorized for this Agent Run.",
             )
             self._emit_tool_event(owner_user_id=owner_user_id, tool_call=tool_call)
@@ -139,6 +143,7 @@ class AgentToolGatewayStore:
             ended_at=ended_at,
             safe_input=safe_input,
             safe_output=safe_output,
+            provenance=self._provenance_for_definition(run, definition),
             error_summary=None,
         )
         self._emit_tool_event(owner_user_id=owner_user_id, tool_call=tool_call)
@@ -162,6 +167,7 @@ class AgentToolGatewayStore:
         ended_at: str,
         safe_input: dict[str, Any],
         safe_output: dict[str, Any] | None,
+        provenance: dict[str, str],
         error_summary: str | None,
     ) -> ToolCall:
         tool_call = ToolCall(
@@ -175,10 +181,7 @@ class AgentToolGatewayStore:
             ended_at=ended_at,
             safe_input=safe_input,
             safe_output=safe_output,
-            provenance={
-                "gateway": "agent_tool_gateway",
-                "provider": definition.provider,
-            },
+            provenance=provenance,
             error_summary=error_summary,
         )
         self._next_id += 1
@@ -192,7 +195,21 @@ class AgentToolGatewayStore:
             tool_call=to_tool_call_response(tool_call).model_dump(mode="json"),
         )
 
-    def _tool_definition(self, tool_name: str) -> ToolDefinition:
+    def _tool_definition(self, run: AgentRun, tool_name: str) -> ToolDefinition:
+        if tool_name.startswith(MCP_TOOL_PREFIX):
+            if not mcp_server_store.is_tool_discovered(
+                server_ids=run.capability_snapshot.capability_policy.mcp_server_ids,
+                tool_name=tool_name,
+            ):
+                raise HTTPException(
+                    status_code=status.HTTP_404_NOT_FOUND,
+                    detail="Tool not found.",
+                )
+            return ToolDefinition(
+                name=tool_name,
+                capability=ToolCapability.MCP,
+                provider="mcp",
+            )
         definition = REGISTERED_TOOLS.get(tool_name)
         if definition is None:
             raise HTTPException(
@@ -201,7 +218,7 @@ class AgentToolGatewayStore:
             )
         return definition
 
-    def _is_authorized(self, run: AgentRun, capability: ToolCapability) -> bool:
+    def _is_authorized(self, run: AgentRun, capability: ToolCapability, tool_name: str) -> bool:
         policy = run.capability_snapshot.capability_policy
         if capability == ToolCapability.SEARCH:
             return policy.search_enabled
@@ -210,8 +227,34 @@ class AgentToolGatewayStore:
         if capability == ToolCapability.SANDBOX:
             return policy.sandbox_enabled
         if capability == ToolCapability.MCP:
-            return bool(policy.mcp_server_ids)
+            return mcp_server_store.is_tool_authorized(
+                agent_id=run.capability_snapshot.agent_id,
+                server_ids=policy.mcp_server_ids,
+                tool_name=tool_name,
+            )
         return False
+
+    def _mcp_server_id_for_tool(self, run: AgentRun, tool_name: str) -> int | None:
+        return mcp_server_store.server_id_for_authorized_tool(
+            agent_id=run.capability_snapshot.agent_id,
+            server_ids=run.capability_snapshot.capability_policy.mcp_server_ids,
+            tool_name=tool_name,
+        )
+
+    def _provenance_for_definition(
+        self,
+        run: AgentRun,
+        definition: ToolDefinition,
+    ) -> dict[str, str]:
+        provenance = {
+            "gateway": "agent_tool_gateway",
+            "provider": definition.provider,
+        }
+        if definition.capability == ToolCapability.MCP:
+            server_id = self._mcp_server_id_for_tool(run, definition.name)
+            if server_id is not None:
+                provenance["server_id"] = str(server_id)
+        return provenance
 
 
 def project_safe_payload(payload: dict[str, Any]) -> dict[str, Any]:

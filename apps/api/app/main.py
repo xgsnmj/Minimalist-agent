@@ -59,6 +59,17 @@ from apps.api.app.model_configurations import (
     model_configuration_store,
     to_model_configuration_response,
 )
+from apps.api.app.mcp_servers import (
+    McpDiscoveredToolResponse,
+    McpServerMutationRequest,
+    McpServerResponse,
+    McpToolAuthorizationRequest,
+    McpToolAuthorizationResponse,
+    mcp_server_store,
+    to_mcp_discovered_tool_response,
+    to_mcp_server_response,
+    to_mcp_tool_authorization_response,
+)
 
 
 app = FastAPI(title="Minimalist Agent API")
@@ -165,6 +176,25 @@ def prepare_agent_run(
     return to_agent_run_preparation_response(agent_store.get(agent_id))
 
 
+@app.post(
+    "/admin/agents/{agent_id}/mcp-tool-authorizations",
+    response_model=McpToolAuthorizationResponse,
+    status_code=status.HTTP_201_CREATED,
+)
+def authorize_agent_mcp_tool(
+    agent_id: int,
+    request: McpToolAuthorizationRequest,
+    _administrator: LocalAccount = Depends(current_administrator),
+) -> McpToolAuthorizationResponse:
+    agent_store.get(agent_id)
+    return to_mcp_tool_authorization_response(
+        mcp_server_store.authorize_tool(
+            agent_id=agent_id,
+            request=request,
+        )
+    )
+
+
 @app.get("/admin/model-providers", response_model=list[ModelProviderCatalogEntry])
 def list_model_providers(
     _administrator: LocalAccount = Depends(current_administrator),
@@ -206,6 +236,53 @@ def update_model_configuration(
     return to_model_configuration_response(
         model_configuration_store.update(configuration_id, request)
     )
+
+
+@app.get("/admin/mcp-servers", response_model=list[McpServerResponse])
+def list_mcp_servers(
+    _administrator: LocalAccount = Depends(current_administrator),
+) -> list[McpServerResponse]:
+    return [
+        to_mcp_server_response(server)
+        for server in mcp_server_store.list_servers()
+    ]
+
+
+@app.post(
+    "/admin/mcp-servers",
+    response_model=McpServerResponse,
+    status_code=status.HTTP_201_CREATED,
+)
+def create_mcp_server(
+    request: McpServerMutationRequest,
+    _administrator: LocalAccount = Depends(current_administrator),
+) -> McpServerResponse:
+    return to_mcp_server_response(mcp_server_store.create(request))
+
+
+@app.post(
+    "/admin/mcp-servers/{server_id}/discover",
+    response_model=McpServerResponse,
+)
+def discover_mcp_server_tools(
+    server_id: int,
+    _administrator: LocalAccount = Depends(current_administrator),
+) -> McpServerResponse:
+    return to_mcp_server_response(mcp_server_store.discover_tools(server_id))
+
+
+@app.get(
+    "/admin/mcp-servers/{server_id}/tools",
+    response_model=list[McpDiscoveredToolResponse],
+)
+def list_mcp_server_tools(
+    server_id: int,
+    _administrator: LocalAccount = Depends(current_administrator),
+) -> list[McpDiscoveredToolResponse]:
+    return [
+        to_mcp_discovered_tool_response(tool)
+        for tool in mcp_server_store.list_tools(server_id)
+    ]
 
 
 @app.post(
