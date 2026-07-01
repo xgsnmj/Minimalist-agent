@@ -5,6 +5,7 @@ from fastapi import HTTPException, status
 from pydantic import BaseModel, Field
 
 from apps.api.app.agents import Agent, AgentResponse, to_agent_response
+from apps.api.app.artifacts import ArtifactMessageReference
 
 
 class ConversationStatus(StrEnum):
@@ -15,6 +16,7 @@ class ConversationStatus(StrEnum):
 class ConversationMessageResponse(BaseModel):
     role: str
     content: str
+    artifact_reference: ArtifactMessageReference | None = None
 
 
 class ConversationCreateRequest(BaseModel):
@@ -43,6 +45,7 @@ class ConversationResponse(BaseModel):
 class ConversationMessage:
     role: str
     content: str
+    artifact_reference: ArtifactMessageReference | None = None
 
 
 @dataclass
@@ -142,9 +145,16 @@ class ConversationStore:
         conversation_id: int,
         role: str,
         content: str,
+        artifact_reference: ArtifactMessageReference | None = None,
     ) -> AgentConversation:
         conversation = self._conversation_or_404(conversation_id)
-        conversation.messages.append(ConversationMessage(role=role, content=content))
+        conversation.messages.append(
+            ConversationMessage(
+                role=role,
+                content=content,
+                artifact_reference=artifact_reference,
+            )
+        )
         conversation.updated_at = "just now"
         return conversation
 
@@ -182,7 +192,11 @@ def to_conversation_response(conversation: AgentConversation) -> ConversationRes
         updated_at=conversation.updated_at,
         deleted=conversation.deleted,
         messages=[
-            ConversationMessageResponse(role=message.role, content=message.content)
+            ConversationMessageResponse(
+                role=message.role,
+                content=message.content,
+                artifact_reference=message.artifact_reference,
+            )
             for message in conversation.messages
         ],
     )

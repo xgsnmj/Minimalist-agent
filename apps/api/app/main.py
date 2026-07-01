@@ -1,5 +1,6 @@
-from fastapi import Depends, FastAPI, Header, Query, status
-from fastapi.responses import StreamingResponse
+from fastapi import Depends, FastAPI, Header, HTTPException, Query, status
+from fastapi.responses import Response, StreamingResponse
+from fastapi import File, UploadFile
 
 from apps.api.app.agent_runs import (
     AgentRunCreateRequest,
@@ -35,6 +36,13 @@ from apps.api.app.conversations import (
     conversation_store,
     to_conversation_response,
 )
+from apps.api.app.artifacts import ArtifactCreateRequest, ArtifactPreviewResponse, ArtifactResponse, artifact_store, to_artifact_reference
+from apps.api.app.run_attachments import (
+    RunAttachmentPreviewResponse,
+    RunAttachmentResponse,
+    run_attachment_store,
+)
+from apps.api.app.object_storage import object_storage
 from apps.api.app.model_configurations import (
     MODEL_PROVIDER_CATALOG,
     ModelConfigurationMutationRequest,
@@ -193,7 +201,12 @@ def update_model_configuration(
     )
 
 
-@app.post("/conversations", response_model=ConversationResponse, status_code=status.HTTP_201_CREATED)
+@app.post(
+    "/conversations",
+    response_model=ConversationResponse,
+    response_model_exclude_none=True,
+    status_code=status.HTTP_201_CREATED,
+)
 def create_conversation(
     request: ConversationCreateRequest,
     account: LocalAccount = Depends(current_user),
@@ -206,7 +219,7 @@ def create_conversation(
     return to_conversation_response(conversation)
 
 
-@app.get("/conversations", response_model=list[ConversationResponse])
+@app.get("/conversations", response_model=list[ConversationResponse], response_model_exclude_none=True)
 def list_conversations(
     account: LocalAccount = Depends(current_user),
 ) -> list[ConversationResponse]:
@@ -216,7 +229,11 @@ def list_conversations(
     ]
 
 
-@app.get("/conversations/{conversation_id}", response_model=ConversationResponse)
+@app.get(
+    "/conversations/{conversation_id}",
+    response_model=ConversationResponse,
+    response_model_exclude_none=True,
+)
 def get_conversation(
     conversation_id: int,
     account: LocalAccount = Depends(current_user),
@@ -229,7 +246,11 @@ def get_conversation(
     )
 
 
-@app.patch("/conversations/{conversation_id}", response_model=ConversationResponse)
+@app.patch(
+    "/conversations/{conversation_id}",
+    response_model=ConversationResponse,
+    response_model_exclude_none=True,
+)
 def rename_conversation(
     conversation_id: int,
     request: ConversationRenameRequest,
@@ -244,7 +265,11 @@ def rename_conversation(
     )
 
 
-@app.delete("/conversations/{conversation_id}", response_model=ConversationResponse)
+@app.delete(
+    "/conversations/{conversation_id}",
+    response_model=ConversationResponse,
+    response_model_exclude_none=True,
+)
 def delete_conversation(
     conversation_id: int,
     account: LocalAccount = Depends(current_user),
@@ -254,6 +279,189 @@ def delete_conversation(
             owner_user_id=account.id,
             conversation_id=conversation_id,
         )
+    )
+
+
+@app.post(
+    "/conversations/{conversation_id}/run-attachments",
+    response_model=RunAttachmentResponse,
+    response_model_exclude_none=True,
+    status_code=status.HTTP_201_CREATED,
+)
+async def upload_run_attachment(
+    conversation_id: int,
+    file: UploadFile = File(...),
+    account: LocalAccount = Depends(current_user),
+) -> RunAttachmentResponse:
+    conversation_store.get_for_user(
+        owner_user_id=account.id,
+        conversation_id=conversation_id,
+    )
+    body = await file.read()
+    attachment = run_attachment_store.create(
+        conversation_id=conversation_id,
+        run_id=None,
+        filename=file.filename or "attachment",
+        content_type=file.content_type or "application/octet-stream",
+        body=body,
+    )
+    return RunAttachmentResponse(
+        id=attachment.id,
+        conversation_id=attachment.conversation_id,
+        filename=attachment.filename,
+        content_type=attachment.content_type,
+        size=attachment.size,
+        preview_type=attachment.preview_type,
+    )
+
+
+@app.get(
+    "/conversations/{conversation_id}/run-attachments",
+    response_model=list[RunAttachmentResponse],
+    response_model_exclude_none=True,
+)
+def list_run_attachments(
+    conversation_id: int,
+    account: LocalAccount = Depends(current_user),
+) -> list[RunAttachmentResponse]:
+    conversation_store.get_for_user(
+        owner_user_id=account.id,
+        conversation_id=conversation_id,
+    )
+    return [
+        RunAttachmentResponse(
+            id=attachment.id,
+            conversation_id=attachment.conversation_id,
+            filename=attachment.filename,
+            content_type=attachment.content_type,
+            size=attachment.size,
+            preview_type=attachment.preview_type,
+        )
+        for attachment in run_attachment_store.list_for_conversation(conversation_id)
+    ]
+
+
+@app.get(
+    "/conversations/{conversation_id}/run-attachments/{attachment_id}/preview",
+    response_model=RunAttachmentPreviewResponse,
+    response_model_exclude_none=True,
+)
+def get_run_attachment_preview(
+    conversation_id: int,
+    attachment_id: int,
+    account: LocalAccount = Depends(current_user),
+) -> RunAttachmentPreviewResponse:
+    conversation_store.get_for_user(
+        owner_user_id=account.id,
+        conversation_id=conversation_id,
+    )
+    attachment = run_attachment_store.get(attachment_id)
+    if attachment.conversation_id != conversation_id:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Run Attachment not found.",
+        )
+    return run_attachment_store.preview(attachment_id)
+
+
+@app.get("/conversations/{conversation_id}/run-attachments/{attachment_id}/download")
+def download_run_attachment(
+    conversation_id: int,
+    attachment_id: int,
+    account: LocalAccount = Depends(current_user),
+) -> Response:
+    conversation_store.get_for_user(
+        owner_user_id=account.id,
+        conversation_id=conversation_id,
+    )
+    attachment = run_attachment_store.get(attachment_id)
+    if attachment.conversation_id != conversation_id:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Run Attachment not found.",
+        )
+    body = object_storage.get_bytes(bucket=attachment.bucket, object_key=attachment.object_key)
+    return Response(
+        content=body,
+        media_type=attachment.content_type,
+        headers={
+            "Content-Disposition": f'attachment; filename="{attachment.filename}"',
+        },
+    )
+
+
+@app.post(
+    "/conversations/{conversation_id}/artifacts",
+    response_model=ArtifactResponse,
+    response_model_exclude_none=True,
+    status_code=status.HTTP_201_CREATED,
+)
+def create_artifact(
+    conversation_id: int,
+    request: ArtifactCreateRequest,
+    account: LocalAccount = Depends(current_user),
+) -> ArtifactResponse:
+    conversation_store.get_for_user(
+        owner_user_id=account.id,
+        conversation_id=conversation_id,
+    )
+    artifact = artifact_store.create(
+        conversation_id=conversation_id,
+        run_id=None,
+        filename=request.filename,
+        content_type=request.content_type,
+        content=request.content_bytes(),
+    )
+    conversation_store.append_message(
+        conversation_id=conversation_id,
+        role="assistant",
+        content=f"Artifact ready: {artifact.filename}",
+        artifact_reference=to_artifact_reference(artifact),
+    )
+    return ArtifactResponse(
+        id=artifact.id,
+        conversation_id=artifact.conversation_id,
+        filename=artifact.filename,
+        content_type=artifact.content_type,
+        size=artifact.size,
+        preview_type=artifact.preview_type,
+    )
+
+
+@app.get(
+    "/artifacts/{artifact_id}/preview",
+    response_model=ArtifactPreviewResponse,
+    response_model_exclude_none=True,
+)
+def get_artifact_preview(
+    artifact_id: int,
+    account: LocalAccount = Depends(current_user),
+) -> ArtifactPreviewResponse:
+    artifact = artifact_store.get(artifact_id)
+    conversation_store.get_for_user(
+        owner_user_id=account.id,
+        conversation_id=artifact.conversation_id,
+    )
+    return artifact_store.preview(artifact_id)
+
+
+@app.get("/artifacts/{artifact_id}/download")
+def download_artifact(
+    artifact_id: int,
+    account: LocalAccount = Depends(current_user),
+):
+    artifact = artifact_store.get(artifact_id)
+    conversation_store.get_for_user(
+        owner_user_id=account.id,
+        conversation_id=artifact.conversation_id,
+    )
+    _artifact, content = artifact_store.download_bytes(artifact_id)
+    return Response(
+        content=content,
+        media_type=artifact.content_type,
+        headers={
+            "Content-Disposition": f'attachment; filename="{artifact.filename}"',
+        },
     )
 
 

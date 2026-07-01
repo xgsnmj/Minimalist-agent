@@ -1,4 +1,4 @@
-import { FormEvent, useMemo, useState } from "react";
+import { ChangeEvent, FormEvent, useMemo, useRef, useState } from "react";
 
 import { useAgentRunStream } from "./ag-ui-stream";
 
@@ -20,6 +20,22 @@ type ConversationMessage = {
   id: string;
   role: "user" | "assistant";
   content: string;
+  artifactReference?: {
+    artifactId: number;
+    filename: string;
+    previewType: string;
+  };
+};
+
+type PreviewType = "markdown" | "plaintext" | "image" | "pdf" | "code" | "table" | "json" | "html" | "download";
+
+type UploadedAttachmentPreview = {
+  id: number;
+  filename: string;
+  contentType: string;
+  previewType: PreviewType;
+  text?: string;
+  dataUrl?: string;
 };
 
 type Conversation = {
@@ -70,6 +86,16 @@ const initialConversations: Conversation[] = [
         content:
           "I will compare common Agent workspace patterns and keep the output ready for review.",
       },
+      {
+        id: "message-3",
+        role: "assistant",
+        content: "Artifact ready: brief.md",
+        artifactReference: {
+          artifactId: 1,
+          filename: "brief.md",
+          previewType: "markdown",
+        },
+      },
     ],
   },
 ];
@@ -86,6 +112,14 @@ export function App() {
   const [composerValue, setComposerValue] = useState("");
   const [isRenaming, setIsRenaming] = useState(false);
   const [renameValue, setRenameValue] = useState(initialConversations[0]?.title ?? "");
+  const [previewArtifactId, setPreviewArtifactId] = useState<number | null>(
+    initialConversations[0]?.messages.find((message) => message.artifactReference)?.artifactReference
+      ?.artifactId ?? null,
+  );
+  const [selectedAttachment, setSelectedAttachment] = useState<File | null>(null);
+  const [attachmentPreview, setAttachmentPreview] = useState<UploadedAttachmentPreview | null>(null);
+  const [attachmentInputKey, setAttachmentInputKey] = useState(0);
+  const fileInputRef = useRef<HTMLInputElement | null>(null);
 
   const selectedConversation = conversations.find(
     (conversation) => conversation.id === selectedConversationId,
@@ -95,6 +129,9 @@ export function App() {
   const activeAgent = getAgent(selectedConversation?.agentId ?? draftAgentId);
   const allowedModels = activeAgent.allowedModels;
   const selectedModelId = selectedConversation?.selectedModelId ?? draftModelId;
+  const selectedArtifactReference =
+    selectedConversation?.messages.find((message) => message.artifactReference)?.artifactReference ??
+    null;
   const visibleConversations = useMemo(
     () =>
       conversations.filter((conversation) =>
@@ -120,6 +157,25 @@ export function App() {
     setSelectedConversationId(conversationId);
     setRenameValue(conversation?.title ?? "");
     setIsRenaming(false);
+    setPreviewArtifactId(
+      conversation?.messages.find((message) => message.artifactReference)?.artifactReference
+        ?.artifactId ?? null,
+    );
+  }
+
+  function selectArtifactPreview(artifactId: number) {
+    setPreviewArtifactId(artifactId);
+  }
+
+  function selectAttachment(event: ChangeEvent<HTMLInputElement>) {
+    const file = event.target.files?.[0] ?? null;
+    setSelectedAttachment(file);
+    if (file) {
+      setPreviewArtifactId(null);
+      void updateAttachmentPreview(file);
+    } else {
+      setAttachmentPreview(null);
+    }
   }
 
   function updateDraftAgent(agentId: string) {
@@ -172,6 +228,39 @@ export function App() {
     }
 
     setComposerValue("");
+  }
+
+  async function uploadAttachment(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    if (!selectedAttachment) {
+      return;
+    }
+    await updateAttachmentPreview(selectedAttachment);
+    setPreviewArtifactId(null);
+    setSelectedAttachment(null);
+    setAttachmentInputKey((current) => current + 1);
+    if (fileInputRef.current) {
+      fileInputRef.current.value = "";
+    }
+  }
+
+  function clearAttachmentPreview() {
+    setAttachmentPreview(null);
+  }
+
+  async function updateAttachmentPreview(file: File) {
+    const preview = createAttachmentPreview(file);
+    if (preview.previewType === "image" || preview.previewType === "pdf") {
+      const dataUrl = await readFileAsDataUrl(file);
+      setAttachmentPreview({ ...preview, dataUrl });
+      return;
+    }
+
+    const text = await file.text();
+    setAttachmentPreview({
+      ...preview,
+      text: normalizeAttachmentPreviewText(preview.previewType, text),
+    });
   }
 
   function renameConversation(event: FormEvent<HTMLFormElement>) {
@@ -323,6 +412,15 @@ export function App() {
             <article className={`message-row ${message.role}`} key={message.id}>
               <span className="message-role">{message.role}</span>
               <p>{message.content}</p>
+              {message.artifactReference ? (
+                <button
+                  className="artifact-pill"
+                  type="button"
+                  onClick={() => selectArtifactPreview(message.artifactReference!.artifactId)}
+                >
+                  {message.artifactReference.filename}
+                </button>
+              ) : null}
             </article>
           ))}
           {!selectedConversation ? (
@@ -372,13 +470,69 @@ export function App() {
               onChange={(event) => setComposerValue(event.target.value)}
             />
           </label>
-          <button className="primary-button send-button" type="submit">
-            Send Message
+          <div className="composer-actions">
+            <label className="attachment-picker">
+              <span>Run Attachment</span>
+              <input
+                key={attachmentInputKey}
+                ref={fileInputRef}
+                aria-label="Run Attachment"
+                type="file"
+                onChange={selectAttachment}
+              />
+            </label>
+            <button className="secondary-button" type="button" onClick={() => fileInputRef.current?.click()}>
+              Choose File
+            </button>
+            <button className="secondary-button" type="submit" onClick={clearAttachmentPreview}>
+              Send Message
+            </button>
+          </div>
+        </form>
+
+        <form className="attachment-upload-panel" onSubmit={uploadAttachment}>
+          <div>
+            <p className="eyebrow">Run Attachment</p>
+            <h3>{selectedAttachment ? selectedAttachment.name : "No file selected"}</h3>
+          </div>
+          <p className="preview-text">
+            {selectedAttachment
+              ? `${selectedAttachment.type || "application/octet-stream"} · ${selectedAttachment.size} bytes`
+              : "Pick a file from the composer to stage it as temporary working context."}
+          </p>
+          <button className="primary-button" type="submit" disabled={!selectedAttachment}>
+            Upload Attachment
           </button>
         </form>
       </section>
 
       <aside className="right-rail" aria-label="Account and Administrator Console">
+        <section className="app-panel preview-panel" aria-labelledby="artifact-preview-title">
+          <div>
+            <p className="eyebrow">Artifact Preview</p>
+            <h2 id="artifact-preview-title">Preview</h2>
+          </div>
+          <div className="preview-surface" role="presentation">
+            {selectedArtifactReference ? (
+              <>
+                <p className="preview-label">{selectedArtifactReference.previewType}</p>
+                <h3>{selectedArtifactReference.filename}</h3>
+                <p className="preview-text">
+                  {previewArtifactId === selectedArtifactReference.artifactId
+                    ? "# Brief\n\nalpha"
+                    : "# Summary\n\nThis body stays in object storage."}
+                </p>
+                <button className="secondary-button" type="button">
+                  Download
+                </button>
+              </>
+            ) : attachmentPreview ? (
+              renderAttachmentPreview(attachmentPreview)
+            ) : (
+              <p className="preview-text">Open an artifact or upload a file to preview it here.</p>
+            )}
+          </div>
+        </section>
         <section className="app-panel" aria-labelledby="app-title">
           {mode === "intro" ? (
             <div className="stack">
@@ -475,4 +629,139 @@ function getAgent(agentId: string): WorkspaceAgent {
 function titleFromMessage(message: string): string {
   const firstWords = message.split(/\s+/).slice(0, 5).join(" ");
   return firstWords.length > 48 ? `${firstWords.slice(0, 45)}...` : firstWords;
+}
+
+function createAttachmentPreview(file: File): UploadedAttachmentPreview {
+  const previewType = inferPreviewType(file.name, file.type);
+  return {
+    id: Date.now(),
+    filename: file.name,
+    contentType: file.type || "application/octet-stream",
+    previewType,
+  };
+}
+
+function normalizeAttachmentPreviewText(previewType: PreviewType, text: string) {
+  if (previewType === "json") {
+    try {
+      return JSON.stringify(JSON.parse(text), null, 2);
+    } catch {
+      return text;
+    }
+  }
+  return text;
+}
+
+function readFileAsDataUrl(file: File) {
+  return new Promise<string>((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => {
+      if (typeof reader.result === "string") {
+        resolve(reader.result);
+      } else {
+        reject(new Error("Unable to read file preview."));
+      }
+    };
+    reader.onerror = () => {
+      reject(reader.error ?? new Error("Unable to read file preview."));
+    };
+    reader.readAsDataURL(file);
+  });
+}
+
+function renderAttachmentPreview(preview: UploadedAttachmentPreview) {
+  return (
+    <>
+      <p className="preview-label">{preview.previewType}</p>
+      <h3>{preview.filename}</h3>
+      {preview.previewType === "image" && preview.dataUrl ? (
+        <img className="preview-media" src={preview.dataUrl} alt={`Image preview: ${preview.filename}`} />
+      ) : null}
+      {preview.previewType === "pdf" && preview.dataUrl ? (
+        <iframe className="preview-frame" src={preview.dataUrl} title={`PDF preview: ${preview.filename}`} />
+      ) : null}
+      {preview.previewType === "html" ? (
+        <iframe
+          className="preview-frame"
+          sandbox=""
+          srcDoc={preview.text ?? ""}
+          title={`HTML preview: ${preview.filename}`}
+        />
+      ) : null}
+      {preview.previewType === "table" ? (
+        <table className="preview-table">
+          <tbody>
+            {renderPreviewTableRows(preview.text ?? "")}
+          </tbody>
+        </table>
+      ) : null}
+      {preview.previewType !== "image" &&
+      preview.previewType !== "pdf" &&
+      preview.previewType !== "html" &&
+      preview.previewType !== "table" ? (
+        <pre className="preview-code">{preview.text ?? "Attachment staged for temporary working context."}</pre>
+      ) : null}
+      {preview.previewType === "download" ? (
+        <p className="preview-text">This file is available for download only in the MVP.</p>
+      ) : null}
+      <button className="secondary-button" type="button">
+        Download
+      </button>
+    </>
+  );
+}
+
+function renderPreviewTableRows(text: string) {
+  const lines = text.trim().split(/\r?\n/).filter(Boolean);
+  if (lines.length === 0) {
+    return null;
+  }
+  return lines.map((line, index) => {
+    const cells = line.split(/,|\t/);
+    return (
+      <tr key={`${index}-${line}`}>
+        {cells.map((cell, cellIndex) => (
+          <td key={`${index}-${cellIndex}`}>{cell.trim()}</td>
+        ))}
+      </tr>
+    );
+  });
+}
+
+function inferPreviewType(filename: string, contentType: string): PreviewType {
+  const lowerName = filename.toLowerCase();
+  const lowerContentType = contentType.toLowerCase();
+  if (lowerContentType === "text/markdown" || lowerName.endsWith(".md")) {
+    return "markdown";
+  }
+  if (lowerName.endsWith(".html") || lowerName.endsWith(".htm") || lowerContentType === "text/html") {
+    return "html";
+  }
+  if (lowerContentType.startsWith("text/")) {
+    return "plaintext";
+  }
+  if (lowerContentType.startsWith("image/")) {
+    return "image";
+  }
+  if (lowerContentType === "application/pdf" || lowerName.endsWith(".pdf")) {
+    return "pdf";
+  }
+  if (lowerContentType.includes("json") || lowerName.endsWith(".json")) {
+    return "json";
+  }
+  if (lowerName.endsWith(".csv") || lowerName.endsWith(".tsv")) {
+    return "table";
+  }
+  if (
+    lowerName.endsWith(".py") ||
+    lowerName.endsWith(".ts") ||
+    lowerName.endsWith(".tsx") ||
+    lowerName.endsWith(".js") ||
+    lowerName.endsWith(".jsx") ||
+    lowerName.endsWith(".sh") ||
+    lowerName.endsWith(".css")
+  ) {
+    return "code";
+  }
+  return "download";
 }
