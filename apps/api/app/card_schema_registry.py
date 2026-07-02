@@ -114,6 +114,9 @@ REGISTERED_CARD_SCHEMAS = {
     CardSchema.STATUS,
     CardSchema.FORM_REQUEST,
 }
+REGISTERED_CARD_SCHEMA_VALUES = tuple(
+    schema.value for schema in sorted(REGISTERED_CARD_SCHEMAS, key=lambda schema: schema.value)
+)
 
 DANGEROUS_CARD_KEYS = {
     "__html",

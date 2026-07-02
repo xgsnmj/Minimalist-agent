@@ -10,7 +10,7 @@ from apps.api.app.model_configurations import model_configuration_store
 from apps.api.app.run_attachments import run_attachment_store
 from apps.api.app.run_event_log import run_event_log_store
 from apps.api.app.search_providers import search_provider_store
-from apps.api.app.tool_gateway import agent_tool_gateway_store
+from apps.api.app.tool_gateway import ToolCapability, agent_tool_gateway_store
 
 
 def setup_function():
@@ -186,3 +186,53 @@ def test_disallowed_tool_invocation_is_rejected_and_audited_safely():
     assert "event: tool.call" in stream_response.text
     assert '"authorization"' not in stream_response.text
     assert '"status":"rejected"' in stream_response.text
+
+
+def test_registered_capability_adapter_owns_authorization_execution_and_provenance():
+    class EchoArtifactAdapter:
+        name = "artifact.echo"
+        capability = ToolCapability.ARTIFACT
+
+        def is_authorized(self, *, run, tool_name: str) -> bool:
+            return tool_name == self.name
+
+        def execute(self, *, run, safe_input: dict[str, object]) -> dict[str, object]:
+            return {
+                "summary": f"echoed {safe_input['filename']}",
+                "conversation_id": run.conversation_id,
+            }
+
+        def provenance(self, *, run) -> dict[str, str]:
+            return {
+                "gateway": "agent_tool_gateway",
+                "provider": "artifact-test-adapter",
+            }
+
+    client = TestClient(app)
+    user_token = approved_user_token(client)
+    _conversation_id, run_id = create_run(client, user_token)
+    agent_tool_gateway_store.register_adapter(EchoArtifactAdapter())
+
+    response = client.post(
+        f"/runs/{run_id}/tool-calls",
+        headers={"Authorization": f"Bearer {user_token}"},
+        json={
+            "tool_name": "artifact.echo",
+            "input": {
+                "filename": "report.md",
+                "token": "should-not-leak",
+            },
+        },
+    )
+
+    assert response.status_code == 201
+    assert response.json()["capability"] == "artifact"
+    assert response.json()["safe_input"] == {"filename": "report.md"}
+    assert response.json()["safe_output"] == {
+        "summary": "echoed report.md",
+        "conversation_id": 1,
+    }
+    assert response.json()["provenance"] == {
+        "gateway": "agent_tool_gateway",
+        "provider": "artifact-test-adapter",
+    }

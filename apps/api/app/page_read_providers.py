@@ -8,6 +8,8 @@ from urllib.parse import urlparse
 from fastapi import HTTPException, status
 from pydantic import BaseModel, Field, field_validator
 
+from apps.api.app.provider_configurations import ProviderConfigurationStore
+
 
 class PageReadProviderId(StrEnum):
     JINA_READER = "jina_reader"
@@ -107,60 +109,43 @@ class PageReadProviderStore:
                 enabled=True,
             )
         }
+        self._store = ProviderConfigurationStore(
+            configurations=self._configurations,
+            not_found_detail="Page Read Provider Configuration not found.",
+            disabled_detail="Page Read provider is disabled.",
+        )
 
     def list_configurations(self) -> list[PageReadProviderConfiguration]:
-        return sorted(self._configurations.values(), key=lambda configuration: configuration.id)
+        return self._store.list_configurations()
 
     def get(self, configuration_id: int) -> PageReadProviderConfiguration:
-        configuration = self._configurations.get(configuration_id)
-        if configuration is None:
-            raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND,
-                detail="Page Read Provider Configuration not found.",
-            )
-        return configuration
+        return self._store.get(configuration_id)
 
     def update(
         self,
         configuration_id: int,
         request: PageReadProviderUpdateRequest,
     ) -> PageReadProviderConfiguration:
-        configuration = self.get(configuration_id)
-        if request.provider_id is not None:
-            configuration.provider_id = request.provider_id
-        if request.name is not None:
-            configuration.name = request.name
-        if request.endpoint is not None:
-            configuration.endpoint = request.endpoint
-        if request.credential_reference is not None:
-            configuration.credential_reference = request.credential_reference
-        if request.timeout_seconds is not None:
-            configuration.timeout_seconds = request.timeout_seconds
-        if request.max_content_length is not None:
-            configuration.max_content_length = request.max_content_length
-        if request.allowed_domains is not None:
-            configuration.allowed_domains = request.allowed_domains
-        if request.enabled is not None:
-            configuration.enabled = request.enabled
-        return configuration
-
-    def get_active_configuration(self) -> PageReadProviderConfiguration:
-        for configuration in self.list_configurations():
-            if configuration.enabled:
-                return configuration
-        raise HTTPException(
-            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail="Page Read provider is disabled.",
+        return self._store.update(
+            configuration_id,
+            request,
+            fields=(
+                "provider_id",
+                "name",
+                "endpoint",
+                "credential_reference",
+                "timeout_seconds",
+                "max_content_length",
+                "allowed_domains",
+                "enabled",
+            ),
         )
 
+    def get_active_configuration(self) -> PageReadProviderConfiguration:
+        return self._store.get_active_configuration()
+
     def get_provenance_configuration(self) -> PageReadProviderConfiguration:
-        try:
-            return self.get_active_configuration()
-        except HTTPException:
-            configurations = self.list_configurations()
-            if configurations:
-                return configurations[0]
-            raise
+        return self._store.get_provenance_configuration()
 
     def read(self, url: str) -> PageReadExecution:
         if not url.strip():

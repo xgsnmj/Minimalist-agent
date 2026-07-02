@@ -25,6 +25,23 @@ scripts/dev-worker.sh
 scripts/dev-web.sh
 ```
 
+Or start the local development stack with environment loading and database migrations:
+
+```bash
+scripts/start-local.sh
+```
+
+To also start local Redis, MySQL, and MinIO containers first:
+
+```bash
+scripts/start-local.sh --infra
+```
+
+The startup script loads `.env.local` first, then `.env`, then `.env.example`.
+It runs `scripts/db-migrate.py`, which records applied SQL files from
+`infra/db/migrations/` in `schema_migrations`, applies only pending migrations,
+and checks the runtime tables for missing columns and indexes.
+
 Or start the local stack with Docker Compose:
 
 ```bash

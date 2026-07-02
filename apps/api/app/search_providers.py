@@ -7,6 +7,8 @@ from typing import Any
 from fastapi import HTTPException, status
 from pydantic import BaseModel, Field, field_validator
 
+from apps.api.app.provider_configurations import ProviderConfigurationStore
+
 
 class SearchProviderId(StrEnum):
     DOUBAO = "doubao"
@@ -119,58 +121,42 @@ class SearchProviderStore:
                 enabled=True,
             )
         }
+        self._store = ProviderConfigurationStore(
+            configurations=self._configurations,
+            not_found_detail="Search Provider Configuration not found.",
+            disabled_detail="Search provider is disabled.",
+        )
 
     def list_configurations(self) -> list[SearchProviderConfiguration]:
-        return sorted(self._configurations.values(), key=lambda configuration: configuration.id)
+        return self._store.list_configurations()
 
     def get(self, configuration_id: int) -> SearchProviderConfiguration:
-        configuration = self._configurations.get(configuration_id)
-        if configuration is None:
-            raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND,
-                detail="Search Provider Configuration not found.",
-            )
-        return configuration
+        return self._store.get(configuration_id)
 
     def update(
         self,
         configuration_id: int,
         request: SearchProviderUpdateRequest,
     ) -> SearchProviderConfiguration:
-        configuration = self.get(configuration_id)
-        if request.provider_id is not None:
-            configuration.provider_id = request.provider_id
-        if request.name is not None:
-            configuration.name = request.name
-        if request.endpoint is not None:
-            configuration.endpoint = request.endpoint
-        if request.credential_reference is not None:
-            configuration.credential_reference = request.credential_reference
-        if request.timeout_seconds is not None:
-            configuration.timeout_seconds = request.timeout_seconds
-        if request.max_results is not None:
-            configuration.max_results = request.max_results
-        if request.enabled is not None:
-            configuration.enabled = request.enabled
-        return configuration
-
-    def get_active_configuration(self) -> SearchProviderConfiguration:
-        for configuration in self.list_configurations():
-            if configuration.enabled:
-                return configuration
-        raise HTTPException(
-            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail="Search provider is disabled.",
+        return self._store.update(
+            configuration_id,
+            request,
+            fields=(
+                "provider_id",
+                "name",
+                "endpoint",
+                "credential_reference",
+                "timeout_seconds",
+                "max_results",
+                "enabled",
+            ),
         )
 
+    def get_active_configuration(self) -> SearchProviderConfiguration:
+        return self._store.get_active_configuration()
+
     def get_provenance_configuration(self) -> SearchProviderConfiguration:
-        try:
-            return self.get_active_configuration()
-        except HTTPException:
-            configurations = self.list_configurations()
-            if configurations:
-                return configurations[0]
-            raise
+        return self._store.get_provenance_configuration()
 
     def search(self, query: str) -> SearchExecution:
         if not query.strip():

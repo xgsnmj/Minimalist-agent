@@ -190,3 +190,52 @@ def test_mock_runtime_failure_marks_background_agent_run_failed():
         "worker_enqueued",
         "failed",
     ]
+
+
+def test_runtime_configuration_failure_releases_conversation_and_streams_error_event():
+    client = TestClient(app)
+    token = approved_user_token(client)
+    conversation = client.post(
+        "/conversations",
+        headers={"Authorization": f"Bearer {token}"},
+        json={
+            "title": "Missing model",
+            "agent_id": 1,
+            "selected_model_configuration_id": 404,
+            "initial_message": "Start this conversation.",
+        },
+    ).json()
+    run = client.post(
+        f"/conversations/{conversation['id']}/runs",
+        headers={"Authorization": f"Bearer {token}"},
+        json={"message": "Use the selected model."},
+    ).json()
+
+    worker_response = process_agent_run.run(run["id"])
+    run_response = client.get(
+        f"/runs/{run['id']}",
+        headers={"Authorization": f"Bearer {token}"},
+    )
+    conversation_response = client.get(
+        f"/conversations/{conversation['id']}",
+        headers={"Authorization": f"Bearer {token}"},
+    )
+    events_response = client.get(
+        f"/runs/{run['id']}/events",
+        headers={
+            "Authorization": f"Bearer {token}",
+            "Accept": "text/event-stream",
+            "Last-Event-ID": "2",
+        },
+    )
+
+    assert worker_response == {"id": run["id"], "status": "failed"}
+    assert run_response.json()["status"] == "failed"
+    assert run_response.json()["status_events"] == [
+        "queued",
+        "worker_enqueued",
+        "failed",
+    ]
+    assert conversation_response.json()["status"] == "idle"
+    assert "event: run.error" in events_response.text
+    assert '"status":"failed"' in events_response.text

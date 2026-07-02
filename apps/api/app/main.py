@@ -9,6 +9,7 @@ from apps.api.app.agent_runs import (
     agent_run_store,
     to_agent_run_response,
 )
+from apps.api.app.agent_run_lifecycle import agent_run_lifecycle
 from apps.api.app.agents import (
     AgentMutationRequest,
     AgentRunPreparationResponse,
@@ -679,7 +680,7 @@ def create_card(
         card=card,
     )
     if isinstance(run_id, int):
-        agent_run_store.append_card_event_for_user(
+        agent_run_lifecycle.append_card_event_for_user(
             owner_user_id=account.id,
             run_id=run_id,
             conversation_id=conversation.id,
@@ -702,11 +703,11 @@ def start_agent_run(
         owner_user_id=account.id,
         conversation_id=conversation_id,
     )
-    run = agent_run_store.create_for_conversation(
+    run = agent_run_lifecycle.queue_for_conversation(
         conversation=conversation,
         request=request,
     )
-    agent_run_store.mark_worker_enqueued(run.id)
+    agent_run_lifecycle.mark_worker_enqueued(run.id)
     return to_agent_run_response(run)
 
 
@@ -772,7 +773,7 @@ def stream_agent_run_events(
     return StreamingResponse(
         content=iter(
             [
-                agent_run_store.format_sse_events(
+                agent_run_lifecycle.format_sse_events(
                     owner_user_id=account.id,
                     run_id=run_id,
                     after_sequence=after_sequence,
@@ -789,7 +790,7 @@ def cancel_agent_run(
     account: LocalAccount = Depends(current_user),
 ) -> AgentRunResponse:
     return to_agent_run_response(
-        agent_run_store.cancel_for_user(
+        agent_run_lifecycle.cancel_for_user(
             owner_user_id=account.id,
             run_id=run_id,
         )

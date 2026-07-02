@@ -8,9 +8,18 @@ from pydantic import BaseModel, Field
 from sqlalchemy import JSON, Integer, String, select
 from sqlalchemy.orm import Mapped, mapped_column
 
-from apps.api.app.artifacts import ArtifactPreviewType, preview_type_for_content_type
 from apps.api.app.database import Base, SessionLocal, engine
+from apps.api.app.object_backed_files import (
+    FilePreviewType,
+    object_backed_file_from_record,
+    preview_payload_for_file,
+    preview_type_for_content_type,
+    store_object_for_record,
+)
 from apps.api.app.object_storage import object_storage
+
+
+ArtifactPreviewType = FilePreviewType
 
 
 class RunAttachmentCreateRequest(BaseModel):
@@ -94,16 +103,13 @@ class RunAttachmentStore:
             )
             session.add(record)
             session.flush()
-            object_key = self._build_object_key(record.id, conversation_id, filename)
-            stored = object_storage.put_bytes(
+            store_object_for_record(
+                storage=object_storage,
+                record=record,
+                collection="attachments",
                 bucket="minimalist-agent",
-                object_key=object_key,
                 content=body,
-                content_type=content_type,
             )
-            record.size = stored.size
-            record.bucket = stored.bucket
-            record.object_key = stored.object_key
             session.commit()
             session.refresh(record)
             return self._attachment_from_record(record)
@@ -129,13 +135,17 @@ class RunAttachmentStore:
 
     def preview(self, attachment_id: int) -> RunAttachmentPreviewResponse:
         attachment = self.get(attachment_id)
-        body = object_storage.get_bytes(bucket=attachment.bucket, object_key=attachment.object_key)
+        payload = preview_payload_for_file(
+            storage=object_storage,
+            file=object_backed_file_from_record(attachment),
+            preview_type=attachment.preview_type,
+        )
         return RunAttachmentPreviewResponse(
             attachment_id=attachment.id,
             filename=attachment.filename,
             content_type=attachment.content_type,
             preview_type=attachment.preview_type,
-            text=body.decode("utf-8", errors="replace"),
+            text=payload.text,
         )
 
     def reset_for_tests(self) -> None:
@@ -158,9 +168,6 @@ class RunAttachmentStore:
             preview_type=ArtifactPreviewType(record.preview_type),
             metadata=dict(record.record_metadata or {}),
         )
-
-    def _build_object_key(self, attachment_id: int, conversation_id: int, filename: str) -> str:
-        return f"attachments/{conversation_id}/{attachment_id}/{filename}"
 
 
 run_attachment_store = RunAttachmentStore()

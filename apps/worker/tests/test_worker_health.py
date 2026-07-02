@@ -1,3 +1,4 @@
+from apps.api.app.agent_run_lifecycle import agent_run_lifecycle
 from apps.api.app.agent_runs import AgentRunCreateRequest, agent_run_store
 from apps.api.app.agents import agent_store
 from apps.api.app.conversations import ConversationCreateRequest, conversation_store
@@ -23,7 +24,7 @@ def test_process_agent_run_task_completes_mock_runtime_run():
         ),
         agent=agent_store.get(1),
     )
-    run = agent_run_store.create_for_conversation(
+    run = agent_run_lifecycle.queue_for_conversation(
         conversation=conversation,
         request=AgentRunCreateRequest(message="Summarize the task."),
     )

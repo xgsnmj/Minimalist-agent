@@ -13,6 +13,17 @@ from apps.api.app.sandbox_runtime import sandbox_runtime_store
 from apps.api.app.tool_gateway import agent_tool_gateway_store
 
 
+class FailingObjectStorage:
+    def put_bytes(self, **_kwargs):
+        raise RuntimeError("minio write failed")
+
+    def get_bytes(self, **_kwargs):
+        raise RuntimeError("minio read failed")
+
+    def reset(self) -> None:
+        return None
+
+
 def setup_function():
     local_account_store.reset()
     agent_store.reset()
@@ -245,3 +256,54 @@ def test_sandbox_capability_does_not_expose_host_docker_boundary():
     assert list_response.json()[0]["error_summary"] == (
         "Sandbox Capability uses OpenAI Agents SDK sandbox, not host Docker."
     )
+
+
+def test_sandbox_storage_failure_is_recorded_as_safe_tool_failure(monkeypatch):
+    from apps.api.app import artifacts
+
+    monkeypatch.setattr(artifacts, "object_storage", FailingObjectStorage())
+    client = TestClient(app, raise_server_exceptions=False)
+    admin_token = administrator_token(client)
+    user_token = approved_user_token(client)
+    _conversation_id, run_id = create_sandbox_run(
+        client,
+        admin_token,
+        user_token,
+        sandbox_enabled=True,
+    )
+
+    response = client.post(
+        f"/runs/{run_id}/tool-calls",
+        headers={"Authorization": f"Bearer {user_token}"},
+        json={
+            "tool_name": "sandbox.exec",
+            "input": {
+                "command": "python write_artifact.py",
+                "artifact_filename": "storage-failure.md",
+                "artifact_body": "# Storage failure",
+                "api_key": "do-not-leak",
+            },
+        },
+    )
+    list_response = client.get(
+        f"/runs/{run_id}/tool-calls",
+        headers={"Authorization": f"Bearer {user_token}"},
+    )
+    stream_response = client.get(
+        f"/runs/{run_id}/events",
+        headers={
+            "Authorization": f"Bearer {user_token}",
+            "Accept": "text/event-stream",
+        },
+    )
+
+    assert response.status_code == 503
+    assert response.json()["detail"] == "Tool execution failed."
+    assert list_response.json()[0]["status"] == "failed"
+    assert list_response.json()[0]["error_summary"] == "Tool execution failed."
+    assert list_response.json()[0]["provenance"] == {
+        "gateway": "agent_tool_gateway",
+        "provider": "openai_agents_sdk_sandbox",
+    }
+    assert '"api_key"' not in stream_response.text
+    assert '"status":"failed"' in stream_response.text

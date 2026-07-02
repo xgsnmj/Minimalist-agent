@@ -1,8 +1,6 @@
 from __future__ import annotations
 
-import base64
 from dataclasses import dataclass, field
-from enum import StrEnum
 from typing import Any
 
 from fastapi import HTTPException, status
@@ -11,19 +9,18 @@ from sqlalchemy import JSON, Integer, String, select
 from sqlalchemy.orm import Mapped, mapped_column
 
 from apps.api.app.database import Base, SessionLocal, engine
+from apps.api.app.object_backed_files import (
+    FilePreviewType,
+    object_backed_file_from_record,
+    preview_payload_for_file,
+    preview_type_for_content_type,
+    read_object_bytes,
+    store_object_for_record,
+)
 from apps.api.app.object_storage import object_storage
 
 
-class ArtifactPreviewType(StrEnum):
-    MARKDOWN = "markdown"
-    PLAINTEXT = "plaintext"
-    IMAGE = "image"
-    PDF = "pdf"
-    CODE = "code"
-    TABLE = "table"
-    JSON = "json"
-    HTML = "html"
-    DOWNLOAD = "download"
+ArtifactPreviewType = FilePreviewType
 
 
 class ArtifactMessageReference(BaseModel):
@@ -131,16 +128,13 @@ class ArtifactStore:
             )
             session.add(record)
             session.flush()
-            object_key = self._build_object_key(record.id, conversation_id, filename)
-            stored = object_storage.put_bytes(
+            store_object_for_record(
+                storage=object_storage,
+                record=record,
+                collection="artifacts",
                 bucket="minimalist-agent",
-                object_key=object_key,
                 content=content,
-                content_type=content_type,
             )
-            record.size = stored.size
-            record.bucket = stored.bucket
-            record.object_key = stored.object_key
             session.commit()
             session.refresh(record)
             return self._artifact_from_record(record)
@@ -166,7 +160,11 @@ class ArtifactStore:
 
     def preview(self, artifact_id: int) -> ArtifactPreviewResponse:
         artifact = self.get(artifact_id)
-        body = object_storage.get_bytes(bucket=artifact.bucket, object_key=artifact.object_key)
+        payload = preview_payload_for_file(
+            storage=object_storage,
+            file=object_backed_file_from_record(artifact),
+            preview_type=artifact.preview_type,
+        )
         download_url = f"/artifacts/{artifact.id}/download"
 
         if artifact.preview_type in {
@@ -183,7 +181,7 @@ class ArtifactStore:
                 content_type=artifact.content_type,
                 preview_type=artifact.preview_type,
                 download_url=download_url,
-                text=body.decode("utf-8", errors="replace"),
+                text=payload.text,
             )
 
         if artifact.preview_type in {ArtifactPreviewType.IMAGE, ArtifactPreviewType.PDF}:
@@ -193,10 +191,7 @@ class ArtifactStore:
                 content_type=artifact.content_type,
                 preview_type=artifact.preview_type,
                 download_url=download_url,
-                data_url=(
-                    f"data:{artifact.content_type};base64,"
-                    f"{base64.b64encode(body).decode('ascii')}"
-                ),
+                data_url=payload.data_url,
             )
 
         return ArtifactPreviewResponse(
@@ -209,9 +204,9 @@ class ArtifactStore:
 
     def download_bytes(self, artifact_id: int) -> tuple[Artifact, bytes]:
         artifact = self.get(artifact_id)
-        return artifact, object_storage.get_bytes(
-            bucket=artifact.bucket,
-            object_key=artifact.object_key,
+        return artifact, read_object_bytes(
+            storage=object_storage,
+            file=object_backed_file_from_record(artifact),
         )
 
     def reset_for_tests(self) -> None:
@@ -235,33 +230,8 @@ class ArtifactStore:
             metadata=dict(record.record_metadata or {}),
         )
 
-    def _build_object_key(self, artifact_id: int, conversation_id: int, filename: str) -> str:
-        return f"artifacts/{conversation_id}/{artifact_id}/{filename}"
-
 
 artifact_store = ArtifactStore()
-
-
-def preview_type_for_content_type(content_type: str, filename: str) -> ArtifactPreviewType:
-    normalized_content_type = content_type.lower()
-    normalized_filename = filename.lower()
-    if normalized_content_type == "text/markdown" or normalized_filename.endswith((".md", ".markdown")):
-        return ArtifactPreviewType.MARKDOWN
-    if normalized_content_type in {"text/html", "application/xhtml+xml"} or normalized_filename.endswith((".html", ".htm")):
-        return ArtifactPreviewType.HTML
-    if normalized_content_type in {"text/csv", "application/csv", "text/tab-separated-values"} or normalized_filename.endswith((".csv", ".tsv")):
-        return ArtifactPreviewType.TABLE
-    if normalized_content_type in {"application/json", "text/json"} or normalized_filename.endswith(".json"):
-        return ArtifactPreviewType.JSON
-    if normalized_filename.endswith((".py", ".ts", ".tsx", ".js", ".jsx", ".sh", ".css", ".yaml", ".yml", ".toml", ".jsonl")):
-        return ArtifactPreviewType.CODE
-    if normalized_content_type.startswith("image/"):
-        return ArtifactPreviewType.IMAGE
-    if normalized_content_type == "application/pdf" or normalized_filename.endswith(".pdf"):
-        return ArtifactPreviewType.PDF
-    if normalized_content_type.startswith("text/"):
-        return ArtifactPreviewType.PLAINTEXT
-    return ArtifactPreviewType.DOWNLOAD
 
 
 def to_artifact_reference(artifact: Artifact) -> ArtifactMessageReference:

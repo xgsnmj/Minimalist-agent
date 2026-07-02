@@ -11,9 +11,9 @@ from agents.tracing.traces import Trace
 from agents.usage import Usage
 from openai.types.responses import ResponseOutputMessage, ResponseOutputText
 
+from apps.api.app.agent_run_lifecycle import agent_run_lifecycle
 from apps.api.app.agent_runs import AgentRunStatus, agent_run_store
 from apps.api.app.agents import agent_store
-from apps.api.app.conversations import ConversationStatus, conversation_store
 from apps.api.app.model_configurations import model_configuration_store
 
 
@@ -125,21 +125,22 @@ class RuntimeStore:
             return self._runtime_result_from_run(run, full_trace=_trace_fallback(run))
 
         if "failure" in run.user_message.lower():
-            run.status = AgentRunStatus.FAILED
-            run.error = "Mock Agent Runtime failed."
-            run.events.append("failed")
-            agent_run_store._append_event(
-                run,
-                event_type="run.error",
-                data={"status": run.status.value, "message": run.error},
-            )
-            conversation_store.set_status(
-                conversation_id=run.conversation_id,
-                conversation_status=ConversationStatus.IDLE,
+            agent_run_lifecycle.apply_runtime_failure(
+                run_id=run.id,
+                message="Mock Agent Runtime failed.",
             )
             return self._runtime_result_from_run(run, full_trace=_trace_fallback(run))
 
-        model_configuration = _resolve_model_configuration(run.capability_snapshot.selected_model_configuration_id)
+        try:
+            model_configuration = _resolve_model_configuration(
+                run.capability_snapshot.selected_model_configuration_id
+            )
+        except Exception as exc:
+            agent_run_lifecycle.apply_runtime_failure(
+                run_id=run.id,
+                message=_error_message(exc),
+            )
+            return self._runtime_result_from_run(run, full_trace=_trace_fallback(run))
         agent = agent_store.get(run.capability_snapshot.agent_id)
         provider_id = model_configuration.provider_id if model_configuration else "openai"
         model_name = model_configuration.model_name if model_configuration else "gpt-5"
@@ -147,13 +148,7 @@ class RuntimeStore:
         trace_processor = _CapturedTraceProcessor()
         set_trace_processors([trace_processor])
 
-        run.status = AgentRunStatus.RUNNING
-        run.events.append("running")
-        agent_run_store._append_event(
-            run,
-            event_type="run.status",
-            data={"status": run.status.value},
-        )
+        agent_run_lifecycle.begin_runtime_execution(run.id)
 
         runtime_agent = Agent(
             name=agent.name,
@@ -177,59 +172,31 @@ class RuntimeStore:
         try:
             result = Runner.run_sync(runtime_agent, run.user_message, run_config=run_config)
         except Exception as exc:
-            run.status = AgentRunStatus.FAILED
-            run.error = str(exc)
-            run.events.append("failed")
-            agent_run_store._append_event(
-                run,
-                event_type="run.error",
-                data={"status": run.status.value, "message": run.error},
+            agent_run_lifecycle.apply_runtime_failure(
+                run_id=run.id,
+                message=_error_message(exc),
             )
             set_trace_processors([])
             flush_traces()
             return self._runtime_result_from_run(run, full_trace=_trace_fallback(run))
 
         assistant_message = _extract_final_output(result.final_output)
-        run.assistant_message = assistant_message
-        run.process_summaries = [
+        process_summaries = [
             f"Reviewed the Agent Instruction snapshot for conversation {run.conversation_id}.",
             f"Used model {model_name} from {provider_id}.",
         ]
-        for summary in run.process_summaries:
-            agent_run_store._append_event(
-                run,
-                event_type="process.summary",
-                data={"summary": summary},
-            )
-        if assistant_message:
-            conversation_store.append_message(
-                conversation_id=run.conversation_id,
-                role="assistant",
-                content=assistant_message,
-            )
-            agent_run_store._append_event(
-                run,
-                event_type="message.completed",
-                data={"role": "assistant", "content": assistant_message},
-            )
-        run.status = AgentRunStatus.COMPLETED
-        run.events.append("completed")
-        agent_run_store._append_event(
-            run,
-            event_type="run.status",
-            data={"status": run.status.value},
-        )
-        conversation_store.set_status(
-            conversation_id=run.conversation_id,
-            conversation_status=ConversationStatus.IDLE,
-        )
         trace = trace_processor.trace or _trace_fallback(run)
         trace.setdefault("workflow_name", "Agent workflow")
         trace.setdefault("metadata", {})
         trace["run_id"] = run.id
         trace["agent_id"] = agent.id
         trace["model_name"] = model_name
-        run.full_trace = trace
+        agent_run_lifecycle.apply_runtime_success(
+            run_id=run.id,
+            assistant_message=assistant_message,
+            process_summaries=process_summaries,
+            full_trace=trace,
+        )
         set_trace_processors([])
         flush_traces()
         return self._runtime_result_from_run(run, model_name=model_name, full_trace=trace)
@@ -259,7 +226,12 @@ def _resolve_model_configuration(configuration_id: int | None):
 
 
 def _run_model_name(run) -> str:
-    model_configuration = _resolve_model_configuration(run.capability_snapshot.selected_model_configuration_id)
+    try:
+        model_configuration = _resolve_model_configuration(
+            run.capability_snapshot.selected_model_configuration_id
+        )
+    except Exception:
+        return "gpt-5"
     return model_configuration.model_name if model_configuration else "gpt-5"
 
 
@@ -272,6 +244,11 @@ def _trace_fallback(run) -> dict[str, object]:
             "agent_id": run.capability_snapshot.agent_id,
         },
     }
+
+
+def _error_message(exc: Exception) -> str:
+    detail = getattr(exc, "detail", None)
+    return str(detail or exc)
 
 
 def _last_user_text(input_value: str | list[Any]) -> str:

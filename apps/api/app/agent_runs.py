@@ -6,12 +6,7 @@ from fastapi import HTTPException, status
 from pydantic import BaseModel, Field
 
 from apps.api.app.agents import Agent, AgentCapabilityPolicyResponse
-from apps.api.app.conversations import (
-    AgentConversation,
-    ConversationStatus,
-    conversation_store,
-)
-from apps.api.app.run_event_log import RunEvent, run_event_log_store
+from apps.api.app.run_event_log import RunEvent
 
 
 class AgentRunStatus(StrEnum):
@@ -92,53 +87,26 @@ class AgentRunStore:
         self._next_id = 1
         self._runs: dict[int, AgentRun] = {}
 
-    def create_for_conversation(
+    def create(
         self,
         *,
-        conversation: AgentConversation,
-        request: AgentRunCreateRequest,
+        conversation_id: int,
+        owner_user_id: int,
+        capability_snapshot: RunCapabilitySnapshot,
+        user_message: str,
+        events: list[str],
     ) -> AgentRun:
-        self._raise_if_conversation_has_active_run(conversation.id)
-        conversation_store.append_message(
-            conversation_id=conversation.id,
-            role="user",
-            content=request.message,
-        )
-        conversation_store.set_status(
-            conversation_id=conversation.id,
-            conversation_status=ConversationStatus.RUNNING,
-        )
         run = AgentRun(
             id=self._next_id,
-            conversation_id=conversation.id,
-            owner_user_id=conversation.owner_user_id,
+            conversation_id=conversation_id,
+            owner_user_id=owner_user_id,
             status=AgentRunStatus.QUEUED,
-            capability_snapshot=capability_snapshot_for_agent(
-                agent=conversation.agent,
-                selected_model_configuration_id=conversation.selected_model_configuration_id,
-            ),
-            user_message=request.message,
-            events=["queued"],
+            capability_snapshot=capability_snapshot,
+            user_message=user_message,
+            events=list(events),
         )
         self._next_id += 1
         self._runs[run.id] = run
-        self._append_event(
-            run,
-            event_type="run.status",
-            data={"status": AgentRunStatus.QUEUED.value},
-        )
-        return run
-
-    def mark_worker_enqueued(self, run_id: int) -> AgentRun:
-        run = self._run_or_404(run_id)
-        run.worker_enqueued = True
-        if "worker_enqueued" not in run.events:
-            run.events.append("worker_enqueued")
-        self._append_event(
-            run,
-            event_type="run.status",
-            data={"status": AgentRunStatus.QUEUED.value, "worker_enqueued": True},
-        )
         return run
 
     def get_for_user(self, *, owner_user_id: int, run_id: int) -> AgentRun:
@@ -156,159 +124,6 @@ class AgentRunStore:
     def list_all(self) -> list[AgentRun]:
         return sorted(self._runs.values(), key=lambda run: run.id)
 
-    def cancel_for_user(self, *, owner_user_id: int, run_id: int) -> AgentRun:
-        run = self.get_for_user(owner_user_id=owner_user_id, run_id=run_id)
-        if run.status in ACTIVE_RUN_STATUSES:
-            run.status = AgentRunStatus.CANCELLED
-            run.events.append("cancelled")
-            self._append_event(
-                run,
-                event_type="run.status",
-                data={"status": AgentRunStatus.CANCELLED.value},
-            )
-            conversation_store.set_status(
-                conversation_id=run.conversation_id,
-                conversation_status=ConversationStatus.IDLE,
-            )
-        return run
-
-    def process_with_mock_runtime(self, run_id: int) -> AgentRun:
-        run = self._run_or_404(run_id)
-        if run.status == AgentRunStatus.CANCELLED:
-            return run
-        if run.status not in ACTIVE_RUN_STATUSES:
-            return run
-
-        run.status = AgentRunStatus.RUNNING
-        run.events.append("running")
-        self._append_event(
-            run,
-            event_type="run.status",
-            data={"status": AgentRunStatus.RUNNING.value},
-        )
-        if "failure" in run.user_message.lower():
-            run.status = AgentRunStatus.FAILED
-            run.error = "Mock Agent Runtime failed."
-            run.events.append("failed")
-            self._append_event(
-                run,
-                event_type="run.error",
-                data={
-                    "status": AgentRunStatus.FAILED.value,
-                    "message": run.error,
-                },
-            )
-            conversation_store.set_status(
-                conversation_id=run.conversation_id,
-                conversation_status=ConversationStatus.IDLE,
-            )
-            return run
-
-        run.assistant_message = f"Mock Agent Runtime response for: {run.user_message}"
-        run.process_summaries = [
-            f"Reviewed the Agent Instruction snapshot for conversation {run.conversation_id}.",
-            "Used the selected model configuration and completed the request without tool calls.",
-        ]
-        conversation_store.append_message(
-            conversation_id=run.conversation_id,
-            role="assistant",
-            content=run.assistant_message,
-        )
-        for summary in run.process_summaries:
-            self._append_event(
-                run,
-                event_type="process.summary",
-                data={"summary": summary},
-            )
-        self._append_event(
-            run,
-            event_type="message.completed",
-            data={
-                "role": "assistant",
-                "content": run.assistant_message,
-            },
-        )
-        run.status = AgentRunStatus.COMPLETED
-        run.events.append("completed")
-        self._append_event(
-            run,
-            event_type="run.status",
-            data={"status": AgentRunStatus.COMPLETED.value},
-        )
-        conversation_store.set_status(
-            conversation_id=run.conversation_id,
-            conversation_status=ConversationStatus.IDLE,
-        )
-        return run
-
-    def list_events_after_for_user(
-        self,
-        *,
-        owner_user_id: int,
-        run_id: int,
-        after_sequence: int,
-    ) -> list[RunEvent]:
-        self.get_for_user(owner_user_id=owner_user_id, run_id=run_id)
-        return run_event_log_store.list_after(run_id=run_id, after_sequence=after_sequence)
-
-    def format_sse_events(
-        self,
-        *,
-        owner_user_id: int,
-        run_id: int,
-        after_sequence: int,
-    ) -> str:
-        return "".join(
-            format_sse_event(event)
-            for event in self.list_events_after_for_user(
-                owner_user_id=owner_user_id,
-                run_id=run_id,
-                after_sequence=after_sequence,
-            )
-        )
-
-    def append_card_event_for_user(
-        self,
-        *,
-        owner_user_id: int,
-        run_id: int,
-        conversation_id: int,
-        card: dict[str, object],
-    ) -> RunEvent:
-        run = self.get_for_user(owner_user_id=owner_user_id, run_id=run_id)
-        if run.conversation_id != conversation_id:
-            raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND,
-                detail="Agent Run not found.",
-            )
-        return self._append_event(
-            run,
-            event_type="card.rendered",
-            data={"card": card},
-        )
-
-    def append_tool_call_event_for_user(
-        self,
-        *,
-        owner_user_id: int,
-        run_id: int,
-        tool_call: dict[str, object],
-    ) -> RunEvent:
-        run = self.get_for_user(owner_user_id=owner_user_id, run_id=run_id)
-        return self._append_event(
-            run,
-            event_type="tool.call",
-            data={"tool_call": tool_call},
-        )
-
-    def _raise_if_conversation_has_active_run(self, conversation_id: int) -> None:
-        for run in self._runs.values():
-            if run.conversation_id == conversation_id and run.status in ACTIVE_RUN_STATUSES:
-                raise HTTPException(
-                    status_code=status.HTTP_409_CONFLICT,
-                    detail="Agent Conversation already has an active run.",
-                )
-
     def _run_or_404(self, run_id: int) -> AgentRun:
         run = self._runs.get(run_id)
         if run is None:
@@ -317,21 +132,6 @@ class AgentRunStore:
                 detail="Agent Run not found.",
             )
         return run
-
-    def _append_event(
-        self,
-        run: AgentRun,
-        *,
-        event_type: str,
-        data: dict[str, object],
-    ) -> RunEvent:
-        event = run_event_log_store.append(
-            run_id=run.id,
-            event_type=event_type,
-            data=data,
-        )
-        run.event_log.append(event)
-        return event
 
 
 agent_run_store = AgentRunStore()
