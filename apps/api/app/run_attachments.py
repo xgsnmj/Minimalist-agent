@@ -5,10 +5,10 @@ from typing import Any
 
 from fastapi import HTTPException, status
 from pydantic import BaseModel, Field
-from sqlalchemy import JSON, Integer, String, select
+from sqlalchemy import Integer, String, select
 from sqlalchemy.orm import Mapped, mapped_column
 
-from apps.api.app.database import Base, SessionLocal, engine
+from apps.api.app.database import Base, JsonPayload, SessionLocal
 from apps.api.app.object_backed_files import (
     FilePreviewType,
     object_backed_file_from_record,
@@ -59,7 +59,7 @@ class RunAttachmentRecord(Base):
     preview_type: Mapped[str] = mapped_column(String(32), nullable=False)
     record_metadata: Mapped[dict[str, Any]] = mapped_column(
         "metadata",
-        JSON,
+        JsonPayload,
         nullable=False,
         default=dict,
     )
@@ -171,5 +171,3 @@ class RunAttachmentStore:
 
 
 run_attachment_store = RunAttachmentStore()
-
-Base.metadata.create_all(bind=engine)

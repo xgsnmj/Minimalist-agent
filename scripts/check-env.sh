@@ -4,7 +4,7 @@ set -euo pipefail
 required_vars=(
   APP_PROFILE
   REDIS_URL
-  MYSQL_DSN
+  DATABASE_URL
   MINIO_ENDPOINT
   MINIO_ACCESS_KEY
   MINIO_SECRET_KEY

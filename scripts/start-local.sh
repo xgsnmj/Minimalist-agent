@@ -14,7 +14,7 @@ Usage: scripts/start-local.sh [options]
 
 Options:
   --env-file PATH   Load a specific environment file.
-  --infra           Start local Redis/MySQL/MinIO with Docker Compose first.
+  --infra           Start local Redis/PostgreSQL/MinIO with Docker Compose first.
   --skip-install    Do not auto-install missing pnpm/uv dependencies.
   --skip-migrate    Start services without running database migrations.
   -h, --help        Show this help.
@@ -85,20 +85,51 @@ require_cmd() {
   fi
 }
 
+wait_for_database() {
+  local timeout="${DATABASE_READY_TIMEOUT:-60}"
+  (cd "$repo_root" && uv run python - "$timeout" <<'PY'
+import os
+import sys
+import time
+
+from sqlalchemy import create_engine, text
+
+
+timeout = float(sys.argv[1])
+deadline = time.monotonic() + timeout
+database_url = os.environ["DATABASE_URL"]
+last_error = None
+
+while time.monotonic() < deadline:
+    try:
+        engine = create_engine(database_url, pool_pre_ping=True)
+        with engine.connect() as connection:
+            connection.execute(text("SELECT 1"))
+        print("PostgreSQL connection is ready.")
+        break
+    except Exception as exc:  # noqa: BLE001
+        last_error = exc
+        time.sleep(1)
+else:
+    raise SystemExit(f"Timed out waiting for PostgreSQL. Last error: {last_error}")
+PY
+)
+}
+
 require_cmd uv
 require_cmd pnpm
 
 if (( start_infra == 1 )); then
   require_cmd docker
   echo "Starting local middleware with Docker Compose..."
-  docker compose -f "$repo_root/infra/docker-compose.yml" up -d redis mysql minio
+  docker compose -f "$repo_root/infra/docker-compose.yml" up -d redis postgres minio
 fi
 
 bash "$repo_root/scripts/check-env.sh"
 
 placeholder_vars=(
   REDIS_URL
-  MYSQL_DSN
+  DATABASE_URL
   MINIO_ENDPOINT
   MINIO_ACCESS_KEY
   MINIO_SECRET_KEY
@@ -112,11 +143,11 @@ for var_name in "${placeholder_vars[@]}"; do
     placeholder_errors+=("$var_name")
     continue
   fi
-  if [[ "$value" == *"REDIS_HOST"* || "$value" == *"MYSQL_USER"* || "$value" == *"MYSQL_PASSWORD"* ]]; then
+  if [[ "$value" == *"REDIS_HOST"* || "$value" == *"POSTGRES_USER"* || "$value" == *"POSTGRES_PASSWORD"* ]]; then
     placeholder_errors+=("$var_name")
     continue
   fi
-  if [[ "$value" == *"MYSQL_HOST"* || "$value" == *"MYSQL_DATABASE"* || "$value" == *"MINIO_HOST"* ]]; then
+  if [[ "$value" == *"POSTGRES_HOST"* || "$value" == *"POSTGRES_DATABASE"* || "$value" == *"MINIO_HOST"* ]]; then
     placeholder_errors+=("$var_name")
     continue
   fi
@@ -144,7 +175,8 @@ fi
 
 if (( skip_migrate == 0 )); then
   echo "Checking and migrating database schema..."
-  (cd "$repo_root" && uv run python scripts/db-migrate.py --env-file "$env_file")
+  wait_for_database
+  (cd "$repo_root" && uv run alembic upgrade head)
 fi
 
 cleanup() {

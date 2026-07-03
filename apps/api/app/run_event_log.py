@@ -3,10 +3,10 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any
 
-from sqlalchemy import JSON, Integer, String, select
+from sqlalchemy import Integer, String, select
 from sqlalchemy.orm import Mapped, mapped_column
 
-from apps.api.app.database import Base, SessionLocal, engine
+from apps.api.app.database import Base, JsonPayload, SessionLocal
 
 
 class RunEventRecord(Base):
@@ -16,7 +16,7 @@ class RunEventRecord(Base):
     run_id: Mapped[int] = mapped_column(Integer, index=True, nullable=False)
     sequence: Mapped[int] = mapped_column(Integer, index=True, nullable=False)
     event_type: Mapped[str] = mapped_column(String(80), nullable=False)
-    data: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False)
+    data: Mapped[dict[str, Any]] = mapped_column(JsonPayload, nullable=False)
 
 
 @dataclass
@@ -80,5 +80,3 @@ class RunEventLogStore:
 
 
 run_event_log_store = RunEventLogStore()
-
-Base.metadata.create_all(bind=engine)

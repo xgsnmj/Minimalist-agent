@@ -25,7 +25,7 @@ Minimalist Agent is a single-workspace agent platform for WorkBuddy-like agent c
 - Frontend: React, TypeScript, Vite, pnpm workspace, TanStack Query, Zustand.
 - UI foundation: Tailwind CSS with Radix primitives or shadcn-style owned components, not Ant Design as the primary UI system.
 - Backend: Python 3.12, FastAPI, Pydantic v2, SQLAlchemy 2, Alembic, uv.
-- Middleware: MySQL, Redis, MinIO, Celery.
+- Middleware: PostgreSQL, Redis, MinIO, Celery.
 - Agent runtime: OpenAI Agents SDK for Python.
 - Agent event protocol: AG-UI over SSE with persisted run event recovery.
 
@@ -110,7 +110,7 @@ Requirements:
 - SSE emits the sequence as the event ID.
 - Frontend can reconnect with last seen sequence.
 - Redis Streams may support hot fanout.
-- MySQL remains the durable source for run state, messages, tool calls, artifacts, and event recovery.
+- PostgreSQL remains the durable source for run state, messages, tool calls, artifacts, and event recovery.
 - Stream Resume must handle page refresh, navigation away and back, and temporary network disconnect.
 
 ## Process Visibility
@@ -218,7 +218,7 @@ Run Attachments:
 
 - Uploaded by users as temporary context.
 - Not a knowledge base or project material library.
-- Stored in MinIO with metadata in MySQL.
+- Stored in MinIO with metadata in PostgreSQL.
 - Read by Agents only through Agent Tool Gateway.
 - Initial supported inputs: images, PDF, plain text, Markdown, CSV, JSON, and code files.
 
@@ -226,7 +226,7 @@ Artifacts:
 
 - Durable outputs produced by Agent Runs.
 - Artifact bodies live in MinIO.
-- MySQL stores metadata, owner conversation, run, type, filename, size, preview type, and timestamps.
+- PostgreSQL stores metadata, owner conversation, run, type, filename, size, preview type, and timestamps.
 - Conversation Messages store Artifact References, not large embedded bodies.
 
 Artifact Preview supports:
