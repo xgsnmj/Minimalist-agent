@@ -15,28 +15,32 @@ describe("Administrator Page Read Provider surface", () => {
     window.history.pushState({}, "", "/admin/page-read-provider");
     render(<App />);
 
-    expect(screen.getByRole("heading", { level: 1, name: "Page Read Provider" })).toBeInTheDocument();
-    expect(screen.getByText("Page Read reads full text from a known URL; Search only finds candidate URLs and summaries.")).toBeInTheDocument();
+    expect(screen.getByRole("heading", { level: 1, name: "页面读取提供方" })).toBeInTheDocument();
+    expect(screen.getByText("页面读取能力读取已知 URL 的全文；搜索能力只查找候选 URL 和摘要。")).toBeInTheDocument();
 
-    const status = screen.getByRole("region", { name: "Jina Reader Provider status" });
-    expect(within(status).getByText("enabled")).toBeInTheDocument();
-    expect(within(status).getByText("secret/jina-reader")).toBeInTheDocument();
-    expect(within(status).getByText("40k characters")).toBeInTheDocument();
+    const status = screen.getByRole("region", { name: "页面读取提供方状态" });
+    expect(await within(status).findByText("已启用")).toBeInTheDocument();
+    expect(within(status).getByText("secret:jina-reader")).toBeInTheDocument();
+    expect(within(status).getByText("4000 字符")).toBeInTheDocument();
 
-    const domainPolicy = screen.getByRole("region", { name: "Domain policy editor" });
-    expect(within(domainPolicy).getByLabelText("Allow domains")).toHaveDisplayValue("docs.example.com\nhelp.example.com");
-    expect(within(domainPolicy).getByLabelText("Deny domains")).toHaveDisplayValue("internal.example.com");
-    expect(within(domainPolicy).getByRole("button", { name: "Save policy draft" })).toBeInTheDocument();
+    const domainPolicy = screen.getByRole("region", { name: "域名策略编辑器" });
+    expect(within(domainPolicy).getByLabelText("允许域名")).toHaveDisplayValue("docs.example.com\nhelp.example.com");
+    expect(within(domainPolicy).getByRole("button", { name: "保存策略" })).toBeInTheDocument();
 
-    const runtimeSettings = screen.getByRole("region", { name: "Page Read runtime settings" });
-    expect(within(runtimeSettings).getByRole("combobox", { name: "Extract mode" })).toHaveTextContent("Readable text");
-    expect(within(runtimeSettings).getByLabelText("Timeout")).toHaveDisplayValue("15s");
-    expect(within(runtimeSettings).getByLabelText("Content length")).toHaveDisplayValue("40k characters");
+    const runtimeSettings = screen.getByRole("region", { name: "页面读取运行设置" });
+    expect(within(runtimeSettings).getByRole("combobox", { name: "抽取模式" })).toHaveTextContent("可读文本");
+    expect(within(runtimeSettings).getByLabelText("超时")).toHaveDisplayValue("20s");
+    expect(within(runtimeSettings).getByLabelText("内容长度")).toHaveDisplayValue("4000 字符");
 
-    await user.click(screen.getByRole("tab", { name: "Policy violation" }));
+    await user.clear(within(runtimeSettings).getByLabelText("内容长度"));
+    await user.type(within(runtimeSettings).getByLabelText("内容长度"), "5000 字符");
+    await user.click(within(domainPolicy).getByRole("button", { name: "保存策略" }));
+    expect(await within(domainPolicy).findByText("页面读取提供方配置已保存。")).toBeInTheDocument();
 
-    const healthCheck = screen.getByRole("tabpanel", { name: "Policy violation" });
-    expect(within(healthCheck).getByText("Known URL blocked by domain policy")).toBeInTheDocument();
-    expect(within(healthCheck).getByText("No Search query was issued by Page Read.")).toBeInTheDocument();
+    await user.click(screen.getByRole("tab", { name: "策略违规" }));
+
+    const healthCheck = screen.getByRole("tabpanel", { name: "策略违规" });
+    expect(within(healthCheck).getByText("已知 URL 被域名策略拦截")).toBeInTheDocument();
+    expect(within(healthCheck).getByText("页面读取未发起搜索查询。")).toBeInTheDocument();
   });
 });

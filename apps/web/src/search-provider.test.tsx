@@ -15,28 +15,34 @@ describe("Administrator Search Provider surface", () => {
     window.history.pushState({}, "", "/admin/search-provider");
     render(<App />);
 
-    expect(screen.getByRole("heading", { level: 1, name: "Search Provider" })).toBeInTheDocument();
-    expect(screen.getByText("Search Capability finds candidate URLs and summaries; Page Read reads known URLs.")).toBeInTheDocument();
+    expect(screen.getByRole("heading", { level: 1, name: "搜索提供方" })).toBeInTheDocument();
+    expect(screen.getByText("搜索能力负责查找候选 URL 和摘要；页面读取能力只读取已知 URL。")).toBeInTheDocument();
 
-    const status = screen.getByRole("region", { name: "Doubao Search Provider status" });
-    expect(within(status).getByText("enabled")).toBeInTheDocument();
-    expect(within(status).getByText("secret/doubao-search")).toBeInTheDocument();
-    expect(within(status).getByText("8 candidate results")).toBeInTheDocument();
+    const status = screen.getByRole("region", { name: "搜索提供方状态" });
+    expect(await within(status).findByText("已启用")).toBeInTheDocument();
+    expect(within(status).getByText("secret:doubao-search")).toBeInTheDocument();
+    expect(within(status).getByText("5 个候选结果")).toBeInTheDocument();
+    expect(within(status).getByText("20s")).toBeInTheDocument();
 
-    const editPanel = screen.getByRole("region", { name: "Search Provider edit panel" });
-    expect(within(editPanel).getByLabelText("Endpoint")).toHaveDisplayValue("Doubao Search Provider");
-    expect(within(editPanel).getByRole("combobox", { name: "Result limit" })).toHaveTextContent("8 candidate results");
-    expect(within(editPanel).getByText("This does not change Page Read content-length limits.")).toBeInTheDocument();
+    const editPanel = screen.getByRole("region", { name: "搜索提供方编辑面板" });
+    expect(within(editPanel).getByLabelText("端点")).toHaveDisplayValue("https://api.doubao.example/search");
+    expect(within(editPanel).getByRole("combobox", { name: "结果上限" })).toHaveTextContent("5 个候选结果");
+    expect(within(editPanel).getByText("此设置不会改变页面读取的内容长度限制。")).toBeInTheDocument();
 
-    const boundary = screen.getByRole("region", { name: "Capability boundary" });
-    expect(within(boundary).getByText("Search: candidate URLs, titles, and summaries.")).toBeInTheDocument();
-    expect(within(boundary).getByText("Page Read: full text from a known URL.")).toBeInTheDocument();
-    expect(within(boundary).getByText("Do not collapse either capability into browser mode.")).toBeInTheDocument();
+    const boundary = screen.getByRole("region", { name: "能力边界" });
+    expect(within(boundary).getByText("搜索：候选 URL、标题和摘要。")).toBeInTheDocument();
+    expect(within(boundary).getByText("页面读取：从已知 URL 提取全文。")).toBeInTheDocument();
+    expect(within(boundary).getByText("不要把任一能力合并进浏览器模式。")).toBeInTheDocument();
 
-    await user.click(screen.getByRole("tab", { name: "Provider error" }));
+    await user.click(screen.getByRole("tab", { name: "提供方错误" }));
 
-    const runtimePreview = screen.getByRole("tabpanel", { name: "Provider error" });
-    expect(within(runtimePreview).getByText("Search Provider unavailable")).toBeInTheDocument();
-    expect(within(runtimePreview).getByText("Credential and internal endpoint details stay Administrator-only.")).toBeInTheDocument();
+    const runtimePreview = screen.getByRole("tabpanel", { name: "提供方错误" });
+    expect(within(runtimePreview).getByText("搜索提供方不可用")).toBeInTheDocument();
+    expect(within(runtimePreview).getByText("凭据和内部端点详情仅管理员可见。")).toBeInTheDocument();
+
+    await user.clear(within(editPanel).getByLabelText("超时"));
+    await user.type(within(editPanel).getByLabelText("超时"), "30s");
+    await user.click(within(editPanel).getByRole("button", { name: "保存配置" }));
+    expect(await within(editPanel).findByText("搜索提供方配置已保存。")).toBeInTheDocument();
   });
 });

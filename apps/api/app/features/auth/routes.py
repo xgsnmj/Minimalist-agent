@@ -32,6 +32,16 @@ def get_current_user(account: LocalAccount = Depends(current_user)) -> UserRespo
     return to_user_response(account)
 
 
+@router.get("/admin/accounts", response_model=list[UserResponse])
+def list_local_accounts(
+    _administrator: LocalAccount = Depends(current_administrator),
+) -> list[UserResponse]:
+    return [
+        to_user_response(account)
+        for account in local_account_store.list_accounts()
+    ]
+
+
 @router.post("/admin/accounts/{account_id}/approve", response_model=UserResponse)
 def approve_local_account(
     account_id: int,
@@ -54,4 +64,3 @@ def disable_local_account(
     _administrator: LocalAccount = Depends(current_administrator),
 ) -> UserResponse:
     return to_user_response(local_account_store.disable(account_id))
-

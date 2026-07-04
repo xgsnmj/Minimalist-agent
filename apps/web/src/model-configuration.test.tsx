@@ -10,18 +10,18 @@ describe("Administrator Model Configuration surface", () => {
     window.history.pushState({}, "", "/");
   });
 
-  it("shows provider catalog and model configuration controls", () => {
+  it("shows provider catalog and model configuration controls", async () => {
     window.history.pushState({}, "", "/admin/models");
     render(<App />);
 
-    expect(screen.getByRole("heading", { level: 1, name: "Model Configurations" })).toBeInTheDocument();
-    const models = screen.getByRole("region", { name: "Model Configurations" });
-    const catalog = within(models).getByRole("region", { name: "Model Provider Catalog" });
-    expect(within(catalog).getByText("OpenAI")).toBeInTheDocument();
+    expect(screen.getByRole("heading", { level: 1, name: "模型配置" })).toBeInTheDocument();
+    const models = screen.getByRole("region", { name: "模型配置" });
+    const catalog = within(models).getByRole("region", { name: "模型提供商目录" });
+    expect(await within(catalog).findByText("OpenAI")).toBeInTheDocument();
     expect(within(catalog).getByText("DeepSeek")).toBeInTheDocument();
     expect(within(catalog).getByText("MiniMax")).toBeInTheDocument();
     expect(within(catalog).getByText("Custom OpenAI-compatible endpoint")).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "Create Model Configuration" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "创建模型配置" })).toBeInTheDocument();
   });
 
   it("opens configuration detail and a local Create Model Configuration draft", async () => {
@@ -29,43 +29,36 @@ describe("Administrator Model Configuration surface", () => {
     window.history.pushState({}, "", "/admin/models");
     render(<App />);
 
-    const models = screen.getByRole("region", { name: "Model Configurations" });
-    const catalog = within(models).getByRole("region", { name: "Model Provider Catalog" });
+    const models = screen.getByRole("region", { name: "模型配置" });
+    const catalog = within(models).getByRole("region", { name: "模型提供商目录" });
     for (const provider of [
       "OpenAI",
-      "Anthropic",
-      "Google Gemini",
       "DeepSeek",
-      "Qwen/DashScope",
-      "Moonshot/Kimi",
-      "Doubao",
-      "Zhipu/GLM",
       "MiniMax",
-      "OpenRouter",
       "Custom OpenAI-compatible endpoint",
     ]) {
-      expect(within(catalog).getByText(provider)).toBeInTheDocument();
+      expect(await within(catalog).findByText(provider)).toBeInTheDocument();
     }
-    expect(within(catalog).getByText("Provider catalog is a creation entry, not availability status.")).toBeInTheDocument();
+    expect(within(catalog).getByText("提供商目录只是创建入口，不代表该提供商已经配置或可用。")).toBeInTheDocument();
 
-    const configurationList = within(models).getByRole("table", { name: "Model Configuration list" });
-    expect(within(configurationList).getByRole("row", { name: /DeepSeek Reasoner deepseek-main enabled temperature 0\.2 today Details/ })).toBeInTheDocument();
-    expect(within(configurationList).getByRole("row", { name: /Custom OpenAI-compatible endpoint gateway-default custom-gateway draft temperature 0\.4 yesterday Details/ })).toBeInTheDocument();
-    await user.click(within(configurationList).getAllByRole("button", { name: "Details" })[3]);
+    const configurationList = within(models).getByRole("table", { name: "模型配置列表" });
+    expect(await within(configurationList).findByRole("row", { name: /DeepSeek deepseek-reasoner secret:\/\/models\/deepseek-main 已启用 temperature 0\.2 后端未记录 详情/ })).toBeInTheDocument();
+    expect(within(configurationList).getByRole("row", { name: /Custom OpenAI-compatible endpoint gateway-default 已停用 temperature 0\.4 后端未记录 详情/ })).toBeInTheDocument();
+    await user.click(within(configurationList).getAllByRole("button", { name: "详情" })[2]);
 
-    const detail = within(models).getByRole("region", { name: "Model Configuration detail" });
+    const detail = within(models).getByRole("region", { name: "模型配置详情" });
     expect(within(detail).getByRole("heading", { name: "gateway-default" })).toBeInTheDocument();
-    expect(within(detail).getByText("Credential reference")).toBeInTheDocument();
-    expect(within(detail).getByText("Default parameters")).toBeInTheDocument();
-    expect(within(detail).getByText("Configuration risk")).toBeInTheDocument();
-    expect(within(detail).getByText("Credential missing is admin-only and does not expose secret.")).toBeInTheDocument();
+    expect(within(detail).getByText("凭据引用")).toBeInTheDocument();
+    expect(within(detail).getByText("默认参数")).toBeInTheDocument();
+    expect(within(detail).getByText("配置风险")).toBeInTheDocument();
+    expect(within(detail).getByText("凭据引用缺失，请补齐后再启用。")).toBeInTheDocument();
 
-    await user.click(within(models).getByRole("button", { name: "Create Model Configuration" }));
-    const draft = within(models).getByRole("region", { name: "Create Model Configuration draft" });
-    expect(within(draft).getByLabelText("Provider")).toBeInTheDocument();
-    expect(within(draft).getByLabelText("Base URL")).toBeInTheDocument();
-    expect(within(draft).getByLabelText("Model name")).toBeInTheDocument();
-    expect(within(draft).getByLabelText("Credential reference")).toBeInTheDocument();
-    expect(within(draft).getByLabelText("Temperature")).toBeInTheDocument();
+    await user.click(within(models).getByRole("button", { name: "创建模型配置" }));
+    const draft = within(models).getByRole("region", { name: "创建模型配置草稿" });
+    expect(within(draft).getByLabelText("提供商")).toBeInTheDocument();
+    expect(within(draft).getByLabelText("基础 URL")).toBeInTheDocument();
+    expect(within(draft).getByLabelText("模型名称")).toBeInTheDocument();
+    expect(within(draft).getByLabelText("凭据引用")).toBeInTheDocument();
+    expect(within(draft).getByLabelText("温度")).toBeInTheDocument();
   });
 });

@@ -28,16 +28,16 @@ describe("planned page routes", () => {
   it("renders the Administrator Console pages from route paths", () => {
     window.history.pushState({}, "", "/admin");
     render(<App />);
-    expect(screen.getByRole("heading", { name: "Governance Overview" })).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "治理总览" })).toBeInTheDocument();
 
     cleanup();
     window.history.pushState({}, "", "/admin/run-audit");
     render(<App />);
-    expect(screen.getByRole("heading", { level: 1, name: "Run Audit" })).toBeInTheDocument();
+    expect(screen.getByRole("heading", { level: 1, name: "运行审计" })).toBeInTheDocument();
 
     cleanup();
     window.history.pushState({}, "", "/admin/full-trace");
     render(<App />);
-    expect(screen.getByRole("heading", { level: 1, name: "Full Trace Detail" })).toBeInTheDocument();
+    expect(screen.getByRole("heading", { level: 1, name: "完整追踪详情" })).toBeInTheDocument();
   });
 });

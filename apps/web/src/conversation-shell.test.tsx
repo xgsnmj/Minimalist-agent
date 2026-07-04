@@ -1,4 +1,5 @@
 import { cleanup, render, screen, within } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, it } from "vitest";
 
 import { App } from "./app/app";
@@ -14,11 +15,18 @@ describe("Agent Conversation workspace", () => {
     expect(screen.getByRole("button", { name: "新建对话" })).toBeInTheDocument();
     expect(screen.getByRole("searchbox", { name: "搜索对话" })).toBeInTheDocument();
     expect(screen.getByRole("heading", { name: "市场调研" })).toBeInTheDocument();
-    expect(within(screen.getByLabelText("最近对话")).getByText("默认智能体")).toBeInTheDocument();
-    expect(within(screen.getByLabelText("运行配置")).getByRole("combobox", { name: "智能体选择" })).toBeInTheDocument();
-    expect(within(screen.getByLabelText("运行配置")).getByRole("combobox", { name: "模型选择" })).toBeInTheDocument();
+    expect(
+      within(screen.getByLabelText("最近对话")).getByRole("button", { name: /市场调研.*默认智能体.*空闲/ }),
+    ).toBeInTheDocument();
+    expect(screen.queryByText("新任务")).not.toBeInTheDocument();
+    expect(screen.queryByText("新办公任务")).not.toBeInTheDocument();
+    expect(screen.queryByLabelText("运行配置")).not.toBeInTheDocument();
+    expect(screen.queryByRole("combobox", { name: "智能体选择" })).not.toBeInTheDocument();
+    expect(
+      within(screen.getByLabelText("对话输入区")).getByRole("combobox", { name: "模型选择" }),
+    ).toBeInTheDocument();
     expect(screen.getByRole("region", { name: "CopilotKit 对话面板" })).toBeInTheDocument();
-    expect(screen.getByPlaceholderText("向当前智能体发送任务")).toBeInTheDocument();
+    expect(screen.getByPlaceholderText("向当前智能体发送消息")).toBeInTheDocument();
     expect(screen.getByText("当前会话由 CopilotKit 渲染。运行与权限由后端治理。")).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "重命名" })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "删除" })).toBeInTheDocument();
@@ -29,7 +37,7 @@ describe("Agent Conversation workspace", () => {
 
     expect(screen.getByLabelText("智能体会话")).toBeInTheDocument();
     expect(screen.getByLabelText("对话消息")).toBeInTheDocument();
-    expect(screen.getByLabelText("运行配置")).toBeInTheDocument();
+    expect(screen.getByLabelText("对话输入区")).toBeInTheDocument();
     expect(screen.getByRole("region", { name: "CopilotKit 对话面板" })).toBeInTheDocument();
     expect(screen.getByLabelText("检查面板")).toBeInTheDocument();
     expect(screen.getByRole("link", { name: "运行审计" })).toBeInTheDocument();
@@ -37,6 +45,348 @@ describe("Agent Conversation workspace", () => {
     expect(screen.getByLabelText("搜索对话")).toBeInTheDocument();
     expect(screen.getByLabelText("运行附件")).toBeInTheDocument();
     expect(screen.getByLabelText("制品预览")).toBeInTheDocument();
+    expect(within(screen.getByLabelText("检查面板")).getByRole("tab", { name: "运行" })).toBeInTheDocument();
+    expect(within(screen.getByLabelText("检查面板")).getByRole("tab", { name: "工具" })).toBeInTheDocument();
+  });
+
+  it("opens generated artifact cards in the preview rail while keeping the conversation active", async () => {
+    const user = userEvent.setup();
+    render(<App />);
+
+    await user.click(screen.getByRole("button", { name: "关闭预览" }));
+    expect(screen.getByText("打开制品或在对话中添加文件后在此预览。")).toBeInTheDocument();
+
+    await user.click(within(screen.getByLabelText("对话消息")).getAllByRole("button", { name: "打开制品 brief.md" })[0]);
+
+    const artifactPreview = screen.getByLabelText("制品预览");
+    expect(within(artifactPreview).getByRole("heading", { name: "brief.md" })).toBeInTheDocument();
+    expect(within(artifactPreview).getByRole("heading", { name: "简报" })).toBeInTheDocument();
+    expect(within(artifactPreview).getByText("alpha")).toBeInTheDocument();
+    expect(within(artifactPreview).getByText("生成时间：刚刚")).toBeInTheDocument();
+    const artifactToolbar = within(artifactPreview).getByRole("toolbar", { name: "制品操作" });
+    expect(within(artifactToolbar).getByRole("button", { name: "复制 brief.md" })).toBeInTheDocument();
+    expect(within(artifactToolbar).getByRole("link", { name: "下载 brief.md" })).toBeInTheDocument();
+    expect(within(artifactToolbar).getByRole("link", { name: "打开独立预览 brief.md" })).toBeInTheDocument();
+    expect(screen.getByRole("region", { name: "CopilotKit 对话面板" })).toBeInTheDocument();
+    expect(screen.getByLabelText("对话输入区")).toBeInTheDocument();
+  });
+
+  it("switches artifact preview between readable content and metadata", async () => {
+    const user = userEvent.setup();
+    render(<App />);
+
+    const artifactPreview = screen.getByLabelText("制品预览");
+
+    await user.click(within(artifactPreview).getByRole("button", { name: "元数据" }));
+
+    expect(within(artifactPreview).getByText("文件名")).toBeInTheDocument();
+    expect(within(artifactPreview).getByText("brief.md")).toBeInTheDocument();
+    expect(within(artifactPreview).getByText("类型")).toBeInTheDocument();
+    expect(within(artifactPreview).getByText("markdown")).toBeInTheDocument();
+    expect(within(artifactPreview).getByText("大小")).toBeInTheDocument();
+    expect(within(artifactPreview).getByText("15 B")).toBeInTheDocument();
+    expect(within(artifactPreview).getByText("创建时间")).toBeInTheDocument();
+    expect(within(artifactPreview).getByText("刚刚")).toBeInTheDocument();
+    expect(within(artifactPreview).getByText("来源对话")).toBeInTheDocument();
+    expect(within(artifactPreview).getByText("市场调研")).toBeInTheDocument();
+
+    await user.click(within(artifactPreview).getByRole("button", { name: "预览" }));
+
+    expect(within(artifactPreview).getByRole("heading", { name: "简报" })).toBeInTheDocument();
+    expect(within(artifactPreview).getByText("alpha")).toBeInTheDocument();
+  });
+
+  it("renders JSON artifacts as table-like previews", async () => {
+    const user = userEvent.setup();
+    render(<App />);
+
+    await user.click(within(screen.getByLabelText("对话消息")).getByRole("button", { name: "打开制品 metrics.json" }));
+
+    const artifactPreview = screen.getByLabelText("制品预览");
+    expect(within(artifactPreview).getByRole("heading", { name: "metrics.json" })).toBeInTheDocument();
+    const jsonTable = within(artifactPreview).getByRole("table", { name: "JSON 制品预览" });
+    expect(within(jsonTable).getByText("coverage")).toBeInTheDocument();
+    expect(within(jsonTable).getByText("82")).toBeInTheDocument();
+    expect(within(jsonTable).getByText("latency_ms")).toBeInTheDocument();
+    expect(within(jsonTable).getByText("184")).toBeInTheDocument();
+    expect(artifactPreview).not.toHaveTextContent("{");
+  });
+
+  it("renders code artifacts in a dedicated code preview", async () => {
+    const user = userEvent.setup();
+    render(<App />);
+
+    await user.click(within(screen.getByLabelText("对话消息")).getByRole("button", { name: "打开制品 analysis.ts" }));
+
+    const artifactPreview = screen.getByLabelText("制品预览");
+    expect(within(artifactPreview).getByRole("heading", { name: "analysis.ts" })).toBeInTheDocument();
+    const codePreview = within(artifactPreview).getByRole("region", { name: "代码制品预览" });
+    expect(codePreview).toHaveTextContent("export function summarize");
+    expect(codePreview).toHaveTextContent("return items.length");
+  });
+
+  it("renders HTML artifacts in a sandboxed preview frame", async () => {
+    const user = userEvent.setup();
+    render(<App />);
+
+    await user.click(within(screen.getByLabelText("对话消息")).getByRole("button", { name: "打开制品 demo.html" }));
+
+    const artifactPreview = screen.getByLabelText("制品预览");
+    expect(within(artifactPreview).getByRole("heading", { name: "demo.html" })).toBeInTheDocument();
+    const htmlPreview = within(artifactPreview).getByTitle("HTML 制品预览");
+    expect(htmlPreview).toHaveAttribute("sandbox");
+    expect(htmlPreview).toHaveAttribute("srcDoc", expect.stringContaining("Agent Workspace Demo"));
+  });
+
+  it("renders plain text artifacts in a readable text preview", async () => {
+    const user = userEvent.setup();
+    render(<App />);
+
+    await user.click(within(screen.getByLabelText("对话消息")).getByRole("button", { name: "打开制品 notes.txt" }));
+
+    const artifactPreview = screen.getByLabelText("制品预览");
+    expect(within(artifactPreview).getByRole("heading", { name: "notes.txt" })).toBeInTheDocument();
+    const textPreview = within(artifactPreview).getByRole("region", { name: "纯文本制品预览" });
+    expect(textPreview).toHaveTextContent("调研笔记");
+    expect(textPreview).toHaveTextContent("保留给下一轮追问的上下文。");
+  });
+
+  it("renders image artifacts as inline media previews", async () => {
+    const user = userEvent.setup();
+    render(<App />);
+
+    await user.click(within(screen.getByLabelText("对话消息")).getByRole("button", { name: "打开制品 diagram.png" }));
+
+    const artifactPreview = screen.getByLabelText("制品预览");
+    expect(within(artifactPreview).getByRole("heading", { name: "diagram.png" })).toBeInTheDocument();
+    const imagePreview = within(artifactPreview).getByRole("img", { name: "图像制品预览：diagram.png" });
+    expect(imagePreview).toHaveAttribute("src", expect.stringContaining("data:image/png;base64,"));
+  });
+
+  it("renders PDF artifacts in an inline document preview frame", async () => {
+    const user = userEvent.setup();
+    render(<App />);
+
+    await user.click(within(screen.getByLabelText("对话消息")).getByRole("button", { name: "打开制品 report.pdf" }));
+
+    const artifactPreview = screen.getByLabelText("制品预览");
+    expect(within(artifactPreview).getByRole("heading", { name: "report.pdf" })).toBeInTheDocument();
+    const pdfPreview = within(artifactPreview).getByTitle("PDF 制品预览：report.pdf");
+    expect(pdfPreview).toHaveAttribute("src", expect.stringContaining("data:application/pdf;base64,"));
+  });
+
+  it("collapses and restores the inspector without leaving the conversation", async () => {
+    const user = userEvent.setup();
+    render(<App />);
+
+    await user.click(screen.getByRole("button", { name: "收起检查面板" }));
+
+    expect(screen.queryByLabelText("检查面板")).not.toBeInTheDocument();
+    expect(screen.getByLabelText("对话消息")).toBeInTheDocument();
+    expect(screen.getByLabelText("对话输入区")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "展开检查面板" })).toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: "展开检查面板" }));
+
+    expect(screen.getByLabelText("检查面板")).toBeInTheDocument();
+    expect(within(screen.getByLabelText("制品预览")).getByRole("heading", { name: "brief.md" })).toBeInTheDocument();
+  });
+
+  it("shows uploaded run attachments as removable composer context chips", async () => {
+    const user = userEvent.setup();
+    render(<App />);
+
+    await user.upload(
+      within(screen.getByLabelText("对话输入区")).getByLabelText("添加上下文"),
+      new File(["# notes"], "notes.md", { type: "text/markdown" }),
+    );
+
+    const composer = screen.getByLabelText("对话输入区");
+    const attachmentList = await within(composer).findByLabelText("已添加上下文附件");
+    expect(within(attachmentList).getByText("notes.md")).toBeInTheDocument();
+    expect(within(attachmentList).getByText("markdown")).toBeInTheDocument();
+    expect(
+      within(attachmentList).getByRole("button", { name: "移除附件 notes.md" }),
+    ).toBeInTheDocument();
+
+    await user.click(within(screen.getByLabelText("检查面板")).getByRole("tab", { name: "运行" }));
+    expect(within(screen.getByLabelText("运行上下文")).getByText("notes.md")).toBeInTheDocument();
+
+    await user.click(within(attachmentList).getByRole("button", { name: "移除附件 notes.md" }));
+
+    expect(within(composer).queryByLabelText("已添加上下文附件")).not.toBeInTheDocument();
+    expect(within(screen.getByLabelText("运行上下文")).getByText("无")).toBeInTheDocument();
+  });
+
+  it("opens a command palette for quick creation and recent artifacts", async () => {
+    const user = userEvent.setup();
+    render(<App />);
+
+    await user.click(screen.getByRole("button", { name: "搜索对话、运行或制品 ⌘ K" }));
+
+    const commandPalette = screen.getByRole("dialog", { name: "命令面板" });
+    expect(within(commandPalette).getByRole("searchbox", { name: "命令面板搜索" })).toBeInTheDocument();
+    expect(within(commandPalette).getByText("快捷创建")).toBeInTheDocument();
+    expect(within(commandPalette).getByText("最近对话")).toBeInTheDocument();
+    expect(within(commandPalette).getByText("最近制品")).toBeInTheDocument();
+
+    await user.click(within(commandPalette).getByRole("button", { name: "新建对话" }));
+    expect(screen.getByRole("heading", { name: "新对话" })).toBeInTheDocument();
+
+    await user.keyboard("{Control>}k{/Control}");
+    const reopenedPalette = screen.getByRole("dialog", { name: "命令面板" });
+    await user.click(within(reopenedPalette).getByRole("button", { name: "打开制品 brief.md" }));
+
+    expect(screen.getByRole("heading", { name: "市场调研" })).toBeInTheDocument();
+    expect(within(screen.getByLabelText("制品预览")).getByRole("heading", { name: "brief.md" })).toBeInTheDocument();
+  });
+
+  it("opens recent runs from the command palette", async () => {
+    const user = userEvent.setup();
+    render(<App />);
+
+    await user.click(screen.getByRole("button", { name: "搜索对话、运行或制品 ⌘ K" }));
+
+    const commandPalette = screen.getByRole("dialog", { name: "命令面板" });
+    expect(within(commandPalette).getByText("最近运行")).toBeInTheDocument();
+
+    await user.click(within(commandPalette).getByRole("button", { name: "打开运行 Run 1" }));
+
+    expect(screen.getByRole("heading", { name: "市场调研" })).toBeInTheDocument();
+    expect(within(screen.getByLabelText("检查面板")).getByRole("tab", { name: "运行", selected: true })).toBeInTheDocument();
     expect(screen.getByLabelText("运行上下文")).toBeInTheDocument();
+  });
+
+  it("surfaces running conversations with an enabled stop action and matching run context", async () => {
+    const user = userEvent.setup();
+    render(<App />);
+
+    await user.click(within(screen.getByLabelText("最近对话")).getByRole("button", { name: /竞品分析.*运行中/ }));
+
+    expect(screen.getByRole("heading", { name: "竞品分析" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "停止运行" })).toBeEnabled();
+    expect(within(screen.getByLabelText("最近对话")).getByText("运行中")).toBeInTheDocument();
+
+    await user.click(within(screen.getByLabelText("检查面板")).getByRole("tab", { name: "运行" }));
+
+    const runPanel = screen.getByLabelText("运行上下文");
+    expect(within(runPanel).getByText("Run")).toBeInTheDocument();
+    expect(within(runPanel).getByText("2")).toBeInTheDocument();
+    expect(within(runPanel).getByText("默认智能体 · OpenAI / GPT-5")).toBeInTheDocument();
+  });
+
+  it("surfaces failed conversations with recovery guidance in the run context", async () => {
+    const user = userEvent.setup();
+    render(<App />);
+
+    await user.click(within(screen.getByLabelText("最近对话")).getByRole("button", { name: /行业报告.*失败/ }));
+
+    expect(screen.getByRole("heading", { name: "行业报告" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "停止运行" })).toBeDisabled();
+    expect(screen.getByText("运行：失败")).toBeInTheDocument();
+
+    await user.click(within(screen.getByLabelText("检查面板")).getByRole("tab", { name: "运行" }));
+
+    const runPanel = screen.getByLabelText("运行上下文");
+    expect(within(runPanel).getByText("运行状态")).toBeInTheDocument();
+    expect(within(runPanel).getByText("失败")).toBeInTheDocument();
+    expect(
+      within(runPanel).getByText("模型网关超时，运行未完成。可重新运行或调整输入。"),
+    ).toBeInTheDocument();
+    expect(within(runPanel).getByRole("button", { name: "重新运行" })).toBeEnabled();
+  });
+
+  it("surfaces completed conversations with completion time and artifact shortcut", async () => {
+    const user = userEvent.setup();
+    render(<App />);
+
+    await user.click(within(screen.getByLabelText("最近对话")).getByRole("button", { name: /品牌简报.*已完成/ }));
+
+    expect(screen.getByRole("heading", { name: "品牌简报", level: 2 })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "停止运行" })).toBeDisabled();
+    expect(screen.getByText("运行：已完成")).toBeInTheDocument();
+
+    await user.click(within(screen.getByLabelText("检查面板")).getByRole("tab", { name: "运行" }));
+
+    const runPanel = screen.getByLabelText("运行上下文");
+    expect(within(runPanel).getByText("完成时间")).toBeInTheDocument();
+    expect(within(runPanel).getByText("12 分钟前")).toBeInTheDocument();
+
+    await user.click(within(runPanel).getByRole("button", { name: "打开完成制品 brand-brief.md" }));
+
+    expect(within(screen.getByLabelText("检查面板")).getByRole("tab", { name: "制品", selected: true })).toBeInTheDocument();
+    expect(within(screen.getByLabelText("制品预览")).getByRole("heading", { name: "brand-brief.md" })).toBeInTheDocument();
+    expect(within(screen.getByLabelText("制品预览")).getByRole("heading", { name: "品牌简报" })).toBeInTheDocument();
+  });
+
+  it("surfaces cancelled conversations while preserving existing outputs", async () => {
+    const user = userEvent.setup();
+    render(<App />);
+
+    await user.click(within(screen.getByLabelText("最近对话")).getByRole("button", { name: /资料整理.*已停止/ }));
+
+    expect(screen.getByRole("heading", { name: "资料整理" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "停止运行" })).toBeDisabled();
+    expect(screen.getByText("运行：已停止")).toBeInTheDocument();
+    expect(within(screen.getByLabelText("对话消息")).getByRole("button", { name: "打开制品 partial-notes.md" })).toBeInTheDocument();
+
+    await user.click(within(screen.getByLabelText("检查面板")).getByRole("tab", { name: "运行" }));
+
+    const runPanel = screen.getByLabelText("运行上下文");
+    expect(within(runPanel).getByText("停止时间")).toBeInTheDocument();
+    expect(within(runPanel).getByText("8 分钟前")).toBeInTheDocument();
+    expect(within(runPanel).getByText("运行已停止，已有输出已保留。")).toBeInTheDocument();
+
+    await user.click(within(runPanel).getByRole("button", { name: "打开保留制品 partial-notes.md" }));
+
+    expect(within(screen.getByLabelText("检查面板")).getByRole("tab", { name: "制品", selected: true })).toBeInTheDocument();
+    expect(within(screen.getByLabelText("制品预览")).getByRole("heading", { name: "partial-notes.md" })).toBeInTheDocument();
+    expect(within(screen.getByLabelText("制品预览")).getByText("已保留的中间输出：材料索引、摘要和待确认问题。")).toBeInTheDocument();
+  });
+
+  it("switches the inspector between artifact preview, run context, and tool call details", async () => {
+    const user = userEvent.setup();
+    render(<App />);
+
+    const inspector = screen.getByLabelText("检查面板");
+    expect(within(inspector).getByRole("tablist", { name: "检查面板分组" })).toBeInTheDocument();
+    expect(within(inspector).getByRole("tab", { name: "制品", selected: true })).toBeInTheDocument();
+    expect(within(screen.getByLabelText("制品预览")).getByRole("heading", { name: "brief.md" })).toBeInTheDocument();
+
+    await user.click(within(inspector).getByRole("tab", { name: "工具" }));
+    const toolPanel = screen.getByLabelText("工具调用");
+    expect(within(toolPanel).getByText("search.web")).toBeInTheDocument();
+    expect(within(toolPanel).getByText("已完成")).toBeInTheDocument();
+    expect(within(toolPanel).getByText("输入：Minimalist Agent WorkBuddy patterns")).toBeInTheDocument();
+    expect(
+      within(toolPanel).getByText("网关：agent_tool_gateway · 提供方：mock"),
+    ).toBeInTheDocument();
+    expect(within(toolPanel).queryByText(/token|secret|credential/i)).not.toBeInTheDocument();
+
+    await user.click(within(inspector).getByRole("tab", { name: "运行" }));
+    const runPanel = screen.getByLabelText("运行上下文");
+    expect(within(runPanel).getByText("AG-UI")).toBeInTheDocument();
+    expect(within(runPanel).getByText("Run")).toBeInTheDocument();
+    expect(within(runPanel).getByText("最近活动")).toBeInTheDocument();
+    expect(within(runPanel).getByText("暂无新活动")).toBeInTheDocument();
+    expect(within(runPanel).queryByText("事件")).not.toBeInTheDocument();
+    expect(within(runPanel).getByText("智能体 / 模型")).toBeInTheDocument();
+    expect(within(runPanel).getByText("默认智能体 · OpenAI / GPT-5")).toBeInTheDocument();
+    expect(within(runPanel).getByText("后端治理")).toBeInTheDocument();
+    expect(within(runPanel).getByRole("heading", { name: "过程摘要" })).toBeInTheDocument();
+    expect(
+      within(runPanel).getByText("已建立调研范围：会话线程、运行状态、工具调用、附件和制品预览。"),
+    ).toBeInTheDocument();
+    expect(within(runPanel).getByRole("heading", { name: "能力快照" })).toBeInTheDocument();
+    expect(within(runPanel).getByText("Search：已授权")).toBeInTheDocument();
+    expect(within(runPanel).getByText("Sandbox：已授权")).toBeInTheDocument();
+    expect(within(runPanel).getByText("MCP：1 个服务器")).toBeInTheDocument();
+    expect(within(runPanel).getByText("由管理员策略控制")).toBeInTheDocument();
+    expect(within(runPanel).queryByLabelText("Enable Search Capability")).not.toBeInTheDocument();
+    expect(within(runPanel).queryByLabelText("Enable Sandbox Capability")).not.toBeInTheDocument();
+    expect(within(runPanel).queryByLabelText("Enable MCP Tools")).not.toBeInTheDocument();
+
+    await user.click(within(inspector).getByRole("tab", { name: "制品" }));
+    expect(within(screen.getByLabelText("制品预览")).getByRole("heading", { name: "brief.md" })).toBeInTheDocument();
   });
 });

@@ -94,6 +94,98 @@ def test_administrator_can_approve_local_account_and_user_can_access_protected_s
     assert me_response.json()["username"] == "wen"
 
 
+def test_administrator_can_list_local_accounts():
+    local_account_store.bootstrap_administrator(
+        username="admin",
+        password="correct horse battery staple",
+    )
+    client = TestClient(app)
+    client.post(
+        "/auth/register",
+        json={
+            "username": "pending",
+            "email": "pending@example.com",
+            "password": "correct horse battery staple",
+        },
+    )
+    admin_token = client.post(
+        "/auth/login",
+        json={
+            "login": "admin",
+            "password": "correct horse battery staple",
+        },
+    ).json()["access_token"]
+
+    response = client.get(
+        "/admin/accounts",
+        headers={"Authorization": f"Bearer {admin_token}"},
+    )
+
+    assert response.status_code == 200
+    assert response.json() == [
+        {
+            "id": 1,
+            "username": "admin",
+            "email": None,
+            "role": "admin",
+            "status": "enabled",
+        },
+        {
+            "id": 2,
+            "username": "pending",
+            "email": "pending@example.com",
+            "role": "user",
+            "status": "pending",
+        },
+    ]
+
+
+def test_only_administrators_can_list_local_accounts():
+    client = TestClient(app)
+    user = client.post(
+        "/auth/register",
+        json={
+            "username": "enabled",
+            "email": "enabled@example.com",
+            "password": "correct horse battery staple",
+        },
+    ).json()
+    local_account_store.approve(user["id"])
+    user_token = client.post(
+        "/auth/login",
+        json={
+            "login": "enabled",
+            "password": "correct horse battery staple",
+        },
+    ).json()["access_token"]
+
+    response = client.get(
+        "/admin/accounts",
+        headers={"Authorization": f"Bearer {user_token}"},
+    )
+
+    assert response.status_code == 403
+    assert response.json()["detail"] == "Administrator access required."
+
+
+def test_api_startup_bootstraps_administrator_from_environment(monkeypatch):
+    monkeypatch.setenv("ADMIN_BOOTSTRAP_USERNAME", "admin")
+    monkeypatch.setenv("ADMIN_BOOTSTRAP_PASSWORD", "correct horse battery staple")
+
+    with TestClient(app) as client:
+        login_response = client.post(
+            "/auth/login",
+            json={
+                "login": "admin",
+                "password": "correct horse battery staple",
+            },
+        )
+
+    assert login_response.status_code == 200
+    assert login_response.json()["user"]["role"] == "admin"
+    assert login_response.json()["user"]["status"] == "enabled"
+
+
 def test_administrator_can_reject_and_disable_local_accounts():
     local_account_store.bootstrap_administrator(
         username="admin",

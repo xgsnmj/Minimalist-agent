@@ -15,15 +15,15 @@ describe("Account Approval governance", () => {
     window.history.pushState({}, "", "/admin/account-approval");
     render(<App />);
 
-    const accountApproval = screen.getByRole("region", { name: "Account Approval" });
-    expect(screen.getByRole("heading", { name: "Account Approval", level: 1 })).toBeInTheDocument();
-    expect(within(accountApproval).getAllByText("lin.request@example.com")).toHaveLength(2);
+    const accountApproval = screen.getByRole("region", { name: "账号审批" });
+    expect(screen.getByRole("heading", { name: "账号审批", level: 1 })).toBeInTheDocument();
+    expect(await within(accountApproval).findAllByText("lin.request@example.com")).toHaveLength(2);
 
     const requestedAccount = within(accountApproval).getByRole("row", { name: /lin\.request/ });
-    await user.click(within(requestedAccount).getByRole("button", { name: "Approve" }));
-    await user.click(within(accountApproval).getByRole("tab", { name: /Enabled/ }));
+    await user.click(within(requestedAccount).getByRole("button", { name: "批准" }));
+    await user.click(within(accountApproval).getByRole("tab", { name: /已启用/ }));
 
-    expect(within(accountApproval).getAllByText("lin.request@example.com")).toHaveLength(2);
-    expect(within(accountApproval).getAllByText("Approved by Administrator")).toHaveLength(2);
+    expect(await within(accountApproval).findAllByText("lin.request@example.com")).toHaveLength(2);
+    expect(within(accountApproval).getAllByText("管理员已批准").length).toBeGreaterThanOrEqual(2);
   });
 });

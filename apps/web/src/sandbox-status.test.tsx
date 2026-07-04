@@ -15,30 +15,30 @@ describe("Administrator Sandbox Status surface", () => {
     window.history.pushState({}, "", "/admin/sandbox");
     render(<App />);
 
-    expect(screen.getByRole("heading", { level: 1, name: "Sandbox Status" })).toBeInTheDocument();
-    expect(screen.getByText("Uses OpenAI Agents SDK sandbox support; this page does not imply a production host Docker sandbox.")).toBeInTheDocument();
+    expect(screen.getByRole("heading", { level: 1, name: "沙箱状态" })).toBeInTheDocument();
+    expect(screen.getByText("使用 OpenAI Agents SDK 沙箱支持；此页面不表示生产主机提供 Docker 沙箱。")).toBeInTheDocument();
 
-    const runtimeStatus = screen.getByRole("region", { name: "Sandbox runtime status" });
-    expect(within(runtimeStatus).getByText("available")).toBeInTheDocument();
-    expect(within(runtimeStatus).getByText("workspace isolated")).toBeInTheDocument();
-    expect(within(runtimeStatus).getByText("artifact capture enabled")).toBeInTheDocument();
+    const runtimeStatus = screen.getByRole("region", { name: "沙箱运行时状态" });
+    expect(await within(runtimeStatus).findByText("1 个")).toBeInTheDocument();
+    expect(within(runtimeStatus).getByText("智能体能力策略")).toBeInTheDocument();
+    expect(within(runtimeStatus).getByText("1 个产物")).toBeInTheDocument();
 
-    const capabilityTable = screen.getByRole("table", { name: "Agent Sandbox Capability" });
-    expect(within(capabilityTable).getByRole("row", { name: /Default Agent enabled artifact capture on Administrator policy/ })).toBeInTheDocument();
-    expect(within(capabilityTable).getByRole("row", { name: /Research Agent restricted artifact capture review Summary-only policy/ })).toBeInTheDocument();
+    const capabilityTable = screen.getByRole("table", { name: "智能体沙箱能力" });
+    expect(await within(capabilityTable).findByRole("row", { name: /Default Agent 已启用 由运行审计记录产物 过程可见性：标准/ })).toBeInTheDocument();
+    expect(within(capabilityTable).getByRole("row", { name: /Research Agent 未启用 不捕获沙箱产物 过程可见性：最小/ })).toBeInTheDocument();
 
-    const recentCalls = screen.getByRole("region", { name: "Recent sandbox tool calls" });
-    expect(within(recentCalls).getByText("sandbox.exec")).toBeInTheDocument();
-    expect(within(recentCalls).getByText("report.md captured as Artifact Reference")).toBeInTheDocument();
+    const recentCalls = screen.getByRole("region", { name: "近期沙箱工具调用" });
+    expect(within(recentCalls).getByText("暂无独立沙箱调用列表")).toBeInTheDocument();
+    expect(within(recentCalls).getByText("请在运行审计中查看具体工具调用、产物和失败详情。")).toBeInTheDocument();
 
-    const artifactCapture = screen.getByRole("region", { name: "Artifact capture summary" });
-    expect(within(artifactCapture).getByText("2 captured artifacts")).toBeInTheDocument();
-    expect(within(artifactCapture).getByText("HTML previews stay sandboxed before rendering in Artifact Preview.")).toBeInTheDocument();
+    const artifactCapture = screen.getByRole("region", { name: "产物捕获摘要" });
+    expect(within(artifactCapture).getByText("已捕获 1 个产物")).toBeInTheDocument();
+    expect(within(artifactCapture).getByText("产物数量来自运行审计存储汇总。")).toBeInTheDocument();
 
-    await user.click(screen.getByRole("tab", { name: "Rejected call" }));
+    await user.click(screen.getByRole("tab", { name: "已拒绝调用" }));
 
-    const rejectedCall = screen.getByRole("tabpanel", { name: "Rejected call" });
-    expect(within(rejectedCall).getByText("Sandbox Capability denied by Agent Capability Policy")).toBeInTheDocument();
-    expect(within(rejectedCall).getByText("The frontend did not run code or override backend policy.")).toBeInTheDocument();
+    const rejectedCall = screen.getByRole("tabpanel", { name: "已拒绝调用" });
+    expect(within(rejectedCall).getByText("智能体能力策略拒绝了沙箱能力")).toBeInTheDocument();
+    expect(within(rejectedCall).getByText("前端没有执行代码，也没有绕过后端策略。")).toBeInTheDocument();
   });
 });

@@ -15,28 +15,28 @@ describe("Administrator Full Trace Detail surface", () => {
     window.history.pushState({}, "", "/admin/full-trace");
     render(<App />);
 
-    const fullTrace = screen.getByRole("region", { name: "Full Trace Detail" });
+    const fullTrace = screen.getByRole("region", { name: "完整追踪详情" });
 
-    expect(within(fullTrace).getByRole("heading", { name: "Full Trace Detail" })).toBeInTheDocument();
-    expect(within(fullTrace).getByText("Administrator-only diagnostic record")).toBeInTheDocument();
-    expect(within(fullTrace).getByText("run_failed")).toBeInTheDocument();
-    expect(within(fullTrace).getByText("Claude Sonnet")).toBeInTheDocument();
-    expect(within(fullTrace).getByText("chen.user")).toBeInTheDocument();
+    expect(within(fullTrace).getByRole("heading", { name: "完整追踪详情" })).toBeInTheDocument();
+    expect(within(fullTrace).getByText("仅管理员可见的诊断记录")).toBeInTheDocument();
+    expect(await within(fullTrace).findByText("1")).toBeInTheDocument();
+    expect(within(fullTrace).getByText("模型配置 #1")).toBeInTheDocument();
+    expect(within(fullTrace).getByText("用户 #3")).toBeInTheDocument();
 
-    const timeline = within(fullTrace).getByRole("table", { name: "Event timeline" });
-    expect(within(timeline).getByRole("row", { name: /09:18 runtime event Agent Run accepted by Agent Runtime/ })).toBeInTheDocument();
-    expect(within(timeline).getByRole("row", { name: /09:19 model interaction Claude Sonnet requested Search Capability/ })).toBeInTheDocument();
-    expect(within(timeline).getByRole("row", { name: /09:20 tool call search\.web failed with provider_error/ })).toBeInTheDocument();
-    expect(within(timeline).getByRole("row", { name: /09:20 error Agent Run marked failed/ })).toBeInTheDocument();
+    const timeline = within(fullTrace).getByRole("table", { name: "事件时间线" });
+    expect(within(timeline).getByRole("row", { name: /后端追踪 workflow_name Agent workflow/ })).toBeInTheDocument();
+    expect(within(timeline).getByRole("row", { name: /后端追踪 model_name gpt-5/ })).toBeInTheDocument();
+    expect(within(timeline).getByRole("row", { name: /后端追踪 tool_name sandbox\.exec/ })).toBeInTheDocument();
 
-    const rawPayload = within(fullTrace).getByLabelText("Raw diagnostic payload");
+    const rawPayload = within(fullTrace).getByLabelText("原始诊断载荷");
     expect(rawPayload.hasAttribute("open")).toBe(false);
-    await user.click(within(rawPayload).getByText("Raw diagnostic payload"));
+    await user.click(within(rawPayload).getByText("原始诊断载荷"));
     expect(rawPayload.hasAttribute("open")).toBe(true);
-    expect(within(rawPayload).getByText(/provider_error/)).toBeInTheDocument();
+    expect(within(rawPayload).getByText(/Agent workflow/)).toBeInTheDocument();
+    expect(within(rawPayload).getByText(/sandbox\.exec/)).toBeInTheDocument();
 
-    const artifacts = within(fullTrace).getByRole("region", { name: "Artifact references" });
-    expect(within(artifacts).getByText("No artifacts captured")).toBeInTheDocument();
-    expect(within(fullTrace).getByRole("link", { name: "Back to Run Audit" }).getAttribute("href")).toBe("/admin/run-audit");
+    const artifacts = within(fullTrace).getByRole("region", { name: "产物引用" });
+    expect(within(artifacts).getByText("选择运行后加载产物引用")).toBeInTheDocument();
+    expect(within(fullTrace).getByRole("link", { name: "返回运行审计" }).getAttribute("href")).toBe("/admin/run-audit");
   });
 });

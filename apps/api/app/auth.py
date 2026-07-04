@@ -115,6 +115,9 @@ class LocalAccountStore:
         account.status = UserStatus.DISABLED
         return account
 
+    def list_accounts(self) -> list[LocalAccount]:
+        return sorted(self._accounts.values(), key=lambda account: account.id)
+
     def authenticate(self, request: LoginRequest) -> tuple[str, LocalAccount]:
         account = self._find_by_login(request.login)
         if account is None or account.password != request.password:

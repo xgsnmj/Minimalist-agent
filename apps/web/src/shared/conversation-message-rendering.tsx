@@ -4,7 +4,6 @@ import type { CardSchema, ConversationCard } from "./card-schema-contract";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
-import { Separator } from "@/components/ui/separator";
 
 export type ConversationToolCall = {
   toolName: string;
@@ -32,20 +31,40 @@ export function ToolCallView({ toolCall }: { toolCall: ConversationToolCall }) {
   );
 }
 
-type CardRenderer = (card: ConversationCard) => ReactElement;
+type CardRendererOptions = {
+  onOpenArtifact?: (artifactId: number) => void;
+};
+
+type CardRenderer = (card: ConversationCard, options?: CardRendererOptions) => ReactElement;
 
 export const CARD_RENDERERS: Record<CardSchema, CardRenderer> = {
-  artifact_card: (card) => (
+  artifact_card: (card, options) => {
+    const artifactId = Number(card.payload.artifact_id);
+    const filename = String(card.payload.filename ?? "未命名制品");
+    const canOpenArtifact = Number.isFinite(artifactId) && options?.onOpenArtifact;
+
+    return (
       <Card className="conversation-card artifact-card" data-testid="conversation-card-artifact_card">
         <CardHeader>
-          <CardTitle>{String(card.payload.filename ?? "未命名制品")}</CardTitle>
+          <CardTitle>{filename}</CardTitle>
           <Badge variant="secondary">制品</Badge>
         </CardHeader>
         <CardContent>
           <p className="preview-text">{String(card.payload.preview_type ?? "download")}</p>
+          {canOpenArtifact ? (
+            <Button
+              aria-label={`打开制品 ${filename}`}
+              className="artifact-card-button"
+              type="button"
+              onClick={() => options.onOpenArtifact?.(artifactId)}
+            >
+              打开预览
+            </Button>
+          ) : null}
         </CardContent>
       </Card>
-  ),
+    );
+  },
   tool_result_card: (card) => (
       <Card className="conversation-card tool-result-card" data-testid="conversation-card-tool_result_card">
         <CardHeader>
@@ -128,10 +147,16 @@ export const CARD_RENDERERS: Record<CardSchema, CardRenderer> = {
   },
 };
 
-export function ConversationCardView({ card }: { card: ConversationCard }) {
+export function ConversationCardView({
+  card,
+  onOpenArtifact,
+}: {
+  card: ConversationCard;
+  onOpenArtifact?: (artifactId: number) => void;
+}) {
   const renderCard = CARD_RENDERERS[card.schema];
   if (renderCard) {
-    return renderCard(card);
+    return renderCard(card, { onOpenArtifact });
   }
 
   return (

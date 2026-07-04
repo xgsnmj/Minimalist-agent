@@ -29,7 +29,7 @@ type Conversation = {
   id: string;
   title: string;
   agentId: string;
-  status: "idle" | "running";
+  status: "idle" | "running" | "completed" | "failed" | "cancelled";
   updatedAt: string;
   selectedModelId: string;
   messages: ConversationMessage[];
