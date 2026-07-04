@@ -5,7 +5,7 @@ from apps.api.app.agents import agent_store
 from apps.api.app.artifacts import artifact_store
 from apps.api.app.auth import local_account_store
 from apps.api.app.conversations import conversation_store
-from apps.api.app.main import app
+from apps.api.app.app import app
 from apps.api.app.mcp_servers import mcp_server_store
 from apps.api.app.model_configurations import model_configuration_store
 from apps.api.app.run_attachments import run_attachment_store

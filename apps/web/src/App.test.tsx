@@ -3,7 +3,7 @@ import userEvent from "@testing-library/user-event";
 import { afterEach } from "vitest";
 import { describe, expect, it } from "vitest";
 
-import { App } from "./App";
+import { App } from "./app/app";
 
 describe("App", () => {
   afterEach(() => {

@@ -6,9 +6,9 @@ Open Design 原型路径记录在 `docs/open-design-prototype.md`。后续实现
 
 ## 当前截图为什么是这样
 
-当前登录后的页面效果像脚手架，原因不是浏览器异常，而是前端实现还停留在 MVP scaffold 阶段：
+当前登录后的页面效果像脚手架，原因不是浏览器异常，而是前端实现还在把页面级模块和业务功能模块持续拆分：
 
-- `apps/web/src/App.tsx` 只导出 `ConversationShell`，当前没有真实路由、登录页、管理员页分离。
+- `apps/web/src/app/app.tsx` 负责应用装配，`apps/web/src/routes/planned-pages.tsx` 负责页面组合，`apps/web/src/features/workspace/conversation-shell.tsx` 承载主工作台。
 - `ConversationShell` 同时承载 Agent Conversation、Artifact Preview、Local Account 注册、Agent Lifecycle、Model Configurations、Run Audit 等多个入口，所以截图会显得信息堆叠。
 - 页面数据主要是前端静态演示数据，例如 `Market research`、`Default Agent`、`OpenAI GPT-5`、`Run 1`，用于满足 smoke workflow 和组件合同测试。
 - 视觉层只使用 `apps/web/src/styles.css` 中的轻量 CSS，没有接入完整设计系统、图标体系、导航层级和权限态。

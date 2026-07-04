@@ -1,7 +1,7 @@
 import { renderHook, act, waitFor } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-import { buildAgentRunEventsUrl, useAgentRunStream } from "./ag-ui-stream";
+import { buildAgentRunEventsUrl, useAgentRunStream } from "./shared/ag-ui-stream";
 
 class MockEventSource {
   static instances: MockEventSource[] = [];

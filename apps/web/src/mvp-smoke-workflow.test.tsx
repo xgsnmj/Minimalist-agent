@@ -1,7 +1,7 @@
 import { render, screen, within } from "@testing-library/react";
 import { describe, expect, it } from "vitest";
 
-import { App } from "./App";
+import { App } from "./app/app";
 
 describe("MVP smoke workflow surface", () => {
   it("keeps the primary conversation, artifact, cancellation, and admin audit entry points visible", () => {

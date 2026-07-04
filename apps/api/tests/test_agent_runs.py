@@ -4,7 +4,7 @@ from apps.api.app.agent_runs import agent_run_store
 from apps.api.app.agents import agent_store
 from apps.api.app.auth import local_account_store
 from apps.api.app.conversations import conversation_store
-from apps.api.app.main import app
+from apps.api.app.app import app
 from apps.api.app.model_configurations import model_configuration_store
 from apps.api.app.run_event_log import run_event_log_store
 from apps.worker.app.celery_app import process_agent_run

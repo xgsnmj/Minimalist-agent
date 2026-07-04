@@ -2,7 +2,7 @@ from fastapi.testclient import TestClient
 
 from apps.api.app.auth import local_account_store
 from apps.api.app.agents import agent_store
-from apps.api.app.main import app
+from apps.api.app.app import app
 
 
 def setup_function():

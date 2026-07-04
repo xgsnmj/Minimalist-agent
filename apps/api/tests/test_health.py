@@ -1,6 +1,6 @@
 from fastapi.testclient import TestClient
 
-from apps.api.app.main import app
+from apps.api.app.app import app
 
 
 def test_api_health_reports_ok():
