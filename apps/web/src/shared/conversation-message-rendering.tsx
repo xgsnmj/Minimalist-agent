@@ -1,6 +1,10 @@
 import type { ReactElement } from "react";
 
 import type { CardSchema, ConversationCard } from "./card-schema-contract";
+import { Badge } from "@/components/ui/badge";
+import { Button } from "@/components/ui/button";
+import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { Separator } from "@/components/ui/separator";
 
 export type ConversationToolCall = {
   toolName: string;
@@ -13,17 +17,18 @@ export type ConversationToolCall = {
 
 export function ToolCallView({ toolCall }: { toolCall: ConversationToolCall }) {
   return (
-    <div className="tool-call-row">
-      <div>
-        <p className="card-label">工具调用</p>
-        <h3>{toolCall.toolName}</h3>
-      </div>
-      <span className={`tool-call-status ${toolCall.status}`}>{formatToolCallStatus(toolCall.status)}</span>
-      <p className="preview-text">{formatToolCallSummary(toolCall)}</p>
-      <p className="tool-call-meta">
-        网关：{toolCall.provenance.gateway} · 提供方：{toolCall.provenance.provider}
-      </p>
-    </div>
+    <Card className="tool-call-row">
+      <CardHeader>
+        <CardTitle>{toolCall.toolName}</CardTitle>
+        <Badge variant={toolCallBadgeVariant(toolCall.status)}>{formatToolCallStatus(toolCall.status)}</Badge>
+      </CardHeader>
+      <CardContent className="flex flex-col gap-2">
+        <p className="preview-text">{formatToolCallSummary(toolCall)}</p>
+        <p className="tool-call-meta">
+          网关：{toolCall.provenance.gateway} · 提供方：{toolCall.provenance.provider}
+        </p>
+      </CardContent>
+    </Card>
   );
 }
 
@@ -31,76 +36,94 @@ type CardRenderer = (card: ConversationCard) => ReactElement;
 
 export const CARD_RENDERERS: Record<CardSchema, CardRenderer> = {
   artifact_card: (card) => (
-      <div className="conversation-card artifact-card" data-testid="conversation-card-artifact_card">
-        <p className="card-label">制品</p>
-        <h3>{String(card.payload.filename ?? "未命名制品")}</h3>
-        <p className="preview-text">{String(card.payload.preview_type ?? "download")}</p>
-      </div>
+      <Card className="conversation-card artifact-card" data-testid="conversation-card-artifact_card">
+        <CardHeader>
+          <CardTitle>{String(card.payload.filename ?? "未命名制品")}</CardTitle>
+          <Badge variant="secondary">制品</Badge>
+        </CardHeader>
+        <CardContent>
+          <p className="preview-text">{String(card.payload.preview_type ?? "download")}</p>
+        </CardContent>
+      </Card>
   ),
   tool_result_card: (card) => (
-      <div className="conversation-card tool-result-card" data-testid="conversation-card-tool_result_card">
-        <p className="card-label">工具结果</p>
-        <h3>{String(card.payload.tool_name ?? "工具")}</h3>
-        <p className="card-status">{String(card.payload.status ?? "completed")}</p>
-        <p className="preview-text">{String(card.payload.summary ?? "工具调用已完成。")}</p>
-      </div>
+      <Card className="conversation-card tool-result-card" data-testid="conversation-card-tool_result_card">
+        <CardHeader>
+          <CardTitle>{String(card.payload.tool_name ?? "工具")}</CardTitle>
+          <Badge variant="outline">{String(card.payload.status ?? "completed")}</Badge>
+        </CardHeader>
+        <CardContent>
+          <p className="preview-text">{String(card.payload.summary ?? "工具调用已完成。")}</p>
+        </CardContent>
+      </Card>
   ),
   choice_card: (card) => {
     const options = Array.isArray(card.payload.options) ? card.payload.options : [];
     return (
-      <div className="conversation-card choice-card" data-testid="conversation-card-choice_card">
-        <p className="card-label">选择</p>
-        <h3>{String(card.payload.prompt ?? "选择一个选项")}</h3>
-        <div className="card-choice-list">
+      <Card className="conversation-card choice-card" data-testid="conversation-card-choice_card">
+        <CardHeader>
+          <Badge variant="secondary">选择</Badge>
+          <CardTitle>{String(card.payload.prompt ?? "选择一个选项")}</CardTitle>
+        </CardHeader>
+        <CardContent className="flex flex-col gap-2">
           {options.map((option, index) => {
             const typedOption = option as Record<string, unknown>;
             return (
-              <button className="card-choice" key={String(typedOption.id ?? index)} type="button">
+              <Button className="card-choice" key={String(typedOption.id ?? index)} type="button">
                 <span>{String(typedOption.label ?? "选项")}</span>
                 {typedOption.description ? <small>{String(typedOption.description)}</small> : null}
-              </button>
+              </Button>
             );
           })}
-        </div>
-      </div>
+        </CardContent>
+      </Card>
     );
   },
   citation_card: (card) => (
-      <div className="conversation-card citation-card" data-testid="conversation-card-citation_card">
-        <p className="card-label">引用</p>
-        <h3>{String(card.payload.title ?? "来源")}</h3>
-        {card.payload.source ? <p className="card-status">{String(card.payload.source)}</p> : null}
-        {card.payload.snippet ? <p className="preview-text">{String(card.payload.snippet)}</p> : null}
-        <a className="card-link" href={String(card.payload.url ?? "#")}>
-          {String(card.payload.url ?? "打开来源")}
-        </a>
-      </div>
+      <Card className="conversation-card citation-card" data-testid="conversation-card-citation_card">
+        <CardHeader>
+          <Badge variant="secondary">引用</Badge>
+          <CardTitle>{String(card.payload.title ?? "来源")}</CardTitle>
+        </CardHeader>
+        <CardContent className="flex flex-col gap-2">
+          {card.payload.source ? <p className="card-status">{String(card.payload.source)}</p> : null}
+          {card.payload.snippet ? <p className="preview-text">{String(card.payload.snippet)}</p> : null}
+          <a className="card-link" href={String(card.payload.url ?? "#")}>
+            {String(card.payload.url ?? "打开来源")}
+          </a>
+        </CardContent>
+      </Card>
   ),
   status_card: (card) => (
-      <div className="conversation-card status-card" data-testid="conversation-card-status_card">
-        <p className="card-label">状态</p>
-        <h3>{String(card.payload.title ?? "智能体运行更新")}</h3>
-        <p className="card-status">{String(card.payload.status ?? "running")}</p>
-        {card.payload.detail ? <p className="preview-text">{String(card.payload.detail)}</p> : null}
-      </div>
+      <Card className="conversation-card status-card" data-testid="conversation-card-status_card">
+        <CardHeader>
+          <Badge variant={toolCallBadgeVariant(String(card.payload.status ?? "running") as ConversationToolCall["status"])}>{String(card.payload.status ?? "running")}</Badge>
+          <CardTitle>{String(card.payload.title ?? "智能体运行更新")}</CardTitle>
+        </CardHeader>
+        <CardContent>
+          {card.payload.detail ? <p className="preview-text">{String(card.payload.detail)}</p> : null}
+        </CardContent>
+      </Card>
   ),
   form_request_card: (card) => {
     const fields = Array.isArray(card.payload.fields) ? card.payload.fields : [];
     return (
-      <div className="conversation-card form-request-card" data-testid="conversation-card-form_request_card">
-        <p className="card-label">表单请求</p>
-        <h3>{String(card.payload.title ?? "需要补充信息")}</h3>
-        <div className="card-field-list">
+      <Card className="conversation-card form-request-card" data-testid="conversation-card-form_request_card">
+        <CardHeader>
+          <Badge variant="secondary">表单请求</Badge>
+          <CardTitle>{String(card.payload.title ?? "需要补充信息")}</CardTitle>
+        </CardHeader>
+        <CardContent className="flex flex-col gap-2">
           {fields.map((field, index) => {
             const typedField = field as Record<string, unknown>;
             return (
-              <span className="card-field" key={String(typedField.id ?? index)}>
+              <Badge key={String(typedField.id ?? index)} variant="outline">
                 {String(typedField.label ?? "字段")}
-              </span>
+              </Badge>
             );
           })}
-        </div>
-      </div>
+        </CardContent>
+      </Card>
     );
   },
 };
@@ -112,9 +135,9 @@ export function ConversationCardView({ card }: { card: ConversationCard }) {
   }
 
   return (
-    <div className="conversation-card unsupported-card">
+    <Card className="conversation-card unsupported-card">
       <p className="preview-text">暂不支持该卡片 schema。</p>
-    </div>
+    </Card>
   );
 }
 
@@ -140,5 +163,17 @@ function formatToolCallStatus(status: ConversationToolCall["status"]) {
       return "已拒绝";
     default:
       return status;
+  }
+}
+
+function toolCallBadgeVariant(status: ConversationToolCall["status"]) {
+  switch (status) {
+    case "completed":
+      return "default";
+    case "failed":
+    case "rejected":
+      return "destructive";
+    default:
+      return "secondary";
   }
 }

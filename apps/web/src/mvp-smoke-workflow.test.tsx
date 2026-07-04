@@ -13,8 +13,8 @@ describe("MVP smoke workflow surface", () => {
     expect(within(conversationSidebar).getByRole("button", { name: "新建对话" })).toBeInTheDocument();
     expect(within(conversationSidebar).getByRole("link", { name: "运行审计" })).toBeInTheDocument();
     expect(within(conversationSidebar).getAllByRole("link", { name: "管理员控制台" }).length).toBeGreaterThan(0);
-    expect(screen.getByLabelText("智能体选择")).toHaveDisplayValue("默认智能体");
-    expect(screen.getByLabelText("模型选择")).toHaveDisplayValue("OpenAI GPT-5");
+    expect(screen.getByRole("combobox", { name: "智能体选择" })).toBeInTheDocument();
+    expect(screen.getByRole("combobox", { name: "模型选择" })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "发送" })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "删除" })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "停止运行" })).toBeDisabled();

@@ -12,6 +12,26 @@ import {
   CopilotSandboxStatusBridge,
   CopilotSearchProviderBridge,
 } from "../shared/copilotkit-adapter";
+import { Badge } from "@/components/ui/badge";
+import { Button } from "@/components/ui/button";
+import {
+  Card,
+  CardContent,
+  CardDescription,
+  CardHeader,
+  CardTitle,
+} from "@/components/ui/card";
+import { Input } from "@/components/ui/input";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
+import { Separator } from "@/components/ui/separator";
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import { Textarea } from "@/components/ui/textarea";
 
 type AppRoute =
   | "login"
@@ -449,13 +469,13 @@ export function LoginPage() {
           <form className="access-form">
             <label className="access-field">
               <span>账号或邮箱</span>
-              <input name="username" autoComplete="username" />
+              <Input name="username" autoComplete="username" />
             </label>
             <label className="access-field">
               <span>密码</span>
-              <input name="password" type="password" autoComplete="current-password" />
+              <Input name="password" type="password" autoComplete="current-password" />
             </label>
-            <button className="primary-button full-width" type="button">登录</button>
+            <Button className="primary-button full-width" type="button">登录</Button>
           </form>
           <div className="access-inline-row">
             <span>无账号</span>
@@ -503,21 +523,21 @@ export function RegisterPage() {
           <form className="access-form" onSubmit={requestAccess}>
             <label className="access-field">
               <span>用户名</span>
-              <input name="username" autoComplete="username" />
+              <Input name="username" autoComplete="username" />
             </label>
             <label className="access-field">
               <span>邮箱</span>
-              <input name="email" type="email" autoComplete="email" />
+              <Input name="email" type="email" autoComplete="email" />
             </label>
             <label className="access-field">
               <span>密码</span>
-              <input name="password" type="password" autoComplete="new-password" />
+              <Input name="password" type="password" autoComplete="new-password" />
             </label>
             <label className="access-field">
               <span>确认密码</span>
-              <input name="confirm-password" type="password" autoComplete="new-password" />
+              <Input name="confirm-password" type="password" autoComplete="new-password" />
             </label>
-            <button className="primary-button full-width" type="submit">提交申请</button>
+            <Button className="primary-button full-width" type="submit">提交申请</Button>
           </form>
           <div className="access-inline-row">
             <span>已有账号</span>
@@ -566,7 +586,7 @@ export function ApprovalPendingPage() {
             </li>
           </ol>
           <div className="access-form-actions">
-            <button className="primary-button full-width" type="button">刷新状态</button>
+            <Button className="primary-button full-width" type="button">刷新状态</Button>
             <a className="secondary-button full-width" href="/login">返回登录</a>
           </div>
         </div>
@@ -592,7 +612,7 @@ export function AccountSettingsPage() {
           <InfoTile title="Role" value="Administrator" />
           <InfoTile title="Status" value="enabled" />
         </div>
-        <button className="danger-button" type="button">Sign out</button>
+        <Button className="danger-button" type="button">Sign out</Button>
       </section>
     </main>
   );
@@ -703,27 +723,29 @@ function adminContent(route: AppRoute) {
 
 function TaskList() {
   return (
-    <section className="route-panel">
-      <p className="eyebrow">Governance tasks</p>
-      <h2>Needs attention</h2>
-      <div className="task-list">
+    <Card className="route-panel">
+      <CardHeader>
+        <CardDescription>Governance tasks</CardDescription>
+        <CardTitle>Needs attention</CardTitle>
+      </CardHeader>
+      <CardContent className="flex flex-col gap-3">
         <TaskRow title="Approve new Local Accounts" meta="Account Approval" status="pending" />
         <TaskRow title="Confirm Agent Capability Policy" meta="Agent Lifecycle" status="ready" />
         <TaskRow title="Review failed Agent Runs" meta="Run Audit" status="warning" />
-      </div>
-    </section>
+      </CardContent>
+    </Card>
   );
 }
 
 function TaskRow({ title, meta, status }: { title: string; meta: string; status: string }) {
   return (
-    <article className="task-row">
+    <Card className="task-row">
       <div>
         <strong>{title}</strong>
         <p>{meta}</p>
       </div>
-      <span className={`audit-chip ${status}`}>{status}</span>
-    </article>
+      <Badge variant={taskBadgeVariant(status)}>{status}</Badge>
+    </Card>
   );
 }
 
@@ -780,21 +802,20 @@ function AccountApprovalPanel() {
         statusFilter={statusFilter}
       />
       <div className="account-toolbar">
-        <div className="tab-list" role="tablist" aria-label="Local Account status">
-          {(["pending", "enabled", "rejected", "disabled"] as LocalAccountStatus[]).map((status) => (
-            <button
-              aria-selected={statusFilter === status}
-              className={statusFilter === status ? "tab-button active" : "tab-button"}
-              key={status}
-              role="tab"
-              type="button"
-              onClick={() => switchStatus(status)}
-            >
-              {statusLabel(status)}
-              <span>{accountCounts[status]}</span>
-            </button>
-          ))}
-        </div>
+        <Tabs
+          className="w-full"
+          value={statusFilter}
+          onValueChange={(value) => switchStatus(value as LocalAccountStatus)}
+        >
+          <TabsList className="w-fit" aria-label="Local Account status">
+            {(["pending", "enabled", "rejected", "disabled"] as LocalAccountStatus[]).map((status) => (
+              <TabsTrigger key={status} value={status}>
+                {statusLabel(status)}
+                <Badge variant="secondary">{accountCounts[status]}</Badge>
+              </TabsTrigger>
+            ))}
+          </TabsList>
+        </Tabs>
         <p className="inline-note">Current Administrator account cannot be disabled from this page.</p>
       </div>
       <div className="account-approval-layout">
@@ -818,28 +839,28 @@ function AccountApprovalPanel() {
                 >
                   <td>{account.username}</td>
                   <td>{account.email}</td>
-                  <td><span className={`status-badge ${account.status}`}>{statusLabel(account.status)}</span></td>
+                  <td><Badge variant={accountBadgeVariant(account.status)}>{statusLabel(account.status)}</Badge></td>
                   <td>{account.createdAt}</td>
                   <td>{account.lastAction}</td>
                   <td>
                     <div className="table-actions">
-                      <button className="secondary-button" type="button" onClick={() => setSelectedUsername(account.username)}>
+                      <Button className="secondary-button" type="button" onClick={() => setSelectedUsername(account.username)}>
                         Details
-                      </button>
+                      </Button>
                       {account.status === "pending" ? (
                         <>
-                          <button className="primary-button" type="button" onClick={() => changeStatus(account.username, "enabled")}>
+                          <Button className="primary-button" type="button" onClick={() => changeStatus(account.username, "enabled")}>
                             Approve
-                          </button>
-                          <button className="danger-button" type="button" onClick={() => changeStatus(account.username, "rejected")}>
+                          </Button>
+                          <Button className="danger-button" type="button" onClick={() => changeStatus(account.username, "rejected")}>
                             Reject
-                          </button>
+                          </Button>
                         </>
                       ) : null}
                       {account.status === "enabled" && account.username !== "wang.user" ? (
-                        <button className="danger-button" type="button" onClick={() => changeStatus(account.username, "disabled")}>
+                        <Button className="danger-button" type="button" onClick={() => changeStatus(account.username, "disabled")}>
                           Disable
-                        </button>
+                        </Button>
                       ) : null}
                     </div>
                   </td>
@@ -851,15 +872,15 @@ function AccountApprovalPanel() {
             <p className="empty-state">No Local Accounts in this status.</p>
           ) : null}
         </div>
-        <aside className="account-detail-panel" aria-label="Local Account detail">
+        <Card className="account-detail-panel" aria-label="Local Account detail">
           {selectedAccount ? (
-            <>
+            <CardContent className="flex flex-col gap-4">
               <div>
                 <p className="eyebrow">Local Account</p>
                 <h2>{selectedAccount.username}</h2>
                 <p>{selectedAccount.email}</p>
               </div>
-              <span className={`status-badge ${selectedAccount.status}`}>{statusLabel(selectedAccount.status)}</span>
+              <Badge variant={accountBadgeVariant(selectedAccount.status)}>{statusLabel(selectedAccount.status)}</Badge>
               <p>{selectedAccount.riskNote}</p>
               <div className="stack">
                 <h3>Approval history</h3>
@@ -871,13 +892,15 @@ function AccountApprovalPanel() {
               </div>
               <label>
                 <span>Administrator note</span>
-                <textarea placeholder="Visible to Administrators only" />
+                <Textarea placeholder="Visible to Administrators only" />
               </label>
-            </>
+            </CardContent>
           ) : (
-            <p className="empty-state">Select a Local Account to review details.</p>
+            <CardContent>
+              <p className="empty-state">Select a Local Account to review details.</p>
+            </CardContent>
           )}
-        </aside>
+        </Card>
       </div>
     </section>
   );
@@ -925,9 +948,9 @@ function AgentLifecyclePanel() {
         setSelectedAgentId={setSelectedAgentId}
       />
       <div className="button-row">
-        <button className="primary-button" type="button" onClick={() => setIsCreateDraftOpen(true)}>Create Agent</button>
-        <button className="secondary-button" type="button">Disable Agent</button>
-        <button className="secondary-button" type="button">Retire Agent</button>
+        <Button className="primary-button" type="button" onClick={() => setIsCreateDraftOpen(true)}>Create Agent</Button>
+        <Button className="secondary-button" type="button">Disable Agent</Button>
+        <Button className="secondary-button" type="button">Retire Agent</Button>
       </div>
       <div className="route-table-wrap">
         <table className="route-table" aria-label="Agent list">
@@ -952,9 +975,9 @@ function AgentLifecyclePanel() {
                 <td>{agent.capabilitySummary}</td>
                 <td>{agent.processVisibility}</td>
                 <td>
-                  <button className="secondary-button" type="button" onClick={() => setSelectedAgentId(agent.id)}>
+                  <Button className="secondary-button" type="button" onClick={() => setSelectedAgentId(agent.id)}>
                     Details
-                  </button>
+                  </Button>
                 </td>
               </tr>
             ))}
@@ -969,7 +992,7 @@ function AgentLifecyclePanel() {
               <h2>{selectedAgent.name}</h2>
               <p>{selectedAgent.description}</p>
             </div>
-            <span className={`status-badge ${selectedAgent.status}`}>{selectedAgent.status}</span>
+            <Badge variant={accountBadgeVariant(selectedAgent.status)}>{selectedAgent.status}</Badge>
           </div>
           <section className="boundary-list">
             <h3>Agent Instruction</h3>
@@ -1000,15 +1023,15 @@ function AgentLifecyclePanel() {
           <div className="form-grid">
             <label>
               Agent name
-              <input placeholder="Support Agent" />
+              <Input placeholder="Support Agent" />
             </label>
             <label>
               Description
-              <input placeholder="What this Agent is for" />
+              <Input placeholder="What this Agent is for" />
             </label>
             <label>
               Agent Instruction
-              <textarea placeholder="Draft Agent Instruction" />
+              <Textarea placeholder="Draft Agent Instruction" />
             </label>
           </div>
         </section>
@@ -1035,9 +1058,9 @@ function ModelConfigurationsPanel() {
         setSelectedConfigurationId={setSelectedConfigurationId}
       />
       <div className="button-row">
-        <button className="primary-button" type="button" onClick={() => setIsCreateDraftOpen(true)}>
+        <Button className="primary-button" type="button" onClick={() => setIsCreateDraftOpen(true)}>
           Create Model Configuration
-        </button>
+        </Button>
       </div>
       <section className="state-panel" aria-label="Model Provider Catalog">
         <h2>Model Provider Catalog</h2>
@@ -1069,9 +1092,9 @@ function ModelConfigurationsPanel() {
                 <td>{configuration.defaultParameters}</td>
                 <td>{configuration.lastUpdated}</td>
                 <td>
-                  <button className="secondary-button" type="button" onClick={() => setSelectedConfigurationId(configuration.id)}>
+                  <Button className="secondary-button" type="button" onClick={() => setSelectedConfigurationId(configuration.id)}>
                     Details
-                  </button>
+                  </Button>
                 </td>
               </tr>
             ))}
@@ -1086,7 +1109,7 @@ function ModelConfigurationsPanel() {
               <h2>{selectedConfiguration.model}</h2>
               <p>{selectedConfiguration.baseUrl}</p>
             </div>
-            <span className={`status-badge ${selectedConfiguration.status}`}>{selectedConfiguration.status}</span>
+            <Badge variant={accountBadgeVariant(selectedConfiguration.status)}>{selectedConfiguration.status}</Badge>
           </div>
           <section className="detail-grid">
             <InfoTile title="Credential reference" value={selectedConfiguration.credentialReference} />
@@ -1107,25 +1130,34 @@ function ModelConfigurationsPanel() {
           <div className="form-grid">
             <label>
               Provider
-              <select defaultValue="OpenAI">
-                {modelProviderCatalog.map((provider) => <option key={provider}>{provider}</option>)}
-              </select>
+              <Select defaultValue="OpenAI">
+                <SelectTrigger>
+                  <SelectValue placeholder="OpenAI" />
+                </SelectTrigger>
+                <SelectContent>
+                  {modelProviderCatalog.map((provider) => (
+                    <SelectItem key={provider} value={provider}>
+                      {provider}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
             </label>
             <label>
               Base URL
-              <input placeholder="https://provider.example/v1" />
+              <Input placeholder="https://provider.example/v1" />
             </label>
             <label>
               Model name
-              <input placeholder="model-name" />
+              <Input placeholder="model-name" />
             </label>
             <label>
               Credential reference
-              <input placeholder="credential-reference" />
+              <Input placeholder="credential-reference" />
             </label>
             <label>
               Temperature
-              <input defaultValue="0.3" inputMode="decimal" />
+              <Input defaultValue="0.3" inputMode="decimal" />
             </label>
           </div>
         </section>
@@ -1162,9 +1194,9 @@ function McpServersPanel() {
           <h2>Remote MCP registry</h2>
           <p>SSE or Streamable HTTP only; stdio MCP servers stay outside the MVP.</p>
         </div>
-        <button className="primary-button" type="button" onClick={() => openConfigurationDraft(null)}>
+        <Button className="primary-button" type="button" onClick={() => openConfigurationDraft(null)}>
           Create MCP Server
-        </button>
+        </Button>
       </div>
       <div className="route-table-wrap">
         <table className="route-table" aria-label="MCP Server list">
@@ -1190,13 +1222,13 @@ function McpServersPanel() {
                 <td>{server.discoveryStatus}</td>
                 <td>{server.authorization}</td>
                 <td>
-                  <button
+                  <Button
                     className="secondary-button"
                     type="button"
                     onClick={() => openConfigurationDraft(server.name)}
                   >
                     {server.discoveryStatus === "Discovered" ? "Edit" : "Configure"}
-                  </button>
+                  </Button>
                 </td>
               </tr>
             ))}
@@ -1231,14 +1263,15 @@ function McpServersPanel() {
           </div>
           <label>
             <span>Agent</span>
-            <select
-              aria-label="Agent"
-              value={authorizationAgent}
-              onChange={(event) => setAuthorizationAgent(event.target.value)}
-            >
-              <option>Default Agent</option>
-              <option>Research Agent</option>
-            </select>
+            <Select value={authorizationAgent} onValueChange={setAuthorizationAgent}>
+              <SelectTrigger aria-label="Agent">
+                <SelectValue placeholder="Default Agent" />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="Default Agent">Default Agent</SelectItem>
+                <SelectItem value="Research Agent">Research Agent</SelectItem>
+              </SelectContent>
+            </Select>
           </label>
           <div className="card-field-list" aria-label="Authorized tools">
             <span className="card-field">read_document</span>
@@ -1246,7 +1279,7 @@ function McpServersPanel() {
             <span className="card-field">render_artifact</span>
           </div>
           <p>Agent Tool Gateway remains backend-owned; the frontend never exposes raw MCP credentials.</p>
-          <button className="secondary-button" type="button">Save authorization draft</button>
+          <Button className="secondary-button" type="button">Save authorization draft</Button>
         </section>
       </div>
       {isConfigurationDraftOpen ? (
@@ -1256,36 +1289,41 @@ function McpServersPanel() {
               <p className="eyebrow">Configuration draft</p>
               <h3>{selectedServer ? selectedServer.name : "Create MCP Server"}</h3>
             </div>
-            <button
+            <Button
               className="secondary-button"
               type="button"
               onClick={() => setIsConfigurationDraftOpen(false)}
             >
               Close
-            </button>
+            </Button>
           </div>
           <div className="form-grid">
             <label>
               <span>Name</span>
-              <input defaultValue={selectedServer?.name ?? ""} placeholder="MCP Server name" />
+              <Input defaultValue={selectedServer?.name ?? ""} placeholder="MCP Server name" />
             </label>
             <label>
               <span>Connection type</span>
-              <select defaultValue={selectedServer?.connectionType ?? "SSE"}>
-                <option>SSE</option>
-                <option>Streamable HTTP</option>
-              </select>
+              <Select defaultValue={selectedServer?.connectionType ?? "SSE"}>
+                <SelectTrigger>
+                  <SelectValue placeholder="SSE" />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="SSE">SSE</SelectItem>
+                  <SelectItem value="Streamable HTTP">Streamable HTTP</SelectItem>
+                </SelectContent>
+              </Select>
             </label>
             <label>
               <span>Credential reference</span>
-              <input
+              <Input
                 defaultValue={selectedServer?.credentialReference ?? ""}
                 placeholder="secret/mcp-server"
               />
             </label>
             <label>
               <span>Timeout</span>
-              <input placeholder="30s" />
+              <Input placeholder="30s" />
             </label>
           </div>
           <p className="inline-note">
@@ -1309,7 +1347,7 @@ function SearchProviderPanel() {
           <h2>Doubao Search Provider</h2>
           <p>Search Capability finds candidate URLs and summaries; Page Read reads known URLs.</p>
         </div>
-        <button className="secondary-button" type="button">Health check</button>
+        <Button className="secondary-button" type="button">Health check</Button>
       </div>
       <section className="detail-grid" aria-label="Doubao Search Provider status">
         <InfoTile title="Provider" value="enabled" tone="success" />
@@ -1325,28 +1363,33 @@ function SearchProviderPanel() {
           </div>
           <label>
             <span>Endpoint</span>
-            <input defaultValue="Doubao Search Provider" />
+            <Input defaultValue="Doubao Search Provider" />
           </label>
           <div className="form-grid">
             <label>
               <span>Rate limit</span>
-              <input defaultValue="60 / min" />
+              <Input defaultValue="60 / min" />
             </label>
             <label>
               <span>Timeout</span>
-              <input defaultValue="12s" />
+              <Input defaultValue="12s" />
             </label>
           </div>
           <label>
             <span>Result limit</span>
-            <select defaultValue="8 candidate results">
-              <option>5 candidate results</option>
-              <option>8 candidate results</option>
-              <option>12 candidate results</option>
-            </select>
+            <Select defaultValue="8 candidate results">
+              <SelectTrigger>
+                <SelectValue placeholder="8 candidate results" />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="5 candidate results">5 candidate results</SelectItem>
+                <SelectItem value="8 candidate results">8 candidate results</SelectItem>
+                <SelectItem value="12 candidate results">12 candidate results</SelectItem>
+              </SelectContent>
+            </Select>
           </label>
           <p className="inline-note">This does not change Page Read content-length limits.</p>
-          <button className="primary-button" type="button">Save configuration draft</button>
+          <Button className="primary-button" type="button">Save configuration draft</Button>
         </section>
         <section className="sub-panel stack" aria-label="Capability boundary">
           <div>
@@ -1368,7 +1411,7 @@ function SearchProviderPanel() {
             <h3>Provider runtime preview</h3>
           </div>
           <div className="tab-list" role="tablist" aria-label="Search Provider runtime states">
-            <button
+            <Button
               aria-selected={scenario === "success"}
               className={scenario === "success" ? "tab-button active" : "tab-button"}
               role="tab"
@@ -1376,8 +1419,8 @@ function SearchProviderPanel() {
               onClick={() => setScenario("success")}
             >
               Success
-            </button>
-            <button
+            </Button>
+            <Button
               aria-selected={scenario === "empty"}
               className={scenario === "empty" ? "tab-button active" : "tab-button"}
               role="tab"
@@ -1385,8 +1428,8 @@ function SearchProviderPanel() {
               onClick={() => setScenario("empty")}
             >
               Empty
-            </button>
-            <button
+            </Button>
+            <Button
               aria-selected={scenario === "error"}
               className={scenario === "error" ? "tab-button active" : "tab-button"}
               role="tab"
@@ -1394,7 +1437,7 @@ function SearchProviderPanel() {
               onClick={() => setScenario("error")}
             >
               Provider error
-            </button>
+            </Button>
           </div>
         </div>
         {scenario === "success" ? (
@@ -1402,7 +1445,6 @@ function SearchProviderPanel() {
             <h3>Candidate summaries available</h3>
             <p>Agent Runs may pass a selected known URL to Page Read Provider for full text.</p>
             <TableBlock
-              title="Candidate results"
               columns={["title", "url", "summary", "next step"]}
               rows={[
                 ["Minimalist Agent MVP", "docs/internal/mvp", "Conversation-first platform scope.", "Page Read allowed"],
@@ -1440,7 +1482,7 @@ function PageReadProviderPanel() {
           <h2>Jina Reader Provider</h2>
           <p>Page Read reads full text from a known URL; Search only finds candidate URLs and summaries.</p>
         </div>
-        <button className="secondary-button" type="button">Health check</button>
+        <Button className="secondary-button" type="button">Health check</Button>
       </div>
       <section className="detail-grid" aria-label="Jina Reader Provider status">
         <InfoTile title="Provider" value="enabled" tone="success" />
@@ -1457,13 +1499,13 @@ function PageReadProviderPanel() {
           <p>Allow or deny known URLs before Page Read extracts readable text.</p>
           <label>
             <span>Allow domains</span>
-            <textarea defaultValue={"docs.example.com\nhelp.example.com"} />
+            <Textarea defaultValue={"docs.example.com\nhelp.example.com"} />
           </label>
           <label>
             <span>Deny domains</span>
-            <textarea defaultValue="internal.example.com" />
+            <Textarea defaultValue="internal.example.com" />
           </label>
-          <button className="primary-button" type="button">Save policy draft</button>
+          <Button className="primary-button" type="button">Save policy draft</Button>
         </section>
         <section className="sub-panel stack" aria-label="Page Read runtime settings">
           <div>
@@ -1472,19 +1514,24 @@ function PageReadProviderPanel() {
           </div>
           <label>
             <span>Extract mode</span>
-            <select defaultValue="Readable text">
-              <option>Readable text</option>
-              <option>Preserve structure</option>
-            </select>
+            <Select defaultValue="Readable text">
+              <SelectTrigger>
+                <SelectValue placeholder="Readable text" />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="Readable text">Readable text</SelectItem>
+                <SelectItem value="Preserve structure">Preserve structure</SelectItem>
+              </SelectContent>
+            </Select>
           </label>
           <div className="form-grid">
             <label>
               <span>Timeout</span>
-              <input defaultValue="15s" />
+              <Input defaultValue="15s" />
             </label>
             <label>
               <span>Content length</span>
-              <input defaultValue="40k characters" />
+              <Input defaultValue="40k characters" />
             </label>
           </div>
           <p className="inline-note">These settings do not change Search Provider result limits.</p>
@@ -1498,7 +1545,7 @@ function PageReadProviderPanel() {
             <h3>Known URL read preview</h3>
           </div>
           <div className="tab-list" role="tablist" aria-label="Page Read health check states">
-            <button
+            <Button
               aria-selected={scenario === "success"}
               className={scenario === "success" ? "tab-button active" : "tab-button"}
               role="tab"
@@ -1506,8 +1553,8 @@ function PageReadProviderPanel() {
               onClick={() => setScenario("success")}
             >
               Success
-            </button>
-            <button
+            </Button>
+            <Button
               aria-selected={scenario === "policy-violation"}
               className={scenario === "policy-violation" ? "tab-button active" : "tab-button"}
               role="tab"
@@ -1515,7 +1562,7 @@ function PageReadProviderPanel() {
               onClick={() => setScenario("policy-violation")}
             >
               Policy violation
-            </button>
+            </Button>
           </div>
         </div>
         {scenario === "success" ? (
@@ -1623,7 +1670,7 @@ function SandboxStatusPanel() {
             <h3>Recent call outcome</h3>
           </div>
           <div className="tab-list" role="tablist" aria-label="Sandbox recent call outcomes">
-            <button
+            <Button
               aria-selected={scenario === "completed"}
               className={scenario === "completed" ? "tab-button active" : "tab-button"}
               role="tab"
@@ -1631,8 +1678,8 @@ function SandboxStatusPanel() {
               onClick={() => setScenario("completed")}
             >
               Completed call
-            </button>
-            <button
+            </Button>
+            <Button
               aria-selected={scenario === "rejected"}
               className={scenario === "rejected" ? "tab-button active" : "tab-button"}
               role="tab"
@@ -1640,7 +1687,7 @@ function SandboxStatusPanel() {
               onClick={() => setScenario("rejected")}
             >
               Rejected call
-            </button>
+            </Button>
           </div>
         </div>
         {scenario === "completed" ? (
@@ -1762,17 +1809,21 @@ function RunAuditPanel() {
       </div>
       <section className="state-panel" aria-label="Run Audit filters">
         <label htmlFor="run-audit-status-filter">Status</label>
-        <select
-          id="run-audit-status-filter"
+        <Select
           value={statusFilter}
-          onChange={(event) => switchStatusFilter(event.currentTarget.value as RunAuditStatusFilter)}
+          onValueChange={(value) => switchStatusFilter(value as RunAuditStatusFilter)}
         >
-          <option value="all">all</option>
-          <option value="running">running</option>
-          <option value="completed">completed</option>
-          <option value="failed">failed</option>
-          <option value="cancelled">cancelled</option>
-        </select>
+          <SelectTrigger id="run-audit-status-filter">
+            <SelectValue placeholder="all" />
+          </SelectTrigger>
+          <SelectContent>
+            <SelectItem value="all">all</SelectItem>
+            <SelectItem value="running">running</SelectItem>
+            <SelectItem value="completed">completed</SelectItem>
+            <SelectItem value="failed">failed</SelectItem>
+            <SelectItem value="cancelled">cancelled</SelectItem>
+          </SelectContent>
+        </Select>
       </section>
       <div className="route-table-wrap">
         <table className="route-table" aria-label="Agent Run list">
@@ -1801,9 +1852,9 @@ function RunAuditPanel() {
                 <td>{run.toolCount}</td>
                 <td>{run.artifactCount}</td>
                 <td>
-                  <button className="secondary-button" type="button" onClick={() => setSelectedRunId(run.id)}>
+                  <Button className="secondary-button" type="button" onClick={() => setSelectedRunId(run.id)}>
                     Details
-                  </button>
+                  </Button>
                 </td>
               </tr>
             ))}
@@ -1884,37 +1935,88 @@ function ProviderPanel({ title, capability, settings }: { title: string; capabil
 
 function DataTable({ title, columns, rows }: { title: string; columns: string[]; rows: string[][] }) {
   return (
-    <section className="route-panel">
-      <TableBlock title={title} columns={columns} rows={rows} />
-    </section>
+    <Card className="route-panel">
+      <CardHeader>
+        <CardTitle>{title}</CardTitle>
+      </CardHeader>
+      <CardContent>
+        <TableBlock columns={columns} rows={rows} />
+      </CardContent>
+    </Card>
   );
 }
 
-function TableBlock({ title, columns, rows }: { title: string; columns: string[]; rows: string[][] }) {
+function TableBlock({ columns, rows }: { columns: string[]; rows: string[][] }) {
   return (
-    <>
-      <h2>{title}</h2>
-      <div className="route-table-wrap">
-        <table className="route-table">
-          <thead>
-            <tr>{columns.map((column) => <th key={column}>{column}</th>)}</tr>
-          </thead>
-          <tbody>
-            {rows.map((row) => (
-              <tr key={row.join(":")}>{row.map((cell) => <td key={cell}>{cell}</td>)}</tr>
-            ))}
-          </tbody>
-        </table>
-      </div>
-    </>
+    <div className="route-table-wrap">
+      <table className="route-table">
+        <thead>
+          <tr>{columns.map((column) => <th key={column}>{column}</th>)}</tr>
+        </thead>
+        <tbody>
+          {rows.map((row) => (
+            <tr key={row.join(":")}>{row.map((cell) => <td key={cell}>{cell}</td>)}</tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
   );
 }
 
 function InfoTile({ title, value, tone }: { title: string; value: string; tone?: string }) {
   return (
-    <article className="info-tile">
-      <span className={tone ? `audit-chip ${tone}` : "audit-chip"}>{title}</span>
-      <strong>{value}</strong>
-    </article>
+    <Card className="info-tile">
+      <CardContent className="flex flex-col gap-2 p-4">
+        <Badge variant={toneToBadgeVariant(tone)}>{title}</Badge>
+        <strong>{value}</strong>
+      </CardContent>
+    </Card>
   );
+}
+
+function taskBadgeVariant(status: string) {
+  switch (status) {
+    case "pending":
+      return "secondary";
+    case "ready":
+      return "outline";
+    case "warning":
+      return "destructive";
+    default:
+      return "secondary";
+  }
+}
+
+function accountBadgeVariant(status: string) {
+  switch (status) {
+    case "enabled":
+      return "default";
+    case "pending":
+      return "secondary";
+    case "rejected":
+    case "disabled":
+    case "failed":
+      return "destructive";
+    case "running":
+      return "outline";
+    case "draft":
+      return "outline";
+    case "success":
+      return "default";
+    default:
+      return "secondary";
+  }
+}
+
+function toneToBadgeVariant(tone?: string) {
+  switch (tone) {
+    case "success":
+      return "default";
+    case "warning":
+      return "destructive";
+    case "pending":
+      return "secondary";
+    default:
+      return "outline";
+  }
 }

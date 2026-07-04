@@ -14,6 +14,18 @@ import {
 } from "../../shared/conversation-message-rendering";
 import { CopilotWorkspaceBridge } from "../../shared/copilotkit-adapter";
 import type { ConversationCard } from "../../shared/card-schema-contract";
+import { Badge } from "@/components/ui/badge";
+import { Button } from "@/components/ui/button";
+import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { Input } from "@/components/ui/input";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
+import { Separator } from "@/components/ui/separator";
 
 type ModelOption = {
   id: string;
@@ -384,9 +396,9 @@ export function ConversationShell() {
           </a>
           <p>对话工作台</p>
         </div>
-        <button className="primary-button full-width" type="button" onClick={startNewConversation}>
+        <Button className="primary-button full-width" type="button" onClick={startNewConversation}>
           新建对话
-        </button>
+        </Button>
         <nav className="workspace-nav" aria-label="工作台导航">
           <a className="workspace-nav-item active" href="/app/conversations">会话</a>
           <a className="workspace-nav-item" href="/admin/run-audit">运行审计</a>
@@ -399,7 +411,7 @@ export function ConversationShell() {
           </div>
           <label className="compact-field">
             <span>搜索</span>
-            <input
+            <Input
               aria-label="搜索对话"
               name="conversation-search"
               type="search"
@@ -412,7 +424,7 @@ export function ConversationShell() {
               const conversationAgent = getAgent(conversation.agentId);
 
               return (
-                <button
+                <Button
                   className={
                     conversation.id === selectedConversationId
                       ? "conversation-item selected"
@@ -430,7 +442,7 @@ export function ConversationShell() {
                     </span>
                     <span>{conversation.updatedAt}</span>
                   </span>
-                </button>
+                </Button>
               );
             })}
             {visibleConversations.length === 0 ? (
@@ -476,29 +488,29 @@ export function ConversationShell() {
             <span className={`run-status ${streamStatus}`}>
               {formatStreamStatus(streamStatus)}
             </span>
-            <button
+            <Button
               className="secondary-button"
               disabled={!selectedConversation || selectedConversation.status !== "running"}
               type="button"
             >
               停止运行
-            </button>
-            <button
+            </Button>
+            <Button
               className="secondary-button"
               disabled={!selectedConversation}
               type="button"
               onClick={() => setIsRenaming(true)}
             >
               重命名
-            </button>
-            <button
+            </Button>
+            <Button
               className="danger-button"
               disabled={!selectedConversation}
               type="button"
               onClick={deleteConversation}
             >
               删除
-            </button>
+            </Button>
           </div>
         </header>
 
@@ -506,56 +518,71 @@ export function ConversationShell() {
           <form className="rename-panel" onSubmit={renameConversation}>
             <label>
               <span>对话名称</span>
-              <input
+              <Input
                 name="conversation-title"
                 value={renameValue}
                 onChange={(event) => setRenameValue(event.target.value)}
               />
             </label>
-            <button className="primary-button" type="submit">
+            <Button className="primary-button" type="submit">
               保存名称
-            </button>
+            </Button>
           </form>
         ) : null}
 
-        <section className="runtime-controls" aria-label="运行配置">
-          <label>
-            <span>智能体选择</span>
-            <select
-              disabled={Boolean(selectedConversation)}
-              value={activeAgent.id}
-              onChange={(event) => updateDraftAgent(event.target.value)}
-            >
-              {workspaceAgents.map((agent) => (
-                <option key={agent.id} value={agent.id}>
-                  {agent.name}
-                </option>
-              ))}
-            </select>
-          </label>
-          <label>
-            <span>模型选择</span>
-            <select
-              value={selectedModelId}
-              onChange={(event) => setDraftModelId(event.target.value)}
-              disabled={Boolean(selectedConversation)}
-            >
-              {allowedModels.map((model) => (
-                <option key={model.id} value={model.id}>
-                  {model.label}
-                </option>
-              ))}
-            </select>
-          </label>
-          <p className="capability-note">能力由管理员策略决定</p>
-        </section>
+        <Card className="runtime-controls" aria-label="运行配置">
+          <CardHeader>
+            <CardTitle>运行配置</CardTitle>
+          </CardHeader>
+          <CardContent className="flex flex-col gap-4">
+            <label className="flex flex-col gap-2">
+              <span>智能体选择</span>
+              <Select
+                disabled={Boolean(selectedConversation)}
+                value={activeAgent.id}
+                onValueChange={updateDraftAgent}
+              >
+                <SelectTrigger>
+                  <SelectValue placeholder={activeAgent.name} />
+                </SelectTrigger>
+                <SelectContent>
+                  {workspaceAgents.map((agent) => (
+                    <SelectItem key={agent.id} value={agent.id}>
+                      {agent.name}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </label>
+            <label className="flex flex-col gap-2">
+              <span>模型选择</span>
+              <Select
+                disabled={Boolean(selectedConversation)}
+                value={selectedModelId}
+                onValueChange={setDraftModelId}
+              >
+                <SelectTrigger>
+                  <SelectValue placeholder={selectedModelLabel} />
+                </SelectTrigger>
+                <SelectContent>
+                  {allowedModels.map((model) => (
+                    <SelectItem key={model.id} value={model.id}>
+                      {model.label}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </label>
+            <Badge variant="secondary">能力由管理员策略决定</Badge>
+          </CardContent>
+        </Card>
 
         <section className="copilot-chat-panel" aria-label="对话消息">
-          <div className="stream-banner" role="status" aria-live="polite">
+          <Card className="stream-banner" role="status" aria-live="polite">
             <span>AG-UI：{streamStatus === "connected" ? "已连接" : "空闲"}</span>
             <span>{selectedConversation ? `Run ${activeRunId ?? 0}` : "无运行"}</span>
             <span>{lastSeenSequence > 0 ? `事件 ${lastSeenSequence}` : "事件 0"}</span>
-          </div>
+          </Card>
           <div className="copilot-chat-frame" aria-label="CopilotKit 对话面板">
             <CopilotChat
               agentId={activeAgent.id}
@@ -569,63 +596,64 @@ export function ConversationShell() {
       </section>
 
       <aside className="artifact-inspector" aria-label="检查面板">
-        <section
-          className="app-panel preview-panel"
-          aria-label="制品预览"
-        >
-          <div className="inspector-header">
+        <Card className="app-panel preview-panel">
+          <CardHeader className="inspector-header">
             <div>
               <p className="eyebrow">制品预览</p>
               <h2 id="artifact-preview-title">制品</h2>
             </div>
-            <span className="inspector-state">只读</span>
-          </div>
-          <div className="artifact-actions">
-            <button className="artifact-tab active" type="button">预览</button>
-            <button className="artifact-tab" type="button">元数据</button>
-          </div>
-          <div className="preview-surface" role="presentation">
-            {selectedArtifactReference ? (
-              <>
-                <p className="preview-label">{selectedArtifactReference.previewType}</p>
-                <h3>{selectedArtifactReference.filename}</h3>
-                <p className="preview-text">
-                  {previewArtifactId === selectedArtifactReference.artifactId
-                    ? "# 简报\n\nalpha"
-                    : "# 摘要\n\n制品正文保留在对象存储。"}
-                </p>
-              </>
-            ) : attachmentPreview ? (
-              <AttachmentPreview preview={attachmentPreview} />
-            ) : (
-              <p className="preview-text">打开制品或在对话中添加文件后在此预览。</p>
-            )}
-          </div>
-        </section>
-        <section className="app-panel run-context-panel" aria-label="运行上下文">
-          <div className="inspector-header compact">
+            <Badge variant="outline">只读</Badge>
+          </CardHeader>
+          <CardContent className="flex flex-col gap-4" aria-label="制品预览">
+            <div className="artifact-actions">
+              <Button className="artifact-tab active" type="button">预览</Button>
+              <Button className="artifact-tab" type="button">元数据</Button>
+            </div>
+            <div className="preview-surface" role="presentation">
+              {selectedArtifactReference ? (
+                <>
+                  <p className="preview-label">{selectedArtifactReference.previewType}</p>
+                  <h3>{selectedArtifactReference.filename}</h3>
+                  <p className="preview-text">
+                    {previewArtifactId === selectedArtifactReference.artifactId
+                      ? "# 简报\n\nalpha"
+                      : "# 摘要\n\n制品正文保留在对象存储。"}
+                  </p>
+                </>
+              ) : attachmentPreview ? (
+                <AttachmentPreview preview={attachmentPreview} />
+              ) : (
+                <p className="preview-text">打开制品或在对话中添加文件后在此预览。</p>
+              )}
+            </div>
+          </CardContent>
+        </Card>
+        <Card className="app-panel run-context-panel">
+          <CardHeader className="inspector-header compact">
             <div>
               <p className="eyebrow">运行上下文</p>
               <h2>运行</h2>
             </div>
-          </div>
-          <div className="context-row">
-            <span>AG-UI</span>
-            <strong>{streamStatus === "connected" ? "已连接" : "空闲"}</strong>
-          </div>
-          <div className="context-row">
-            <span>Run</span>
-            <strong>{activeRunId ?? "无"}</strong>
-          </div>
-          <div className="context-row">
-            <span>事件</span>
-            <strong>{lastSeenSequence}</strong>
-          </div>
-          <div className="context-row">
-            <span>策略</span>
-            <strong>后端治理</strong>
-          </div>
-        </section>
+          </CardHeader>
+          <CardContent className="flex flex-col gap-3" aria-label="运行上下文">
+            <div className="context-row">
+              <span>AG-UI</span>
+              <strong>{streamStatus === "connected" ? "已连接" : "空闲"}</strong>
+            </div>
+            <div className="context-row">
+              <span>Run</span>
+              <strong>{activeRunId ?? "无"}</strong>
+            </div>
+            <div className="context-row">
+              <span>事件</span>
+              <strong>{lastSeenSequence}</strong>
+            </div>
+            <div className="context-row">
+              <span>策略</span>
+              <strong>后端治理</strong>
+            </div>
+          </CardContent>
+        </Card>
       </aside>
     </main>
   );

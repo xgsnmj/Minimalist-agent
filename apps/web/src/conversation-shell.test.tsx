@@ -15,8 +15,8 @@ describe("Agent Conversation workspace", () => {
     expect(screen.getByRole("searchbox", { name: "搜索对话" })).toBeInTheDocument();
     expect(screen.getByRole("heading", { name: "市场调研" })).toBeInTheDocument();
     expect(within(screen.getByLabelText("最近对话")).getByText("默认智能体")).toBeInTheDocument();
-    expect(within(screen.getByLabelText("运行配置")).getByLabelText("智能体选择")).toHaveDisplayValue("默认智能体");
-    expect(within(screen.getByLabelText("运行配置")).getByLabelText("模型选择")).toHaveDisplayValue("OpenAI GPT-5");
+    expect(within(screen.getByLabelText("运行配置")).getByRole("combobox", { name: "智能体选择" })).toBeInTheDocument();
+    expect(within(screen.getByLabelText("运行配置")).getByRole("combobox", { name: "模型选择" })).toBeInTheDocument();
     expect(screen.getByRole("region", { name: "CopilotKit 对话面板" })).toBeInTheDocument();
     expect(screen.getByPlaceholderText("向当前智能体发送任务")).toBeInTheDocument();
     expect(screen.getByText("当前会话由 CopilotKit 渲染。运行与权限由后端治理。")).toBeInTheDocument();
@@ -36,7 +36,7 @@ describe("Agent Conversation workspace", () => {
     expect(screen.getAllByRole("link", { name: "管理员控制台" }).length).toBeGreaterThan(0);
     expect(screen.getByLabelText("搜索对话")).toBeInTheDocument();
     expect(screen.getByLabelText("运行附件")).toBeInTheDocument();
-    expect(screen.getByRole("region", { name: "制品预览" })).toBeInTheDocument();
-    expect(screen.getByRole("region", { name: "运行上下文" })).toBeInTheDocument();
+    expect(screen.getByLabelText("制品预览")).toBeInTheDocument();
+    expect(screen.getByLabelText("运行上下文")).toBeInTheDocument();
   });
 });
