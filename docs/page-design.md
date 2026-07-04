@@ -21,6 +21,10 @@ Open Design 原型路径记录在 `docs/open-design-prototype.md`。后续实现
 
 页面设计必须遵守这些既有决策：
 
+- 产品默认面向中国国内使用场景；网站界面语言使用简体中文，领域文档和代码标识仍可保留英文 canonical terms。
+- Minimalist Agent 是生产框架级 AI 工作台系统，不是展示型 AI 产品页面；所有页面默认采用高密度信息极简风。
+- 页面文案不得带营销、教程或解释产品价值的语气；只保留用户完成当前工作所需的状态、对象、动作、约束和反馈。
+- 功能、按钮、交互和布局按第一性原理设计：先删掉不必要元素，再把必要动作放到最短路径上，最后用最少视觉语言表达状态和层级。
 - 单工作区 MVP：不引入组织、租户、项目、空间、文件夹和协作容器。
 - 第一层导航对象是 Agent Conversation，不是 Project。
 - 登录与注册使用 Local Account；新注册账号必须经过 Administrator 批准。
@@ -44,11 +48,78 @@ MVP 推荐把当前单组件拆成三组页面：
 
 Artifact Preview 默认是 Conversation Workspace 的右侧检查面板，不作为主导航页面。可在后续支持 `/app/conversations/:id/artifacts/:artifactId` 作为可分享或可恢复的深链接。
 
+## 统一视觉系统
+
+Minimalist Agent 的页面重设计采用 OpenAI-inspired 的安静近单色产品视觉系统：真实白底、冷调近黑文字、充足留白、细边框、轻量 teal 强调色和克制的编辑感排版。界面应该像一个公共研究产品的工作台，而不是营销落地页、传统后台模板或重装饰 AI 工具。
+
+## 生产工作台界面原则
+
+Minimalist Agent 的界面按生产框架级 AI 工作台设计，而不是按品牌官网、新手教程或演示样机设计。每个页面必须优先服务真实工作流中的快速判断和快速操作。
+
+- 信息密度：默认高密度，但要靠网格、对齐、分组和弱化层级保持清晰；不要用大面积空叙事区、宣传区或装饰区换取“高级感”。
+- 文案标准：只写对象、状态、动作、约束、错误原因和下一步；避免欢迎语、价值主张、功能介绍、教学说明和泛泛而谈的口号。
+- 布局标准：优先把核心对象和核心动作放在首屏稳定位置；任何辅助信息必须证明它能减少用户判断成本。
+- 交互标准：按钮只承担明确命令；图标按钮必须有可理解的 tooltip；不把解释性文本伪装成操作入口。
+- 删除标准：如果一个元素不能帮助用户完成当前页面的主要任务，就删除、折叠到详情、或移到更合适的页面。
+- 状态标准：生产系统必须清楚表达 loading、empty、pending、running、failed、cancelled、disabled 和 permission denied，但状态文案保持短句。
+- 视觉标准：近单色、细边框、低阴影、少强调色；视觉层级为可扫描服务，不为装饰服务。
+
+### 视觉气质
+
+- 主画布使用 `#ffffff`，必要的区域断层使用 `#fafafa` 或 `#f5f5f5`。
+- 主文字使用带冷感的近黑 `#0d0d0d`，正文使用 `#3c3c3c`，二级信息使用 `#6e6e6e`。
+- 品牌强调色只使用 teal 系：`#10a37f` 用于焦点、链接、运行中状态和少量高亮；hover/pressed 使用 `#0a7a5e`。
+- 边界主要靠留白和 `#e5e5e5` / `#ededed` 细线完成，阴影只用于 hover 或浮层，不作为默认层级语言。
+- 不使用大面积渐变、彩色背景块、发光装饰、过度插画、厚重阴影或“AI 科技感”装饰。
+
+### 字体与排版
+
+- UI 字体使用 `Inter, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif`，中文跟随系统中文字体回退。
+- Display/editorial 场景可使用 `Source Serif Pro, Georgia, serif` 作为 Signifier 风格替代；仅用于访问入口的大标题或少量空态，不进入密集产品控件。
+- 字重保持克制：正文 400，导航/标签 500，标题强调 600；避免 700+ 字重。
+- 产品页标题主要在 24-40px 之间；密集工作台里的区域标题保持 16-20px。
+- 正文行高保持 1.55-1.65，字距接近 0；不要用紧缩字距制造高级感。
+
+### 颜色角色
+
+| 角色 | 色值 | 用途 |
+| --- | --- | --- |
+| Pure White | `#ffffff` | 主背景、主要表面、按钮表面 |
+| Mist | `#fafafa` | 页面带状背景、侧栏、空态区域 |
+| Pearl | `#f5f5f5` | 次级表面、输入前景、轻量容器 |
+| Ink Black | `#0d0d0d` | 主文字、主按钮、品牌字标 |
+| Graphite | `#3c3c3c` | 正文、表格主内容 |
+| Slate | `#6e6e6e` | 元信息、说明、时间戳 |
+| Ash | `#9b9b9b` | placeholder、disabled 文案 |
+| Hairline | `#e5e5e5` | 标准分隔线、输入边框 |
+| Border Soft | `#ededed` | 卡片或面板描边 |
+| Teal | `#10a37f` | 焦点、链接、运行中、少量品牌强调 |
+| Teal Deep | `#0a7a5e` | teal hover/pressed |
+| Teal Soft | `#e8f5f0` | 成功、已连接、轻量高亮背景 |
+| Error | `#ef4146` | 校验错误、危险动作 |
+| Warning | `#f5a623` | 审批提示、配置风险 |
+
+### 组件语言
+
+- 主要按钮：`#0d0d0d` 背景、白字、10px 18px padding、12px 圆角；真正的 chip/tag 才使用全胶囊。
+- 次要按钮：白底、`#e5e5e5` 边框、近黑文字，hover 切到 `#fafafa`。
+- 输入框：白底、`#e5e5e5` 边框、12px 圆角、12px 14px padding；focus 使用 teal 边框和低透明度 focus ring。
+- 标签和状态 chip：`#f5f5f5` 背景、12px/500 字体、9999px 圆角；状态色只做局部提示。
+- 卡片和重复项：默认白底、`#ededed` 边框、无阴影；工作台列表项优先 8-12px 圆角，较大独立卡片可到 16px。
+- 浮层、drawer、popover 使用细边框和轻阴影，动效控制在 150-220ms hover、280-360ms 布局进入。
+
+### 布局节奏
+
+- 基础间距单位为 4px，常用阶梯：4、8、12、16、24、32、48、64、96。
+- 工作台是应用界面，不套营销式大容器；桌面端优先 3 栏稳定布局。
+- 主导航、消息流、inspector 的分隔主要依靠宽度、留白和 hairline，不用重色块。
+- 移动端保留阅读和输入优先级，sidebar 与 inspector 进入 drawer 或 bottom sheet。
+
 ## 全局布局原则
 
 产品应该像安静的桌面级工作台，而不是营销站或传统后台首页。
 
-- 主要背景使用低饱和暖灰或中性浅色，内容表面为白色或近白色。
+- 主要背景使用真实白或低饱和中性浅色，内容表面为白色或近白色。
 - 左侧导航保持窄而稳定，中心工作区承载主要任务，右侧检查面板用于预览和上下文。
 - 不在用户工作台堆放所有管理员入口；管理员能力进入独立 Administrator Console。
 - 控制密度适中，按钮文案短，二级信息弱化。
@@ -57,24 +128,24 @@ Artifact Preview 默认是 Conversation Workspace 的右侧检查面板，不作
 - 页面状态必须覆盖 empty、loading、success、error、disabled、pending、running、cancelled。
 - 移动端优先保留会话阅读和 composer，侧栏和预览面板转为 drawer 或 bottom sheet。
 
-## 视觉规格
+## 视觉规格摘要
 
 | 项目 | 规范 |
 | --- | --- |
-| 字体 | 系统无衬线字体；中文界面优先使用系统中文字体回退 |
-| 字号 | 页面标题 24-28；区域标题 16-20；正文 14；辅助信息 12 |
-| 圆角 | 普通控件 6-8px；不要大面积胶囊卡片化 |
-| 间距 | 工作台外边距 16-20；模块内部 12-20；列表项 10-14 |
-| 边框 | 使用浅灰细边框区分区域，少用重阴影 |
-| 主色 | 用于焦点、选中、链接和运行状态，不应铺满页面 |
+| 字体 | Inter/system UI 为主；Source Serif Pro/Georgia 只用于少量 editorial display |
+| 字号 | 访问入口标题 32-40；工作台页面标题 24-32；区域标题 16-20；正文 14-16；辅助信息 12-13 |
+| 圆角 | 普通控件 8-12px；独立大卡片最高 16px；chip/tag 使用 9999px |
+| 间距 | 4px 基础单位；工作台外边距 16-24；模块内部 12-24；主区域留白更慷慨 |
+| 边框 | `#e5e5e5` / `#ededed` 细边框区分区域，默认不使用重阴影 |
+| 主色 | teal 只用于焦点、选中、链接和运行状态，不应铺满页面 |
 | 状态色 | success、warning、danger、info 只用于状态，不作为大面积背景 |
-| 动效 | 悬停、选中、streaming message、loading skeleton；避免装饰性动画 |
+| 动效 | 悬停、选中、streaming message、loading skeleton；只做轻微 fade/translate，避免装饰性动画 |
 
 ## 页面 1：Login
 
 ### 目标
 
-让已批准的 Local Account 进入 Agent Platform。
+让已批准的 Local Account 进入 Agent Platform。页面面向中国国内用户，界面文案使用简体中文；普通用户看到“本地账号”“管理员审批”“智能体对话”等中文表达，不直接暴露内部英文术语。
 
 ### 访问权限
 
@@ -82,10 +153,11 @@ Artifact Preview 默认是 Conversation Workspace 的右侧检查面板，不作
 
 ### 页面结构
 
-- 左上角品牌：Minimalist Agent。
-- 中央登录面板：用户名或邮箱、密码、登录按钮。
-- 次级入口：Create Local Account。
-- 状态反馈：账号待审批、被拒绝、被禁用、账号或密码错误。
+- 单个紧凑访问面板：品牌、当前状态、登录标题。
+- 表单：账号或邮箱、密码、登录按钮。
+- 次级入口：无账号 -> 申请。
+- 底部约束短句：准入为已审批账号，成功后进入对话工作台。
+- 状态反馈：账号待审批、被拒绝、被停用、账号或密码错误。
 
 ### 交互
 
@@ -104,13 +176,14 @@ Artifact Preview 默认是 Conversation Workspace 的右侧检查面板，不作
 
 ### 目标
 
-创建 Local Account，并告知用户需要 Administrator approval。
+创建 Local Account，并告知用户需要 Administrator approval。页面文案使用简体中文，并明确“提交申请”不等于立即进入工作台。
 
 ### 页面结构
 
-- 用户名、邮箱、密码、确认密码。
-- Request Access 主按钮。
-- 返回 Login 的次级链接。
+- 单个紧凑访问面板：品牌、当前状态、申请账号标题。
+- 表单：用户名、邮箱、密码、确认密码、提交申请。
+- 次级入口：已有账号 -> 登录。
+- 底部约束短句：结果为待审批，准入由管理员批准。
 
 ### 交互
 
@@ -120,19 +193,20 @@ Artifact Preview 默认是 Conversation Workspace 的右侧检查面板，不作
 
 ### 设计重点
 
-注册页不要承诺立即可用。主文案应说明账号创建后需要管理员批准，避免用户把 pending 状态理解成故障。
+注册页不要承诺立即可用。只用短状态表达“提交后待审批”，避免欢迎语、流程教程和功能说明。
 
 ## 页面 3：Approval Pending
 
 ### 目标
 
-解释新 Local Account 当前无法使用工作台的原因。
+解释新 Local Account 当前无法使用工作台的原因。页面必须明确这是正常的审批状态，不是登录失败或系统错误。
 
 ### 页面结构
 
-- 状态标题：Account pending approval。
-- 简短说明：Administrator 批准后才能进入 Agent Platform。
-- 操作：Back to login、Refresh status。
+- 单个紧凑状态面板：品牌、待审批状态、待审批标题。
+- 状态列表：申请已提交、审批等待管理员、访问未开放。
+- 操作：刷新状态、返回登录。
+- 底部约束短句：入口锁定，审批通过后登录。
 
 ### 交互
 
@@ -145,21 +219,39 @@ Artifact Preview 默认是 Conversation Workspace 的右侧检查面板，不作
 
 这是登录后的默认页面。用户在这里创建、继续、命名、删除 Agent Conversation，并发起 Agent Run。
 
+### 参考工作台逻辑
+
+本页借鉴豆包聊天工作台和 Codex app 的功能逻辑，但不复制其品牌视觉或消费级入口。
+
+豆包侧可迁移的逻辑：
+
+- 输入框是任务入口：文字、语音、图片、文件等输入都围绕对话框组织；Minimalist Agent 当前落地为文本输入和 Run Attachment，后续再扩展语音/图片。
+- 操作栏即快捷任务：豆包允许通过操作栏直接发送操作指令；Minimalist Agent 不在 composer 暴露工具开关，但可把“选择文件、停止运行、发送”等明确命令放在 composer 附近。
+- 文件需要可管理：豆包通过 AI 云盘管理上传和生成文件；Minimalist Agent 对应为 Artifact Preview 和 Run Attachment，文件正文留在后端存储，前端只显示引用和预览。
+- 桌面端适合复杂任务：大屏幕承载多轮对话、搜索、研究报告、文档/表格处理；Minimalist Agent 对应为三栏工作台，而不是单列聊天页。
+
+Codex app 侧可迁移的逻辑：
+
+- 线程是长任务容器：Codex app 支持在项目和线程之间并行工作；Minimalist Agent 的 Agent Conversation 也应表达为可恢复、可审计的工作线程。
+- 主任务与检查面板分离：Codex 的 diff/review/Git 面板说明长任务需要独立检查区域；Minimalist Agent 右侧 inspector 承载 Artifact Preview、Run context 和后续 Process Summary。
+- 运行过程必须可监督：Codex cloud task 会运行命令、验证工作、结束后展示结果和 diff；Minimalist Agent 对应展示 AG-UI 状态、事件序号、Tool Call、Card Rendering、Artifact Reference。
+- 权限边界前置：Codex app/CLI 通过 sandbox、permission selector 和 approval policy 控制能力；Minimalist Agent 不让用户从 composer 启停工具，能力由 Administrator 的 Agent policy 决定。
+
 ### 桌面布局
 
 | 区域 | 内容 |
 | --- | --- |
-| 左侧 sidebar | 品牌、New Conversation、搜索、Recent Conversations、User account、Administrator Console 入口 |
-| 中央 workspace | conversation header、message stream、run status、composer |
-| 右侧 inspector | Artifact Preview、Run Attachment Preview、Agent/Run context |
+| 左侧 sidebar | 品牌、新建对话、工作台导航、搜索、最近对话、用户账号、Administrator Console 入口 |
+| 中央 workspace | 对话标题、Agent/Model/Run 状态、message stream、AG-UI 事件状态、composer、Run Attachment |
+| 右侧 inspector | Artifact Preview、Run context、后续 Process Summary 和审计引用 |
 
 ### 左侧 sidebar
 
 必需元素：
 
-- New Conversation。
-- Search conversations。
-- Recent conversation list：标题、Agent 名称、运行状态、更新时间。
+- 新建对话。
+- 搜索对话。
+- 最近对话列表：标题、Agent 名称、运行状态、更新时间。
 - User account/settings 入口。
 - Administrator 可见的 Administrator Console 入口。
 
@@ -174,7 +266,7 @@ Artifact Preview 默认是 Conversation Workspace 的右侧检查面板，不作
 
 新会话：
 
-- 标题：New conversation。
+- 标题：新对话。
 - 说明：选择 Agent 并发送第一条消息会创建 Agent Conversation。
 - Agent Selection 和 Allowed Model Selection 可编辑。
 

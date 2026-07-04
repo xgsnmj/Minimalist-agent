@@ -399,4 +399,4 @@ See `docs/page-design.md` for the page-level design specification that turns thi
 
 ## ADR Index
 
-The decisions behind this blueprint live in `docs/adr/0001-*.md` through `docs/adr/0041-*.md`.
+The decisions behind this blueprint live in `docs/adr/0001-*.md` through `docs/adr/0045-*.md`.

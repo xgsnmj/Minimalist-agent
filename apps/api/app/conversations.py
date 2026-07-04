@@ -92,6 +92,27 @@ class ConversationStore:
         self._conversations[conversation.id] = conversation
         return conversation
 
+    def create_empty(
+        self,
+        *,
+        owner_user_id: int,
+        title: str,
+        agent: Agent,
+        selected_model_configuration_id: int | None = None,
+    ) -> AgentConversation:
+        conversation = AgentConversation(
+            id=self._next_id,
+            owner_user_id=owner_user_id,
+            title=title,
+            agent=agent,
+            selected_model_configuration_id=selected_model_configuration_id,
+            updated_at="just now",
+            messages=[],
+        )
+        self._next_id += 1
+        self._conversations[conversation.id] = conversation
+        return conversation
+
     def list_for_user(self, owner_user_id: int) -> list[AgentConversation]:
         conversations = [
             conversation

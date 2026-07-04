@@ -12,17 +12,17 @@ describe("planned page routes", () => {
   it("renders the Local Account access pages", () => {
     window.history.pushState({}, "", "/login");
     render(<App />);
-    expect(screen.getByRole("heading", { name: "Sign in" })).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "登录" })).toBeInTheDocument();
 
     cleanup();
     window.history.pushState({}, "", "/register");
     render(<App />);
-    expect(screen.getByRole("heading", { name: "Request access" })).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "申请账号" })).toBeInTheDocument();
 
     cleanup();
     window.history.pushState({}, "", "/approval-pending");
     render(<App />);
-    expect(screen.getByRole("heading", { name: "Account pending approval" })).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "待审批" })).toBeInTheDocument();
   });
 
   it("renders the Administrator Console pages from route paths", () => {

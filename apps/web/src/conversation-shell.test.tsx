@@ -11,28 +11,32 @@ describe("Agent Conversation workspace", () => {
   it("renders the WorkBuddy-like conversation shell as the primary workspace", () => {
     render(<App />);
 
-    expect(screen.getByRole("button", { name: "New Conversation" })).toBeInTheDocument();
-    expect(screen.getByRole("searchbox", { name: "Search conversations" })).toBeInTheDocument();
-    expect(screen.getByRole("heading", { name: "Market research" })).toBeInTheDocument();
-    expect(within(screen.getByLabelText("Recent conversations")).getByText("Default Agent")).toBeInTheDocument();
-    expect(screen.getByLabelText("Agent Selection")).toHaveDisplayValue("Default Agent");
-    expect(screen.getByLabelText("Allowed Model Selection")).toHaveDisplayValue("OpenAI GPT-5");
-    expect(screen.getByPlaceholderText("Ask the Agent to work on something...")).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "Rename Conversation" })).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "Delete Conversation" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "新建对话" })).toBeInTheDocument();
+    expect(screen.getByRole("searchbox", { name: "搜索对话" })).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "市场调研" })).toBeInTheDocument();
+    expect(within(screen.getByLabelText("最近对话")).getByText("默认智能体")).toBeInTheDocument();
+    expect(within(screen.getByLabelText("运行配置")).getByLabelText("智能体选择")).toHaveDisplayValue("默认智能体");
+    expect(within(screen.getByLabelText("运行配置")).getByLabelText("模型选择")).toHaveDisplayValue("OpenAI GPT-5");
+    expect(screen.getByRole("region", { name: "CopilotKit 对话面板" })).toBeInTheDocument();
+    expect(screen.getByPlaceholderText("向当前智能体发送任务")).toBeInTheDocument();
+    expect(screen.getByText("当前会话由 CopilotKit 渲染。运行与权限由后端治理。")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "重命名" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "删除" })).toBeInTheDocument();
   });
 
-  it("keeps the workspace seam visible through the sidebar, stream banner, composer, and preview rail", () => {
+  it("keeps the workspace seam visible through the sidebar, stream banner, CopilotKit chat, and preview rail", () => {
     render(<App />);
 
-    expect(screen.getByLabelText("Agent Conversations")).toBeInTheDocument();
-    expect(screen.getByLabelText("Conversation messages")).toBeInTheDocument();
-    expect(screen.getByLabelText("Artifact Inspector")).toBeInTheDocument();
-    expect(screen.getByRole("link", { name: "Run Audit" })).toBeInTheDocument();
-    expect(screen.getByRole("link", { name: "Administrator Console" })).toBeInTheDocument();
-    expect(screen.getByLabelText("Search conversations")).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "Choose File" })).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "Upload Attachment" })).toBeInTheDocument();
-    expect(screen.getByRole("region", { name: "Artifact Preview" })).toBeInTheDocument();
+    expect(screen.getByLabelText("智能体会话")).toBeInTheDocument();
+    expect(screen.getByLabelText("对话消息")).toBeInTheDocument();
+    expect(screen.getByLabelText("运行配置")).toBeInTheDocument();
+    expect(screen.getByRole("region", { name: "CopilotKit 对话面板" })).toBeInTheDocument();
+    expect(screen.getByLabelText("检查面板")).toBeInTheDocument();
+    expect(screen.getByRole("link", { name: "运行审计" })).toBeInTheDocument();
+    expect(screen.getAllByRole("link", { name: "管理员控制台" }).length).toBeGreaterThan(0);
+    expect(screen.getByLabelText("搜索对话")).toBeInTheDocument();
+    expect(screen.getByLabelText("运行附件")).toBeInTheDocument();
+    expect(screen.getByRole("region", { name: "制品预览" })).toBeInTheDocument();
+    expect(screen.getByRole("region", { name: "运行上下文" })).toBeInTheDocument();
   });
 });

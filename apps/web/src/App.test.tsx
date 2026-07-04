@@ -14,50 +14,35 @@ describe("App", () => {
     render(<App />);
 
     expect(screen.getByRole("heading", { name: "Minimalist Agent" })).toBeInTheDocument();
-    expect(screen.getByText("Agent Conversation workspace")).toBeInTheDocument();
+    expect(screen.getByText("对话工作台")).toBeInTheDocument();
   });
 
-  it("uploads a run attachment and opens its preview from the composer", async () => {
+  it("uploads a run attachment through the embedded CopilotKit chat", async () => {
     const user = userEvent.setup();
     render(<App />);
 
-    await user.click(screen.getAllByRole("button", { name: "New Conversation" })[0]);
-    await user.type(screen.getByLabelText("Message"), "Draft the product brief.");
-    await user.upload(screen.getByLabelText("Run Attachment"), new File(["hello"], "brief.md", { type: "text/markdown" }));
-    await user.click(screen.getByRole("button", { name: "Upload Attachment" }));
+    await user.click(screen.getAllByRole("button", { name: "新建对话" })[0]);
+    await user.upload(screen.getByLabelText("运行附件"), new File(["hello"], "brief.md", { type: "text/markdown" }));
 
     expect(await screen.findByText("hello")).toBeInTheDocument();
     expect(screen.getByText("brief.md")).toBeInTheDocument();
     expect(screen.getByText("markdown")).toBeInTheDocument();
   });
 
-  it("renders approved cards inside the conversation stream", () => {
+  it("delegates the center conversation surface to CopilotKit", () => {
     render(<App />);
-    const messageStream = screen.getByLabelText("Conversation messages");
+    const messageStream = screen.getByLabelText("对话消息");
 
-    expect(within(messageStream).getByText("Card ready: artifact_card")).toBeInTheDocument();
-    expect(within(messageStream).getByText("Artifact")).toBeInTheDocument();
-    expect(within(messageStream).getByText("brief.md", { selector: ".artifact-card h3" })).toBeInTheDocument();
-    expect(within(messageStream).getByText("Tool Result")).toBeInTheDocument();
-    expect(within(messageStream).getByText("doubao_search")).toBeInTheDocument();
-    expect(within(messageStream).getByText("Choice")).toBeInTheDocument();
-    expect(within(messageStream).getByRole("button", { name: "Brief" })).toBeInTheDocument();
-    expect(within(messageStream).getByText("Citation")).toBeInTheDocument();
-    expect(within(messageStream).getByRole("link", { name: "https://docs.ag-ui.com/" })).toBeInTheDocument();
-    expect(within(messageStream).getByText("Status")).toBeInTheDocument();
-    expect(within(messageStream).getByText("Reading sources")).toBeInTheDocument();
-    expect(within(messageStream).getByText("Form Request")).toBeInTheDocument();
-    expect(within(messageStream).getByText("Audience")).toBeInTheDocument();
+    expect(within(messageStream).getByRole("region", { name: "CopilotKit 对话面板" })).toBeInTheDocument();
+    expect(within(messageStream).getByText("当前会话由 CopilotKit 渲染。运行与权限由后端治理。")).toBeInTheDocument();
+    expect(within(messageStream).getByPlaceholderText("向当前智能体发送任务")).toBeInTheDocument();
   });
 
-  it("renders tool calls without exposing user tool toggles in the composer", () => {
+  it("keeps tool authority out of the embedded chat controls", () => {
     render(<App />);
-    const messageStream = screen.getByLabelText("Conversation messages");
+    const runtimeControls = screen.getByLabelText("运行配置");
 
-    expect(within(messageStream).getByText("Tool Call")).toBeInTheDocument();
-    expect(within(messageStream).getByText("search.web")).toBeInTheDocument();
-    expect(within(messageStream).getByText("search.web completed.")).toBeInTheDocument();
-    expect(within(messageStream).getByText("Gateway: agent_tool_gateway · Provider: mock")).toBeInTheDocument();
+    expect(within(runtimeControls).getByText("能力由管理员策略决定")).toBeInTheDocument();
     expect(screen.queryByLabelText("Enable Search Capability")).not.toBeInTheDocument();
     expect(screen.queryByLabelText("Enable Sandbox Capability")).not.toBeInTheDocument();
     expect(screen.queryByLabelText("Enable MCP Tools")).not.toBeInTheDocument();

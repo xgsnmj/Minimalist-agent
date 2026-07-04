@@ -10,6 +10,7 @@ def test_backend_card_schema_registry_matches_frontend_rendering_contract():
         / "apps"
         / "web"
         / "src"
+        / "shared"
         / "card-schema-contract.ts"
     )
     contract_source = contract_path.read_text()

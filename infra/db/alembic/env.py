@@ -36,7 +36,7 @@ def _database_url() -> str:
 
 
 _load_environment()
-config.set_main_option("sqlalchemy.url", _database_url())
+config.set_main_option("sqlalchemy.url", _database_url().replace("%", "%%"))
 
 from apps.api.app.database import Base  # noqa: E402
 from apps.api.app import artifacts as _artifacts  # noqa: E402,F401

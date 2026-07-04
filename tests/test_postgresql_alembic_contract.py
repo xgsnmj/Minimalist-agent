@@ -27,6 +27,7 @@ def test_environment_and_compose_target_postgresql():
 def test_alembic_is_the_database_migration_path():
     readme = (ROOT / "README.md").read_text()
     start_local = (ROOT / "scripts" / "start-local.sh").read_text()
+    alembic_env = (ROOT / "infra" / "db" / "alembic" / "env.py").read_text()
 
     assert (ROOT / "alembic.ini").exists()
     assert (ROOT / "infra" / "db" / "alembic" / "env.py").exists()
@@ -34,6 +35,7 @@ def test_alembic_is_the_database_migration_path():
     assert not (ROOT / "scripts" / "db-migrate.py").exists()
     assert not (ROOT / "infra" / "db" / "migrations" / "0001_create_runtime_tables.sql").exists()
     assert "alembic upgrade head" in start_local
+    assert '.replace("%", "%%")' in alembic_env
     assert "scripts/db-migrate.py" not in readme
     assert "schema_migrations" not in readme
 

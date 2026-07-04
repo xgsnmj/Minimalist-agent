@@ -15,12 +15,13 @@ describe("Local Account access flow", () => {
     window.history.pushState({}, "", "/register");
     render(<App />);
 
-    await user.type(screen.getByLabelText("Username"), "lin");
-    await user.type(screen.getByLabelText("Email"), "lin@example.com");
-    await user.type(screen.getByLabelText("Password"), "correct horse battery staple");
-    await user.click(screen.getByRole("button", { name: "Request Access" }));
+    await user.type(screen.getByLabelText("用户名"), "lin");
+    await user.type(screen.getByLabelText("邮箱"), "lin@example.com");
+    await user.type(screen.getByLabelText("密码"), "correct horse battery staple");
+    await user.type(screen.getByLabelText("确认密码"), "correct horse battery staple");
+    await user.click(screen.getByRole("button", { name: "提交申请" }));
 
-    expect(await screen.findByText("Account pending approval")).toBeInTheDocument();
-    expect(screen.getByText("An Administrator must approve this Local Account before the Agent Platform is available.")).toBeInTheDocument();
+    expect(await screen.findByRole("heading", { name: "待审批" })).toBeInTheDocument();
+    expect(screen.getByText("等待管理员")).toBeInTheDocument();
   });
 });
