@@ -29,7 +29,7 @@ describe("Administrator Page Read Provider surface", () => {
     expect(within(domainPolicy).getByRole("button", { name: "Save policy draft" })).toBeInTheDocument();
 
     const runtimeSettings = screen.getByRole("region", { name: "Page Read runtime settings" });
-    expect(within(runtimeSettings).getByLabelText("Extract mode")).toHaveDisplayValue("Readable text");
+    expect(within(runtimeSettings).getByRole("combobox", { name: "Extract mode" })).toHaveTextContent("Readable text");
     expect(within(runtimeSettings).getByLabelText("Timeout")).toHaveDisplayValue("15s");
     expect(within(runtimeSettings).getByLabelText("Content length")).toHaveDisplayValue("40k characters");
 

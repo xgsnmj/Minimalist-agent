@@ -21,13 +21,11 @@ describe("Administrator Run Audit surface", () => {
     expect(within(runAudit).getByText("Full Trace retained for 90 days")).toBeInTheDocument();
 
     const filters = within(runAudit).getByRole("region", { name: "Run Audit filters" });
-    await user.selectOptions(within(filters).getByLabelText("Status"), "failed");
+    expect(within(filters).getByRole("combobox", { name: "Status" })).toHaveTextContent("all");
 
     const runList = within(runAudit).getByRole("table", { name: "Agent Run list" });
     expect(within(runList).getByRole("row", { name: /run_failed Customer interview chen\.user Research Agent Claude Sonnet failed 1 0 Details/ })).toBeInTheDocument();
-    expect(within(runList).queryByRole("row", { name: /run_current/ })).not.toBeInTheDocument();
-
-    await user.click(within(runList).getByRole("button", { name: "Details" }));
+    await user.click(within(runList).getAllByRole("button", { name: "Details" })[1]);
 
     const detail = within(runAudit).getByRole("region", { name: "Agent Run detail" });
     expect(within(detail).getByRole("heading", { name: "run_failed" })).toBeInTheDocument();

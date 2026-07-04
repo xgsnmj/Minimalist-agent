@@ -3,6 +3,7 @@ declare module "@vitest/expect" {
     toBeDisabled(): void;
     toBeInTheDocument(): void;
     toHaveDisplayValue(value: string | RegExp | Array<string | RegExp>): void;
+    toHaveTextContent(text: string | RegExp, options?: { normalizeWhitespace?: boolean }): void;
   }
 }
 
@@ -13,5 +14,6 @@ declare module "vitest" {
     toBeDisabled(): void;
     toBeInTheDocument(): void;
     toHaveDisplayValue(value: string | RegExp | Array<string | RegExp>): void;
+    toHaveTextContent(text: string | RegExp, options?: { normalizeWhitespace?: boolean }): void;
   }
 }

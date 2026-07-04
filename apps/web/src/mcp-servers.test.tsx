@@ -28,7 +28,7 @@ describe("Administrator MCP Servers surface", () => {
     expect(within(discoveryResult).getByText("render_artifact")).toBeInTheDocument();
 
     const authorizationPanel = screen.getByRole("region", { name: "MCP Tool Authorization" });
-    expect(within(authorizationPanel).getByRole("combobox", { name: "Agent" })).toHaveDisplayValue("Default Agent");
+    expect(within(authorizationPanel).getByRole("combobox", { name: "Agent" })).toHaveTextContent("Default Agent");
     expect(within(authorizationPanel).getByRole("button", { name: "Save authorization draft" })).toBeInTheDocument();
     expect(screen.getByText("Agent Tool Gateway remains backend-owned; the frontend never exposes raw MCP credentials.")).toBeInTheDocument();
 
@@ -36,7 +36,7 @@ describe("Administrator MCP Servers surface", () => {
 
     const configPanel = screen.getByRole("region", { name: "MCP Server configuration draft" });
     expect(within(configPanel).getByRole("heading", { name: "Create MCP Server" })).toBeInTheDocument();
-    expect(within(configPanel).getByLabelText("Connection type")).toHaveDisplayValue("SSE");
+    expect(within(configPanel).getByRole("combobox", { name: "Connection type" })).toHaveTextContent("SSE");
     expect(within(configPanel).getByLabelText("Credential reference").getAttribute("placeholder")).toBe("secret/mcp-server");
   });
 });

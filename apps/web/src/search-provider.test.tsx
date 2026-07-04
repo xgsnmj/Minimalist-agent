@@ -25,7 +25,7 @@ describe("Administrator Search Provider surface", () => {
 
     const editPanel = screen.getByRole("region", { name: "Search Provider edit panel" });
     expect(within(editPanel).getByLabelText("Endpoint")).toHaveDisplayValue("Doubao Search Provider");
-    expect(within(editPanel).getByLabelText("Result limit")).toHaveDisplayValue("8 candidate results");
+    expect(within(editPanel).getByRole("combobox", { name: "Result limit" })).toHaveTextContent("8 candidate results");
     expect(within(editPanel).getByText("This does not change Page Read content-length limits.")).toBeInTheDocument();
 
     const boundary = screen.getByRole("region", { name: "Capability boundary" });
