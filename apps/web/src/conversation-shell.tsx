@@ -13,9 +13,8 @@ import {
   ToolCallView,
   type ConversationToolCall,
 } from "./conversation-message-rendering";
+import { CopilotWorkspaceBridge } from "./copilotkit-adapter";
 import type { ConversationCard } from "./card-schema-contract";
-
-type AccessMode = "intro" | "register" | "pending";
 
 type ModelOption = {
   id: string;
@@ -206,7 +205,6 @@ const initialConversations: Conversation[] = [
 ];
 
 export function ConversationShell() {
-  const [mode, setMode] = useState<AccessMode>("intro");
   const [conversations, setConversations] = useState<Conversation[]>(initialConversations);
   const [selectedConversationId, setSelectedConversationId] = useState<string | null>(
     initialConversations[0]?.id ?? null,
@@ -230,7 +228,7 @@ export function ConversationShell() {
     (conversation) => conversation.id === selectedConversationId,
   );
   const activeRunId = selectedConversation ? 1 : null;
-  const { lastSeenSequence, status: streamStatus, streamUrl } = useAgentRunStream(activeRunId);
+  const { lastSeenSequence, status: streamStatus } = useAgentRunStream(activeRunId);
   const activeAgent = getAgent(selectedConversation?.agentId ?? draftAgentId);
   const allowedModels = activeAgent.allowedModels;
   const selectedModelId = selectedConversation?.selectedModelId ?? draftModelId;
@@ -244,11 +242,6 @@ export function ConversationShell() {
       ),
     [conversationSearch, conversations],
   );
-
-  function requestAccess(event: FormEvent<HTMLFormElement>) {
-    event.preventDefault();
-    setMode("pending");
-  }
 
   function startNewConversation() {
     setSelectedConversationId(null);
@@ -402,15 +395,40 @@ export function ConversationShell() {
 
   return (
     <main className="app-shell">
+      <CopilotWorkspaceBridge
+        activeRunId={activeRunId}
+        agents={workspaceAgents}
+        attachmentPreviewName={attachmentPreview?.filename ?? null}
+        conversations={conversations}
+        draftAgentId={draftAgentId}
+        draftModelId={draftModelId}
+        lastSeenSequence={lastSeenSequence}
+        previewArtifactId={previewArtifactId}
+        selectedArtifactId={selectedArtifactReference?.artifactId ?? null}
+        selectedConversationId={selectedConversationId}
+        setComposerValue={setComposerValue}
+        setIsRenaming={setIsRenaming}
+        setPreviewArtifactId={setPreviewArtifactId}
+        setRenameValue={setRenameValue}
+        setSelectedConversationId={setSelectedConversationId}
+        streamStatus={streamStatus}
+      />
       <aside className="conversation-sidebar" aria-label="Agent Conversations">
         <div className="brand-block">
-          <p className="eyebrow">Agent Platform</p>
-          <h1 id="app-title">Minimalist Agent</h1>
-          <p>Agent Platform scaffold is running.</p>
+          <a className="brand-link" href="/app/conversations" aria-label="Minimalist Agent home">
+            <span className="brand-mark">MA</span>
+            <h1 id="app-title">Minimalist Agent</h1>
+          </a>
+          <p>Agent Conversation workspace</p>
         </div>
         <button className="primary-button full-width" type="button" onClick={startNewConversation}>
           New Conversation
         </button>
+        <nav className="workspace-nav" aria-label="Workspace navigation">
+          <a className="workspace-nav-item active" href="/app/conversations">Conversations</a>
+          <a className="workspace-nav-item" href="/admin/run-audit">Run Audit</a>
+          <a className="workspace-nav-item" href="/admin">Administrator Console</a>
+        </nav>
         <label className="compact-field">
           <span>Search conversations</span>
           <input
@@ -438,8 +456,8 @@ export function ConversationShell() {
               >
                 <span className="conversation-title">{conversation.title}</span>
                 <span className="conversation-meta">
-                  <span>Agent: {conversationAgent.name}</span>
-                  <span>{conversation.status}</span>
+                  <span>{conversationAgent.name}</span>
+                  <span className={`status-dot ${conversation.status}`}>{conversation.status}</span>
                   <span>{conversation.updatedAt}</span>
                 </span>
               </button>
@@ -449,6 +467,13 @@ export function ConversationShell() {
             <p className="empty-state">No conversations match this search.</p>
           ) : null}
         </nav>
+        <footer className="conversation-sidebar-footer">
+          <a className="user-pill" href="/account-settings">
+            <span className="brand-mark">oil</span>
+            <span>oil</span>
+          </a>
+          <a className="secondary-button full-width" href="/admin">Admin Console</a>
+        </footer>
       </aside>
 
       <section className="conversation-workspace" aria-labelledby="conversation-title">
@@ -456,17 +481,18 @@ export function ConversationShell() {
           <div>
             <p className="eyebrow">Agent Conversation</p>
             <h2 id="conversation-title">
-              {selectedConversation
-                ? `${selectedConversation.title} workspace`
-                : "New conversation"}
+              {selectedConversation ? selectedConversation.title : "New conversation"}
             </h2>
             <p>
               {selectedConversation
-                ? "Continue the existing conversation with its original Agent binding."
+                ? `${activeAgent.name} · ${selectedModelId} · Last run ${selectedConversation.status}`
                 : "Choose an enabled Agent and send the first message to create a conversation."}
             </p>
           </div>
           <div className="conversation-actions">
+            <span className={`run-status ${streamStatus}`}>
+              {streamStatus === "connected" ? "Run connected" : "Run idle"}
+            </span>
             <button
               className="secondary-button"
               disabled={!selectedConversation}
@@ -510,7 +536,6 @@ export function ConversationShell() {
               <span>
                 {lastSeenSequence > 0 ? `Last seen event ${lastSeenSequence}` : "Last seen event 0"}
               </span>
-              {streamUrl ? <span>{streamUrl}</span> : null}
             </div>
           ) : null}
           {(selectedConversation?.messages ?? []).map((message) => (
@@ -595,13 +620,20 @@ export function ConversationShell() {
             <button className="secondary-button" type="button" onClick={() => fileInputRef.current?.click()}>
               Choose File
             </button>
-            <button className="secondary-button" type="submit" onClick={clearAttachmentPreview}>
+            <button
+              className="secondary-button"
+              disabled={!selectedConversation || selectedConversation.status !== "running"}
+              type="button"
+            >
+              Stop Run
+            </button>
+            <button className="primary-button send-button" type="submit" onClick={clearAttachmentPreview}>
               Send Message
             </button>
           </div>
         </form>
 
-        <form className="attachment-upload-panel" onSubmit={uploadAttachment}>
+        <form className="attachment-upload-panel" aria-label="Run Attachment staging" onSubmit={uploadAttachment}>
           <div>
             <p className="eyebrow">Run Attachment</p>
             <h3>{selectedAttachment ? selectedAttachment.name : "No file selected"}</h3>
@@ -617,14 +649,21 @@ export function ConversationShell() {
         </form>
       </section>
 
-      <aside className="right-rail" aria-label="Account and Administrator Console">
+      <aside className="artifact-inspector" aria-label="Artifact Inspector">
         <section
           className="app-panel preview-panel"
           aria-label="Artifact Preview"
         >
-          <div>
-            <p className="eyebrow">Artifact Preview</p>
-            <h2 id="artifact-preview-title">Preview</h2>
+          <div className="inspector-header">
+            <div>
+              <p className="eyebrow">Artifact Preview</p>
+              <h2 id="artifact-preview-title">Preview</h2>
+            </div>
+            <button className="secondary-button" type="button">Download</button>
+          </div>
+          <div className="artifact-actions">
+            <button className="artifact-tab active" type="button">Markdown</button>
+            <button className="artifact-tab" type="button">JSON</button>
           </div>
           <div className="preview-surface" role="presentation">
             {selectedArtifactReference ? (
@@ -646,116 +685,6 @@ export function ConversationShell() {
               <p className="preview-text">Open an artifact or upload a file to preview it here.</p>
             )}
           </div>
-        </section>
-        <section className="app-panel" aria-labelledby="app-title">
-          {mode === "intro" ? (
-            <div className="stack">
-              <p className="eyebrow">Local Account</p>
-              <button
-                className="secondary-button"
-                type="button"
-                onClick={() => setMode("register")}
-              >
-                Create Local Account
-              </button>
-            </div>
-          ) : null}
-          {mode === "register" ? (
-            <form className="stack" onSubmit={requestAccess}>
-              <label>
-                <span>Username</span>
-                <input name="username" required />
-              </label>
-              <label>
-                <span>Email</span>
-                <input name="email" type="email" required />
-              </label>
-              <label>
-                <span>Password</span>
-                <input name="password" type="password" minLength={8} required />
-              </label>
-              <button className="primary-button" type="submit">
-                Request Access
-              </button>
-            </form>
-          ) : null}
-          {mode === "pending" ? (
-            <div className="stack">
-              <h2>Account pending approval</h2>
-              <p>
-                An Administrator needs to approve this Local Account before workspace access is
-                available.
-              </p>
-            </div>
-          ) : null}
-        </section>
-        <section className="admin-panel" aria-labelledby="agent-lifecycle-title">
-          <div>
-            <p className="eyebrow">Administrator Console</p>
-            <h2 id="agent-lifecycle-title">Agent Lifecycle</h2>
-          </div>
-          <article className="agent-row">
-            <div>
-              <h3>Default Agent lifecycle</h3>
-              <p>Primary Agent Conversation entry point.</p>
-              <p>Process visibility: standard</p>
-            </div>
-            <div className="button-row">
-              <button className="secondary-button" type="button">
-                Create Agent
-              </button>
-              <button className="secondary-button" type="button">
-                Disable Agent
-              </button>
-              <button className="secondary-button" type="button">
-                Retire Agent
-              </button>
-            </div>
-          </article>
-        </section>
-        <section className="admin-panel" aria-labelledby="model-configurations-title">
-          <div>
-            <p className="eyebrow">Administrator Console</p>
-            <h2 id="model-configurations-title">Model Configurations</h2>
-          </div>
-          <div className="provider-grid" aria-label="Model Provider Catalog">
-            {["OpenAI", "DeepSeek", "MiniMax", "Custom OpenAI-compatible endpoint"].map(
-              (provider) => (
-                <span className="provider-chip" key={provider}>
-                  {provider}
-                </span>
-              ),
-            )}
-          </div>
-          <button className="secondary-button" type="button">
-            Create Model Configuration
-          </button>
-        </section>
-        <section className="admin-panel" aria-labelledby="run-audit-title" aria-label="Run Audit">
-          <div>
-            <p className="eyebrow">Administrator Console</p>
-            <h2 id="run-audit-title">Run Audit</h2>
-          </div>
-          <div className="audit-overview" aria-label="Run Audit overview">
-            <span>Full Trace retained for 90 days</span>
-            <span>Storage: 1 artifact</span>
-            <span>Recent failed runs: 1</span>
-          </div>
-          <article className="run-audit-row">
-            <div>
-              <h3>Run 1 · completed</h3>
-              <p>Default Agent · OpenAI GPT-5 · User 2</p>
-              <p>Capability snapshot: sandbox enabled</p>
-            </div>
-            <div className="audit-chip-row">
-              <span className="audit-chip success">completed</span>
-              <span className="audit-chip">sandbox.exec</span>
-              <span className="audit-chip">audit-report.md</span>
-            </div>
-            <button className="secondary-button" type="button">
-              Full Trace
-            </button>
-          </article>
         </section>
       </aside>
     </main>

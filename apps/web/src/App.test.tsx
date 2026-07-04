@@ -14,7 +14,7 @@ describe("App", () => {
     render(<App />);
 
     expect(screen.getByRole("heading", { name: "Minimalist Agent" })).toBeInTheDocument();
-    expect(screen.getByText("Agent Platform scaffold is running.")).toBeInTheDocument();
+    expect(screen.getByText("Agent Conversation workspace")).toBeInTheDocument();
   });
 
   it("uploads a run attachment and opens its preview from the composer", async () => {

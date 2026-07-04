@@ -22,14 +22,14 @@ Minimalist Agent is a single-workspace agent platform for WorkBuddy-like agent c
 
 ## Confirmed Stack
 
-- Frontend: React, TypeScript, Vite, pnpm workspace, TanStack Query, Zustand.
+- Frontend: React, TypeScript, Vite, pnpm workspace, TanStack Query, Zustand, and CopilotKit for the copilot experience layer.
 - UI foundation: Tailwind CSS with Radix primitives or shadcn-style owned components, not Ant Design as the primary UI system.
 - Backend: Python 3.12, FastAPI, Pydantic v2, SQLAlchemy 2, Alembic, uv.
 - Middleware: PostgreSQL, Redis, MinIO, Celery.
 - Agent runtime: OpenAI Agents SDK for Python.
 - Agent event protocol: AG-UI over SSE with persisted run event recovery.
 
-See ADR-0003, ADR-0006, ADR-0007, ADR-0036, and ADR-0037.
+See ADR-0003, ADR-0006, ADR-0007, ADR-0036, ADR-0037, and ADR-0041.
 
 ## Core User Experience
 
@@ -395,6 +395,8 @@ Design dials for the conversation workspace:
 
 Motion should be restrained: hover/active states, progressive message appearance, and loading skeletons. Avoid decorative animation that competes with reading and tool inspection.
 
+See `docs/page-design.md` for the page-level design specification that turns this blueprint into concrete Login, Conversation Workspace, Artifact Preview, and Administrator Console page requirements. See `docs/open-design-prototype.md` for the landed Open Design prototype reference.
+
 ## ADR Index
 
-The decisions behind this blueprint live in `docs/adr/0001-*.md` through `docs/adr/0039-*.md`.
+The decisions behind this blueprint live in `docs/adr/0001-*.md` through `docs/adr/0041-*.md`.
