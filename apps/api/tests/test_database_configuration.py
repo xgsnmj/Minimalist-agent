@@ -1,4 +1,6 @@
 import pytest
+from pathlib import Path
+import runpy
 
 from apps.api.app.database import _database_url
 
@@ -26,3 +28,12 @@ def test_database_url_requires_postgresql_for_development(monkeypatch):
         "postgresql+psycopg://minimalist_agent:minimalist_agent@localhost:5432/minimalist_agent",
     )
     assert _database_url().startswith("postgresql+psycopg://")
+
+
+def test_alembic_revision_ids_fit_default_version_table_column():
+    versions_dir = Path("infra/db/alembic/versions")
+
+    for migration_path in versions_dir.glob("*.py"):
+        migration = runpy.run_path(str(migration_path))
+        revision = migration["revision"]
+        assert len(revision) <= 32, f"{migration_path} revision is too long"

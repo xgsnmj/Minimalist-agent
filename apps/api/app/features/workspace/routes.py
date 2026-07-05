@@ -1,6 +1,8 @@
 from fastapi import APIRouter, Depends, File, Header, HTTPException, Query, Response, status, UploadFile
 from fastapi.responses import StreamingResponse
+from pydantic import BaseModel
 
+from apps.api.app.agent_run_dispatcher import agent_run_dispatcher
 from apps.api.app.agent_run_lifecycle import agent_run_lifecycle
 from apps.api.app.agent_runs import (
     ACTIVE_RUN_STATUSES,
@@ -10,7 +12,7 @@ from apps.api.app.agent_runs import (
     agent_run_store,
     to_agent_run_response,
 )
-from apps.api.app.agents import agent_store
+from apps.api.app.agents import AgentResponse, AgentStatus, agent_store, to_agent_response
 from apps.api.app.artifacts import (
     ArtifactCreateRequest,
     ArtifactPreviewResponse,
@@ -18,7 +20,7 @@ from apps.api.app.artifacts import (
     artifact_store,
     to_artifact_reference,
 )
-from apps.api.app.auth import LocalAccount, current_user
+from apps.api.app.auth import LocalAccount, current_user, local_account_store
 from apps.api.app.card_schema_registry import CardResponse, card_schema_registry_store
 from apps.api.app.conversations import (
     ConversationCreateRequest,
@@ -26,6 +28,14 @@ from apps.api.app.conversations import (
     ConversationResponse,
     conversation_store,
     to_conversation_response,
+)
+from apps.api.app.model_configurations import (
+    ModelConfigurationResponse,
+    to_model_configuration_response,
+)
+from apps.api.app.model_selection import (
+    enabled_model_configurations_for_agent,
+    resolve_agent_model_configuration_id,
 )
 from apps.api.app.object_storage import object_storage
 from apps.api.app.run_attachments import (
@@ -44,6 +54,68 @@ from apps.api.app.tool_gateway import (
 router = APIRouter(tags=["workspace"])
 
 
+class WorkspaceAgentResponse(BaseModel):
+    agent: AgentResponse
+    allowed_model_configurations: list[ModelConfigurationResponse]
+
+
+class ConversationDraftCreateRequest(BaseModel):
+    title: str
+    agent_id: int
+    selected_model_configuration_id: int | None = None
+
+
+def _workspace_agent_response(agent_id: int) -> WorkspaceAgentResponse:
+    agent = agent_store.get(agent_id)
+    configurations = enabled_model_configurations_for_agent(agent)
+    return WorkspaceAgentResponse(
+        agent=to_agent_response(agent),
+        allowed_model_configurations=[
+            to_model_configuration_response(configuration)
+            for configuration in configurations
+        ],
+    )
+
+
+@router.get(
+    "/workspace/agents",
+    response_model=list[WorkspaceAgentResponse],
+    response_model_exclude_none=True,
+)
+def list_workspace_agents(
+    _account: LocalAccount = Depends(current_user),
+) -> list[WorkspaceAgentResponse]:
+    return [
+        _workspace_agent_response(agent.id)
+        for agent in agent_store.list_agents()
+        if agent.status == AgentStatus.ENABLED
+    ]
+
+
+@router.post(
+    "/conversations/drafts",
+    response_model=ConversationResponse,
+    response_model_exclude_none=True,
+    status_code=status.HTTP_201_CREATED,
+)
+def create_conversation_draft(
+    request: ConversationDraftCreateRequest,
+    account: LocalAccount = Depends(current_user),
+) -> ConversationResponse:
+    agent = agent_store.get(request.agent_id)
+    selected_model_configuration_id = resolve_agent_model_configuration_id(
+        agent=agent,
+        selected_model_configuration_id=request.selected_model_configuration_id,
+    )
+    conversation = conversation_store.create_empty(
+        owner_user_id=account.id,
+        title=request.title,
+        agent=agent,
+        selected_model_configuration_id=selected_model_configuration_id,
+    )
+    return to_conversation_response(conversation)
+
+
 @router.post(
     "/conversations",
     response_model=ConversationResponse,
@@ -54,10 +126,17 @@ def create_conversation(
     request: ConversationCreateRequest,
     account: LocalAccount = Depends(current_user),
 ) -> ConversationResponse:
+    agent = agent_store.get(request.agent_id)
+    selected_model_configuration_id = resolve_agent_model_configuration_id(
+        agent=agent,
+        selected_model_configuration_id=request.selected_model_configuration_id,
+    )
     conversation = conversation_store.create(
         owner_user_id=account.id,
-        request=request,
-        agent=agent_store.get(request.agent_id),
+        request=request.model_copy(
+            update={"selected_model_configuration_id": selected_model_configuration_id}
+        ),
+        agent=agent,
     )
     return to_conversation_response(conversation)
 
@@ -360,12 +439,15 @@ def start_agent_run(
         owner_user_id=account.id,
         conversation_id=conversation_id,
     )
+    resolve_agent_model_configuration_id(
+        agent=conversation.agent,
+        selected_model_configuration_id=conversation.selected_model_configuration_id,
+    )
     run = agent_run_lifecycle.queue_for_conversation(
         conversation=conversation,
         request=request,
     )
-    agent_run_lifecycle.mark_worker_enqueued(run.id)
-    return to_agent_run_response(run)
+    return to_agent_run_response(agent_run_dispatcher.dispatch(run))
 
 
 @router.get("/runs/{run_id}", response_model=AgentRunResponse)
@@ -379,6 +461,16 @@ def get_agent_run(
             run_id=run_id,
         )
     )
+
+
+@router.get("/runs", response_model=list[AgentRunResponse])
+def list_agent_runs(
+    account: LocalAccount = Depends(current_user),
+) -> list[AgentRunResponse]:
+    return [
+        to_agent_run_response(run)
+        for run in agent_run_store.list_for_user(account.id)
+    ]
 
 
 @router.post(
@@ -423,9 +515,14 @@ def list_tool_calls(
 def stream_agent_run_events(
     run_id: int,
     after: int | None = Query(default=None),
+    access_token: str | None = Query(default=None),
     last_event_id: str | None = Header(default=None, alias="Last-Event-ID"),
-    account: LocalAccount = Depends(current_user),
+    authorization: str | None = Header(default=None),
 ) -> StreamingResponse:
+    account = _current_user_for_event_stream(
+        authorization=authorization,
+        access_token=access_token,
+    )
     after_sequence = after if after is not None else int(last_event_id or "0")
     return StreamingResponse(
         content=iter(
@@ -441,6 +538,26 @@ def stream_agent_run_events(
     )
 
 
+def _current_user_for_event_stream(
+    *,
+    authorization: str | None,
+    access_token: str | None,
+) -> LocalAccount:
+    if authorization is not None and authorization.startswith("Bearer "):
+        token = authorization.removeprefix("Bearer ").strip()
+        account = local_account_store.account_for_token(token)
+        if account is not None:
+            return account
+    if access_token:
+        account = local_account_store.account_for_token(access_token)
+        if account is not None:
+            return account
+    raise HTTPException(
+        status_code=status.HTTP_401_UNAUTHORIZED,
+        detail="Authentication required.",
+    )
+
+
 @router.post("/runs/{run_id}/cancel", response_model=AgentRunResponse)
 def cancel_agent_run(
     run_id: int,
@@ -452,4 +569,3 @@ def cancel_agent_run(
             run_id=run_id,
         )
     )
-

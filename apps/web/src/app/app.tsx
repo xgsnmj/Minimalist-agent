@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 
 import { CopilotKitWorkspaceProvider } from "../shared/copilotkit-adapter";
 import { ConversationShell } from "../features/workspace/conversation-shell";
+import { clearAuthToken, getAuthToken, notifyAuthChanged } from "../features/workspace/auth-api";
 import {
   AccountSettingsPage,
   AdminPage,
@@ -11,7 +12,6 @@ import {
   resolveAppRoute,
 } from "../routes/planned-pages";
 
-const authTokenStorageKey = "minimalist-agent:auth-token";
 const protectedRoutes = new Set<ReturnType<typeof resolveAppRoute>>([
   "conversation",
   "account-settings",
@@ -32,7 +32,7 @@ type AuthState = "authenticated" | "unauthenticated";
 export function App() {
   const [pathname, setPathname] = useState(window.location.pathname);
   const [authState, setAuthState] = useState<AuthState>(() =>
-    window.localStorage.getItem(authTokenStorageKey) ? "authenticated" : "unauthenticated",
+    getAuthToken() ? "authenticated" : "unauthenticated",
   );
 
   useEffect(() => {
@@ -40,7 +40,7 @@ export function App() {
       setPathname(window.location.pathname);
     }
     function syncAuthState() {
-      setAuthState(window.localStorage.getItem(authTokenStorageKey) ? "authenticated" : "unauthenticated");
+      setAuthState(getAuthToken() ? "authenticated" : "unauthenticated");
     }
 
     window.addEventListener("popstate", syncPathname);
@@ -55,7 +55,7 @@ export function App() {
   }, []);
 
   useEffect(() => {
-    const token = window.localStorage.getItem(authTokenStorageKey);
+    const token = getAuthToken();
     if (!token) {
       setAuthState("unauthenticated");
       return;
@@ -76,16 +76,16 @@ export function App() {
           setAuthState("authenticated");
           return;
         }
-        window.localStorage.removeItem(authTokenStorageKey);
-        window.dispatchEvent(new Event("minimalist-agent:auth-changed"));
+        clearAuthToken();
+        notifyAuthChanged();
         setAuthState("unauthenticated");
       })
       .catch(() => {
         if (!isCurrent) {
           return;
         }
-        window.localStorage.removeItem(authTokenStorageKey);
-        window.dispatchEvent(new Event("minimalist-agent:auth-changed"));
+        clearAuthToken();
+        notifyAuthChanged();
         setAuthState("unauthenticated");
       });
 

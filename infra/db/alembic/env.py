@@ -39,9 +39,16 @@ _load_environment()
 config.set_main_option("sqlalchemy.url", _database_url().replace("%", "%%"))
 
 from apps.api.app.database import Base  # noqa: E402
+from apps.api.app import admin_audit as _admin_audit  # noqa: E402,F401
+from apps.api.app import agents as _agents  # noqa: E402,F401
 from apps.api.app import artifacts as _artifacts  # noqa: E402,F401
+from apps.api.app import auth as _auth  # noqa: E402,F401
+from apps.api.app import conversations as _conversations  # noqa: E402,F401
+from apps.api.app import agent_runs as _agent_runs  # noqa: E402,F401
+from apps.api.app import model_configurations as _model_configurations  # noqa: E402,F401
 from apps.api.app import run_attachments as _run_attachments  # noqa: E402,F401
 from apps.api.app import run_event_log as _run_event_log  # noqa: E402,F401
+from apps.api.app import secret_vault as _secret_vault  # noqa: E402,F401
 
 target_metadata = Base.metadata
 

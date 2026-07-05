@@ -9,6 +9,7 @@ from apps.api.app.app import app
 from apps.api.app.model_configurations import model_configuration_store
 from apps.api.app.run_attachments import run_attachment_store
 from apps.api.app.run_event_log import run_event_log_store
+from apps.api.tests.support import configure_default_agent_model
 
 
 def setup_function():
@@ -20,6 +21,7 @@ def setup_function():
     artifact_store.reset_for_tests()
     run_attachment_store.reset_for_tests()
     run_event_log_store.reset_for_tests()
+    configure_default_agent_model()
 
 
 def approved_user_token(client: TestClient) -> str:

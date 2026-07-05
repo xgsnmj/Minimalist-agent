@@ -12,6 +12,7 @@ from apps.api.app.run_attachments import run_attachment_store
 from apps.api.app.run_event_log import run_event_log_store
 from apps.api.app.search_providers import search_provider_store
 from apps.api.app.tool_gateway import agent_tool_gateway_store
+from apps.api.tests.support import configure_default_agent_model, create_model_configuration_for_tests
 
 
 def setup_function():
@@ -26,6 +27,7 @@ def setup_function():
     agent_tool_gateway_store.reset()
     mcp_server_store.reset()
     search_provider_store.reset()
+    configure_default_agent_model()
 
 
 def administrator_token(client: TestClient) -> str:
@@ -62,6 +64,7 @@ def approved_user_token(client: TestClient) -> str:
 
 
 def create_search_enabled_run(client: TestClient, admin_token: str, user_token: str) -> int:
+    model_id = create_model_configuration_for_tests()
     agent = client.post(
         "/admin/agents",
         headers={"Authorization": f"Bearer {admin_token}"},
@@ -70,6 +73,8 @@ def create_search_enabled_run(client: TestClient, admin_token: str, user_token: 
             "description": "Uses Search Capability.",
             "icon": "search",
             "instruction": "Search only through the Agent Tool Gateway.",
+            "default_model_configuration_id": model_id,
+            "allowed_model_configuration_ids": [model_id],
             "capability_policy": {
                 "mcp_server_ids": [],
                 "sandbox_enabled": False,

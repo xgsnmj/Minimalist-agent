@@ -5,6 +5,22 @@ import { describe, expect, it } from "vitest";
 
 import { App } from "./app/app";
 
+async function renderConversationRoute() {
+  window.history.pushState({}, "", "/app/conversations");
+  render(<App />);
+  await screen.findByRole("heading", { name: "市场调研" });
+}
+
+function getContextFileInput(): HTMLInputElement {
+  const input = screen.getAllByLabelText("添加上下文").find((element): element is HTMLInputElement =>
+    element instanceof HTMLInputElement && element.type === "file",
+  );
+  if (!input) {
+    throw new Error("Context file input not found.");
+  }
+  return input;
+}
+
 describe("App", () => {
   afterEach(() => {
     cleanup();
@@ -20,31 +36,28 @@ describe("App", () => {
     expect(screen.getByText("对话工作台")).toBeInTheDocument();
   });
 
-  it("uploads a run attachment through the embedded CopilotKit chat", async () => {
+  it("uploads a run attachment through the CopilotKit conversation composer", async () => {
     const user = userEvent.setup();
-    window.history.pushState({}, "", "/app/conversations");
-    render(<App />);
+    await renderConversationRoute();
 
-    await user.click(screen.getAllByRole("button", { name: "新建对话" })[0]);
     await user.upload(
-      within(screen.getByLabelText("对话输入区")).getByLabelText("添加上下文"),
+      getContextFileInput(),
       new File(["hello"], "brief.md", { type: "text/markdown" }),
     );
 
-    expect(await screen.findByText("hello")).toBeInTheDocument();
-    expect(within(screen.getByLabelText("已添加上下文附件")).getByText("brief.md")).toBeInTheDocument();
-    expect(within(screen.getByLabelText("制品预览")).getByText("brief.md")).toBeInTheDocument();
-    expect(within(screen.getByLabelText("制品预览")).getByText("markdown")).toBeInTheDocument();
+    const attachmentList = await screen.findByLabelText("已添加上下文附件");
+    expect(within(attachmentList).getByText("brief.md")).toBeInTheDocument();
+    expect(within(attachmentList).getByText("markdown")).toBeInTheDocument();
+    expect(screen.queryByLabelText("文件预览")).not.toBeInTheDocument();
   });
 
-  it("delegates the center conversation surface to CopilotKit", () => {
-    window.history.pushState({}, "", "/app/conversations");
-    render(<App />);
+  it("renders the CopilotKit conversation input surface", async () => {
+    await renderConversationRoute();
     const messageStream = screen.getByLabelText("对话消息");
 
-    expect(within(messageStream).getByRole("region", { name: "CopilotKit 对话面板" })).toBeInTheDocument();
-    expect(within(messageStream).getByText("当前会话由 CopilotKit 渲染。运行与权限由后端治理。")).toBeInTheDocument();
-    expect(within(messageStream).getByPlaceholderText("向当前智能体发送消息")).toBeInTheDocument();
+    expect(within(messageStream).getAllByLabelText("CopilotKit 对话面板").length).toBeGreaterThan(0);
+    expect(within(messageStream).getByRole("form", { name: "CopilotKit 对话输入" })).toBeInTheDocument();
+    expect(within(messageStream).getByPlaceholderText("询问当前工作台")).toBeInTheDocument();
   });
 
   it("keeps model selection in the composer and tool authority out of user controls", () => {

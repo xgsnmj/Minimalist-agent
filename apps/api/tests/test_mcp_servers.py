@@ -11,6 +11,7 @@ from apps.api.app.model_configurations import model_configuration_store
 from apps.api.app.run_attachments import run_attachment_store
 from apps.api.app.run_event_log import run_event_log_store
 from apps.api.app.tool_gateway import agent_tool_gateway_store
+from apps.api.tests.support import configure_default_agent_model, create_model_configuration_for_tests
 
 
 def setup_function():
@@ -24,6 +25,7 @@ def setup_function():
     run_event_log_store.reset_for_tests()
     agent_tool_gateway_store.reset()
     mcp_server_store.reset()
+    configure_default_agent_model()
 
 
 def administrator_token(client: TestClient) -> str:
@@ -126,6 +128,7 @@ def test_administrator_authorizes_mcp_tool_for_agent_and_gateway_enforces_it():
         f"/admin/mcp-servers/{server['id']}/discover",
         headers={"Authorization": f"Bearer {admin_token}"},
     )
+    model_id = create_model_configuration_for_tests()
     agent = client.post(
         "/admin/agents",
         headers={"Authorization": f"Bearer {admin_token}"},
@@ -134,6 +137,8 @@ def test_administrator_authorizes_mcp_tool_for_agent_and_gateway_enforces_it():
             "description": "Uses authorized MCP tools.",
             "icon": "plug",
             "instruction": "Use MCP tools only when authorized.",
+            "default_model_configuration_id": model_id,
+            "allowed_model_configuration_ids": [model_id],
             "capability_policy": {
                 "mcp_server_ids": [server["id"]],
                 "sandbox_enabled": False,

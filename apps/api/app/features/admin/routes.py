@@ -1,5 +1,15 @@
-from fastapi import APIRouter, Depends, Query, status
+from datetime import UTC, datetime
 
+from fastapi import APIRouter, Depends, HTTPException, Query, status
+
+from apps.api.app.admin_audit import admin_audit_store
+from apps.api.app.agent_readiness import (
+    AgentReadinessResponse,
+    candidate_agent_for_update,
+    raise_if_agent_not_ready,
+    validate_agent_configuration,
+    validate_agent_mutation_request,
+)
 from apps.api.app.agents import (
     AgentMutationRequest,
     AgentRunPreparationResponse,
@@ -25,9 +35,12 @@ from apps.api.app.mcp_servers import (
 )
 from apps.api.app.model_configurations import (
     MODEL_PROVIDER_CATALOG,
+    ModelConfiguration,
+    ModelConfigurationHealthCheckResponse,
     ModelConfigurationMutationRequest,
     ModelConfigurationResponse,
     ModelConfigurationUpdateRequest,
+    ModelHealthStatus,
     ModelProviderCatalogEntry,
     model_configuration_store,
     to_model_configuration_response,
@@ -50,6 +63,7 @@ from apps.api.app.search_providers import (
     search_provider_store,
     to_search_provider_response,
 )
+from apps.api.app.runtime import resolve_model_api_key
 
 
 router = APIRouter(prefix="/admin", tags=["admin"])
@@ -65,42 +79,81 @@ def list_agents(
 @router.post("/agents", response_model=AgentResponse, status_code=status.HTTP_201_CREATED)
 def create_agent(
     request: AgentMutationRequest,
-    _administrator: LocalAccount = Depends(current_administrator),
+    administrator: LocalAccount = Depends(current_administrator),
 ) -> AgentResponse:
-    return to_agent_response(agent_store.create(request))
+    validate_agent_mutation_request(request)
+    agent = agent_store.create(request)
+    admin_audit_store.record(
+        actor_id=administrator.id,
+        target_type="agent",
+        target_id=agent.id,
+        action="created",
+        before=None,
+        after=to_agent_response(agent).model_dump(mode="json"),
+    )
+    return to_agent_response(agent)
 
 
 @router.patch("/agents/{agent_id}", response_model=AgentResponse)
 def update_agent(
     agent_id: int,
     request: AgentUpdateRequest,
-    _administrator: LocalAccount = Depends(current_administrator),
+    administrator: LocalAccount = Depends(current_administrator),
 ) -> AgentResponse:
-    return to_agent_response(agent_store.update(agent_id, request))
+    existing_agent = agent_store.get(agent_id)
+    before = to_agent_response(existing_agent).model_dump(mode="json")
+    raise_if_agent_not_ready(candidate_agent_for_update(existing_agent, request))
+    updated_agent = agent_store.update(agent_id, request)
+    after = to_agent_response(updated_agent).model_dump(mode="json")
+    admin_audit_store.record(
+        actor_id=administrator.id,
+        target_type="agent",
+        target_id=agent_id,
+        action="updated",
+        before=before,
+        after=after,
+    )
+    return to_agent_response(updated_agent)
 
 
 @router.post("/agents/{agent_id}/disable", response_model=AgentResponse)
 def disable_agent(
     agent_id: int,
-    _administrator: LocalAccount = Depends(current_administrator),
+    administrator: LocalAccount = Depends(current_administrator),
 ) -> AgentResponse:
-    return to_agent_response(agent_store.set_status(agent_id, AgentStatus.DISABLED))
+    return _set_agent_status_with_audit(
+        agent_id=agent_id,
+        agent_status=AgentStatus.DISABLED,
+        administrator=administrator,
+        action="disabled",
+    )
 
 
 @router.post("/agents/{agent_id}/enable", response_model=AgentResponse)
 def enable_agent(
     agent_id: int,
-    _administrator: LocalAccount = Depends(current_administrator),
+    administrator: LocalAccount = Depends(current_administrator),
 ) -> AgentResponse:
-    return to_agent_response(agent_store.set_status(agent_id, AgentStatus.ENABLED))
+    raise_if_agent_not_ready(agent_store.get(agent_id))
+    return _set_agent_status_with_audit(
+        agent_id=agent_id,
+        agent_status=AgentStatus.ENABLED,
+        administrator=administrator,
+        action="enabled",
+    )
 
 
 @router.post("/agents/{agent_id}/retire", response_model=AgentResponse)
 def retire_agent(
     agent_id: int,
-    _administrator: LocalAccount = Depends(current_administrator),
+    administrator: LocalAccount = Depends(current_administrator),
 ) -> AgentResponse:
-    return to_agent_response(agent_store.set_status(agent_id, AgentStatus.RETIRED))
+    return _set_agent_status_with_audit(
+        agent_id=agent_id,
+        agent_status=AgentStatus.RETIRED,
+        administrator=administrator,
+        action="retired",
+    )
 
 
 @router.post("/agents/{agent_id}/prepare-run", response_model=AgentRunPreparationResponse)
@@ -109,6 +162,20 @@ def prepare_agent_run(
     _administrator: LocalAccount = Depends(current_administrator),
 ) -> AgentRunPreparationResponse:
     return to_agent_run_preparation_response(agent_store.get(agent_id))
+
+
+@router.post("/agents/{agent_id}/readiness-check", response_model=AgentReadinessResponse)
+def check_agent_readiness(
+    agent_id: int,
+    _administrator: LocalAccount = Depends(current_administrator),
+) -> AgentReadinessResponse:
+    agent = agent_store.get(agent_id)
+    issues = validate_agent_configuration(agent)
+    return AgentReadinessResponse(
+        agent_id=agent.id,
+        ready=not issues,
+        issues=issues,
+    )
 
 
 @router.post(
@@ -154,9 +221,18 @@ def list_model_configurations(
 )
 def create_model_configuration(
     request: ModelConfigurationMutationRequest,
-    _administrator: LocalAccount = Depends(current_administrator),
+    administrator: LocalAccount = Depends(current_administrator),
 ) -> ModelConfigurationResponse:
-    return to_model_configuration_response(model_configuration_store.create(request))
+    configuration = model_configuration_store.create(request)
+    admin_audit_store.record(
+        actor_id=administrator.id,
+        target_type="model_configuration",
+        target_id=configuration.id,
+        action="created",
+        before=None,
+        after=to_model_configuration_response(configuration).model_dump(mode="json"),
+    )
+    return to_model_configuration_response(configuration)
 
 
 @router.patch(
@@ -166,10 +242,48 @@ def create_model_configuration(
 def update_model_configuration(
     configuration_id: int,
     request: ModelConfigurationUpdateRequest,
-    _administrator: LocalAccount = Depends(current_administrator),
+    administrator: LocalAccount = Depends(current_administrator),
 ) -> ModelConfigurationResponse:
-    return to_model_configuration_response(
-        model_configuration_store.update(configuration_id, request)
+    if request.enabled is False:
+        _raise_if_model_configuration_is_required_by_enabled_agent(configuration_id)
+    existing_configuration = model_configuration_store.get(configuration_id)
+    before = to_model_configuration_response(existing_configuration).model_dump(mode="json")
+    updated_configuration = model_configuration_store.update(configuration_id, request)
+    after = to_model_configuration_response(updated_configuration).model_dump(mode="json")
+    admin_audit_store.record(
+        actor_id=administrator.id,
+        target_type="model_configuration",
+        target_id=configuration_id,
+        action="updated",
+        before=before,
+        after=after,
+    )
+    return to_model_configuration_response(updated_configuration)
+
+
+@router.post(
+    "/model-configurations/{configuration_id}/health-check",
+    response_model=ModelConfigurationHealthCheckResponse,
+)
+def check_model_configuration_health(
+    configuration_id: int,
+    _administrator: LocalAccount = Depends(current_administrator),
+) -> ModelConfigurationHealthCheckResponse:
+    configuration = model_configuration_store.get(configuration_id)
+    checked_at = datetime.now(UTC).isoformat()
+    error = _model_configuration_health_error(configuration)
+    health_status = ModelHealthStatus.UNHEALTHY if error else ModelHealthStatus.HEALTHY
+    updated = model_configuration_store.record_health_check(
+        configuration_id=configuration.id,
+        health_status=health_status,
+        checked_at=checked_at,
+        last_error=error,
+    )
+    return ModelConfigurationHealthCheckResponse(
+        configuration=to_model_configuration_response(updated),
+        status=health_status,
+        checked_at=checked_at,
+        message=error or "Model Configuration health check passed.",
     )
 
 
@@ -304,3 +418,56 @@ def get_run_audit_full_trace(
     _administrator: LocalAccount = Depends(current_administrator),
 ) -> FullTraceResponse:
     return run_audit_store.full_trace(run_id)
+
+
+def _raise_if_model_configuration_is_required_by_enabled_agent(configuration_id: int) -> None:
+    referencing_agents = [
+        agent.name
+        for agent in agent_store.list_agents()
+        if agent.status == AgentStatus.ENABLED
+        and (
+            agent.default_model_configuration_id == configuration_id
+            or configuration_id in agent.allowed_model_configuration_ids
+        )
+    ]
+    if referencing_agents:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail={
+                "message": "Model Configuration is used by enabled Agents.",
+                "agents": referencing_agents,
+            },
+        )
+
+
+def _set_agent_status_with_audit(
+    *,
+    agent_id: int,
+    agent_status: AgentStatus,
+    administrator: LocalAccount,
+    action: str,
+) -> AgentResponse:
+    before = to_agent_response(agent_store.get(agent_id)).model_dump(mode="json")
+    updated_agent = agent_store.set_status(agent_id, agent_status)
+    after = to_agent_response(updated_agent).model_dump(mode="json")
+    admin_audit_store.record(
+        actor_id=administrator.id,
+        target_type="agent",
+        target_id=agent_id,
+        action=action,
+        before=before,
+        after=after,
+    )
+    return to_agent_response(updated_agent)
+
+
+def _model_configuration_health_error(configuration: ModelConfiguration) -> str | None:
+    if not configuration.endpoint.startswith(("https://", "http://")):
+        return "Model endpoint must be an HTTP(S) URL."
+    if not configuration.enabled:
+        return "Model Configuration is disabled."
+    try:
+        resolve_model_api_key(configuration.credential_reference)
+    except Exception as exc:
+        return str(exc)
+    return None

@@ -21,9 +21,10 @@ describe("Administrator Agent Lifecycle surface", () => {
     expect(screen.getByRole("button", { name: "启用智能体" })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "停用智能体" })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "归档智能体" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "检查智能体就绪状态" })).toBeInTheDocument();
   });
 
-  it("opens Agent detail and a local Create Agent draft", async () => {
+  it("opens Agent detail and creates an Agent through the backend", async () => {
     const user = userEvent.setup();
     window.history.pushState({}, "", "/admin/agents");
     render(<App />);
@@ -36,19 +37,29 @@ describe("Administrator Agent Lifecycle surface", () => {
 
     const detail = within(lifecycle).getByRole("region", { name: "智能体详情" });
     expect(within(detail).getByRole("heading", { name: "Research Agent" })).toBeInTheDocument();
+    expect(within(detail).getAllByText("过程可见性").length).toBeGreaterThan(0);
+    expect(within(detail).getAllByText("默认模型").length).toBeGreaterThan(0);
+    expect(within(detail).getAllByText("可选模型").length).toBeGreaterThan(0);
+    expect(within(detail).getAllByText("能力策略").length).toBeGreaterThan(0);
+    expect(within(detail).getByRole("form", { name: "编辑智能体策略" })).toBeInTheDocument();
+    await user.click(within(detail).getByRole("button", { name: "检查智能体就绪状态" }));
+    expect(await within(detail).findByRole("region", { name: "智能体就绪结果" })).toHaveTextContent("已就绪");
+
+    await user.click(within(detail).getByRole("tab", { name: "说明" }));
     expect(within(detail).getByText("智能体说明")).toBeInTheDocument();
-    expect(within(detail).getByText("过程可见性策略")).toBeInTheDocument();
-    expect(within(detail).getByText("默认模型配置")).toBeInTheDocument();
-    expect(within(detail).getByText("可选模型")).toBeInTheDocument();
-    expect(within(detail).getByText("智能体能力策略")).toBeInTheDocument();
+    expect(within(detail).getByRole("form", { name: "编辑智能体说明" })).toBeInTheDocument();
+
+    await user.click(within(detail).getByRole("tab", { name: "MCP" }));
     expect(within(detail).getByText("MCP 工具授权")).toBeInTheDocument();
-    expect(within(detail).getByText("新智能体运行会记录当前说明快照。")).toBeInTheDocument();
 
     await user.click(within(lifecycle).getByRole("button", { name: "创建智能体" }));
-    const draft = within(lifecycle).getByRole("region", { name: "创建智能体草稿" });
-    expect(within(draft).getByLabelText("智能体名称")).toBeInTheDocument();
-    expect(within(draft).getByLabelText("描述")).toBeInTheDocument();
-    expect(within(draft).getByLabelText("智能体说明")).toBeInTheDocument();
-    expect(within(draft).getByText("仅创建本地草稿，真正的智能体必须由后端治理流程创建。")).toBeInTheDocument();
+    const dialog = screen.getByRole("dialog", { name: "创建智能体" });
+    const createForm = within(dialog).getByRole("form", { name: "创建智能体" });
+    await user.type(within(createForm).getByLabelText("智能体名称"), "Support Agent");
+    await user.type(within(createForm).getByLabelText("智能体说明"), "Handle support requests inside the approved backend capability policy.");
+    await user.click(within(createForm).getByRole("button", { name: "保存智能体" }));
+
+    expect(await within(agentList).findByRole("row", { name: /Support Agent 已启用 模型配置 #1 1 未启用能力 过程可见性：标准 详情/ })).toBeInTheDocument();
+    expect(within(lifecycle).getByText("智能体已创建。")).toBeInTheDocument();
   });
 });

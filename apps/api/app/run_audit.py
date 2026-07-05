@@ -222,6 +222,9 @@ class RunAuditStore:
             agent_instruction_snapshot=run.capability_snapshot.agent_instruction_snapshot,
             process_visibility=run.capability_snapshot.process_visibility,
             selected_model_configuration_id=run.capability_snapshot.selected_model_configuration_id,
+            selected_model_configuration_snapshot=(
+                run.capability_snapshot.selected_model_configuration_snapshot
+            ),
             default_model_configuration_id=run.capability_snapshot.default_model_configuration_id,
             allowed_model_configuration_ids=run.capability_snapshot.allowed_model_configuration_ids,
             capability_policy=run.capability_snapshot.capability_policy,

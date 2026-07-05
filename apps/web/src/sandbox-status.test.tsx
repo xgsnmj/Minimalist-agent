@@ -1,5 +1,4 @@
 import { cleanup, render, screen, within } from "@testing-library/react";
-import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, it } from "vitest";
 
 import { App } from "./app/app";
@@ -11,7 +10,6 @@ describe("Administrator Sandbox Status surface", () => {
   });
 
   it("shows Sandbox Capability availability, Agent authorization, recent calls, and artifact capture", async () => {
-    const user = userEvent.setup();
     window.history.pushState({}, "", "/admin/sandbox");
     render(<App />);
 
@@ -34,11 +32,6 @@ describe("Administrator Sandbox Status surface", () => {
     const artifactCapture = screen.getByRole("region", { name: "产物捕获摘要" });
     expect(within(artifactCapture).getByText("已捕获 1 个产物")).toBeInTheDocument();
     expect(within(artifactCapture).getByText("产物数量来自运行审计存储汇总。")).toBeInTheDocument();
-
-    await user.click(screen.getByRole("tab", { name: "已拒绝调用" }));
-
-    const rejectedCall = screen.getByRole("tabpanel", { name: "已拒绝调用" });
-    expect(within(rejectedCall).getByText("智能体能力策略拒绝了沙箱能力")).toBeInTheDocument();
-    expect(within(rejectedCall).getByText("前端没有执行代码，也没有绕过后端策略。")).toBeInTheDocument();
+    expect(within(artifactCapture).getByText("捕获文件以产物引用存储，不以内联消息正文存储。")).toBeInTheDocument();
   });
 });

@@ -3,10 +3,13 @@ from enum import StrEnum
 
 from fastapi import HTTPException, status
 from pydantic import BaseModel, Field
+from sqlalchemy import Boolean, Integer, String, Text, select
+from sqlalchemy.orm import Mapped, mapped_column
 
 from apps.api.app.agents import Agent, AgentResponse, to_agent_response
 from apps.api.app.artifacts import ArtifactMessageReference
 from apps.api.app.card_schema_registry import CardResponse
+from apps.api.app.database import Base, JsonPayload, SessionLocal, engine
 
 
 class ConversationStatus(StrEnum):
@@ -64,13 +67,39 @@ class AgentConversation:
     messages: list[ConversationMessage] = field(default_factory=list)
 
 
-class ConversationStore:
-    def __init__(self) -> None:
-        self.reset()
+class ConversationRecord(Base):
+    __tablename__ = "agent_conversations"
 
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    owner_user_id: Mapped[int] = mapped_column(Integer, index=True, nullable=False)
+    title: Mapped[str] = mapped_column(String(160), nullable=False)
+    agent_id: Mapped[int] = mapped_column(Integer, nullable=False)
+    selected_model_configuration_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    status: Mapped[str] = mapped_column(String(32), nullable=False)
+    updated_at: Mapped[str] = mapped_column(String(64), nullable=False)
+    deleted: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+
+
+class ConversationMessageRecord(Base):
+    __tablename__ = "agent_conversation_messages"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    conversation_id: Mapped[int] = mapped_column(Integer, index=True, nullable=False)
+    sequence: Mapped[int] = mapped_column(Integer, nullable=False)
+    role: Mapped[str] = mapped_column(String(32), nullable=False)
+    content: Mapped[str] = mapped_column(Text, nullable=False)
+    artifact_reference: Mapped[dict | None] = mapped_column(JsonPayload, nullable=True)
+    card: Mapped[dict | None] = mapped_column(JsonPayload, nullable=True)
+
+
+class ConversationStore:
     def reset(self) -> None:
-        self._next_id = 1
-        self._conversations: dict[int, AgentConversation] = {}
+        ConversationRecord.__table__.create(bind=engine, checkfirst=True)
+        ConversationMessageRecord.__table__.create(bind=engine, checkfirst=True)
+        with SessionLocal() as session:
+            session.query(ConversationMessageRecord).delete()
+            session.query(ConversationRecord).delete()
+            session.commit()
 
     def create(
         self,
@@ -79,18 +108,27 @@ class ConversationStore:
         request: ConversationCreateRequest,
         agent: Agent,
     ) -> AgentConversation:
-        conversation = AgentConversation(
-            id=self._next_id,
-            owner_user_id=owner_user_id,
-            title=request.title,
-            agent=agent,
-            selected_model_configuration_id=request.selected_model_configuration_id,
-            updated_at="just now",
-            messages=[ConversationMessage(role="user", content=request.initial_message)],
-        )
-        self._next_id += 1
-        self._conversations[conversation.id] = conversation
-        return conversation
+        with SessionLocal() as session:
+            record = ConversationRecord(
+                owner_user_id=owner_user_id,
+                title=request.title,
+                agent_id=agent.id,
+                selected_model_configuration_id=request.selected_model_configuration_id,
+                status=ConversationStatus.IDLE.value,
+                updated_at="just now",
+                deleted=False,
+            )
+            session.add(record)
+            session.flush()
+            self._append_message_record(
+                session,
+                conversation_id=record.id,
+                role="user",
+                content=request.initial_message,
+            )
+            session.commit()
+            session.refresh(record)
+            return self._conversation_from_record(session, record)
 
     def create_empty(
         self,
@@ -100,39 +138,37 @@ class ConversationStore:
         agent: Agent,
         selected_model_configuration_id: int | None = None,
     ) -> AgentConversation:
-        conversation = AgentConversation(
-            id=self._next_id,
-            owner_user_id=owner_user_id,
-            title=title,
-            agent=agent,
-            selected_model_configuration_id=selected_model_configuration_id,
-            updated_at="just now",
-            messages=[],
-        )
-        self._next_id += 1
-        self._conversations[conversation.id] = conversation
-        return conversation
+        with SessionLocal() as session:
+            record = ConversationRecord(
+                owner_user_id=owner_user_id,
+                title=title,
+                agent_id=agent.id,
+                selected_model_configuration_id=selected_model_configuration_id,
+                status=ConversationStatus.IDLE.value,
+                updated_at="just now",
+                deleted=False,
+            )
+            session.add(record)
+            session.commit()
+            session.refresh(record)
+            return self._conversation_from_record(session, record)
 
     def list_for_user(self, owner_user_id: int) -> list[AgentConversation]:
-        conversations = [
-            conversation
-            for conversation in self._conversations.values()
-            if conversation.owner_user_id == owner_user_id and not conversation.deleted
-        ]
-        return sorted(conversations, key=lambda conversation: conversation.id, reverse=True)
+        with SessionLocal() as session:
+            records = session.scalars(
+                select(ConversationRecord)
+                .where(ConversationRecord.owner_user_id == owner_user_id)
+                .where(ConversationRecord.deleted.is_(False))
+                .order_by(ConversationRecord.id.desc())
+            ).all()
+            return [self._conversation_from_record(session, record) for record in records]
 
     def get_for_user(self, *, owner_user_id: int, conversation_id: int) -> AgentConversation:
-        conversation = self._conversations.get(conversation_id)
-        if (
-            conversation is None
-            or conversation.owner_user_id != owner_user_id
-            or conversation.deleted
-        ):
-            raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND,
-                detail="Agent Conversation not found.",
-            )
-        return conversation
+        with SessionLocal() as session:
+            record = self._conversation_record_or_404(session, conversation_id)
+            if record.owner_user_id != owner_user_id:
+                raise _conversation_not_found()
+            return self._conversation_from_record(session, record)
 
     def rename_for_user(
         self,
@@ -141,13 +177,15 @@ class ConversationStore:
         conversation_id: int,
         request: ConversationRenameRequest,
     ) -> AgentConversation:
-        conversation = self.get_for_user(
-            owner_user_id=owner_user_id,
-            conversation_id=conversation_id,
-        )
-        conversation.title = request.title
-        conversation.updated_at = "just now"
-        return conversation
+        with SessionLocal() as session:
+            record = self._conversation_record_or_404(session, conversation_id)
+            if record.owner_user_id != owner_user_id:
+                raise _conversation_not_found()
+            record.title = request.title
+            record.updated_at = "just now"
+            session.commit()
+            session.refresh(record)
+            return self._conversation_from_record(session, record)
 
     def soft_delete_for_user(
         self,
@@ -155,13 +193,15 @@ class ConversationStore:
         owner_user_id: int,
         conversation_id: int,
     ) -> AgentConversation:
-        conversation = self.get_for_user(
-            owner_user_id=owner_user_id,
-            conversation_id=conversation_id,
-        )
-        conversation.deleted = True
-        conversation.updated_at = "just now"
-        return conversation
+        with SessionLocal() as session:
+            record = self._conversation_record_or_404(session, conversation_id)
+            if record.owner_user_id != owner_user_id:
+                raise _conversation_not_found()
+            record.deleted = True
+            record.updated_at = "just now"
+            session.commit()
+            session.refresh(record)
+            return self._conversation_from_record(session, record, include_deleted=True)
 
     def append_message(
         self,
@@ -172,17 +212,20 @@ class ConversationStore:
         artifact_reference: ArtifactMessageReference | None = None,
         card: CardResponse | None = None,
     ) -> AgentConversation:
-        conversation = self._conversation_or_404(conversation_id)
-        conversation.messages.append(
-            ConversationMessage(
+        with SessionLocal() as session:
+            record = self._conversation_record_or_404(session, conversation_id)
+            self._append_message_record(
+                session,
+                conversation_id=conversation_id,
                 role=role,
                 content=content,
                 artifact_reference=artifact_reference,
                 card=card,
             )
-        )
-        conversation.updated_at = "just now"
-        return conversation
+            record.updated_at = "just now"
+            session.commit()
+            session.refresh(record)
+            return self._conversation_from_record(session, record)
 
     def set_status(
         self,
@@ -190,22 +233,112 @@ class ConversationStore:
         conversation_id: int,
         conversation_status: ConversationStatus,
     ) -> AgentConversation:
-        conversation = self._conversation_or_404(conversation_id)
-        conversation.status = conversation_status
-        conversation.updated_at = "just now"
-        return conversation
+        with SessionLocal() as session:
+            record = self._conversation_record_or_404(session, conversation_id)
+            record.status = conversation_status.value
+            record.updated_at = "just now"
+            session.commit()
+            session.refresh(record)
+            return self._conversation_from_record(session, record)
 
-    def _conversation_or_404(self, conversation_id: int) -> AgentConversation:
-        conversation = self._conversations.get(conversation_id)
-        if conversation is None or conversation.deleted:
-            raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND,
-                detail="Agent Conversation not found.",
-            )
-        return conversation
+    def _conversation_record_or_404(
+        self,
+        session,
+        conversation_id: int,
+        *,
+        include_deleted: bool = False,
+    ) -> ConversationRecord:
+        record = session.get(ConversationRecord, conversation_id)
+        if record is None or (record.deleted and not include_deleted):
+            raise _conversation_not_found()
+        return record
+
+    def _append_message_record(
+        self,
+        session,
+        *,
+        conversation_id: int,
+        role: str,
+        content: str,
+        artifact_reference: ArtifactMessageReference | None = None,
+        card: CardResponse | None = None,
+    ) -> ConversationMessageRecord:
+        sequence = self._next_message_sequence(session, conversation_id)
+        record = ConversationMessageRecord(
+            conversation_id=conversation_id,
+            sequence=sequence,
+            role=role,
+            content=content,
+            artifact_reference=(
+                artifact_reference.model_dump(mode="json")
+                if artifact_reference is not None
+                else None
+            ),
+            card=(card.model_dump(mode="json", by_alias=True) if card is not None else None),
+        )
+        session.add(record)
+        return record
+
+    def _next_message_sequence(self, session, conversation_id: int) -> int:
+        result = session.scalar(
+            select(ConversationMessageRecord.sequence)
+            .where(ConversationMessageRecord.conversation_id == conversation_id)
+            .order_by(ConversationMessageRecord.sequence.desc())
+            .limit(1)
+        )
+        return int(result or 0) + 1
+
+    def _conversation_from_record(
+        self,
+        session,
+        record: ConversationRecord,
+        *,
+        include_deleted: bool = False,
+    ) -> AgentConversation:
+        if record.deleted and not include_deleted:
+            raise _conversation_not_found()
+        messages = session.scalars(
+            select(ConversationMessageRecord)
+            .where(ConversationMessageRecord.conversation_id == record.id)
+            .order_by(ConversationMessageRecord.sequence.asc())
+        ).all()
+        return AgentConversation(
+            id=record.id,
+            owner_user_id=record.owner_user_id,
+            title=record.title,
+            agent=agent_store.get(record.agent_id),
+            selected_model_configuration_id=record.selected_model_configuration_id,
+            updated_at=record.updated_at,
+            status=ConversationStatus(record.status),
+            deleted=record.deleted,
+            messages=[_message_from_record(message) for message in messages],
+        )
 
 
 conversation_store = ConversationStore()
+
+
+from apps.api.app.agents import agent_store  # noqa: E402
+
+
+def _conversation_not_found() -> HTTPException:
+    return HTTPException(
+        status_code=status.HTTP_404_NOT_FOUND,
+        detail="Agent Conversation not found.",
+    )
+
+
+def _message_from_record(record: ConversationMessageRecord) -> ConversationMessage:
+    return ConversationMessage(
+        role=record.role,
+        content=record.content,
+        artifact_reference=(
+            ArtifactMessageReference.model_validate(record.artifact_reference)
+            if record.artifact_reference is not None
+            else None
+        ),
+        card=(CardResponse.model_validate(record.card) if record.card is not None else None),
+    )
 
 
 def to_conversation_response(conversation: AgentConversation) -> ConversationResponse:

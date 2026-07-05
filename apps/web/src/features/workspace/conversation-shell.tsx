@@ -1,22 +1,10 @@
-import { ChangeEvent, FormEvent, useEffect, useMemo, useState } from "react";
-import { CopilotChat } from "@copilotkit/react-core/v2";
-import { Copy, Download, ExternalLink, Paperclip, X } from "lucide-react";
+import { FormEvent, useEffect, useMemo, useRef, useState } from "react";
+import { Activity, Bell, Copy, Download, ExternalLink, LogOut, Shield, UserRound } from "lucide-react";
 
-import {
-  AttachmentPreview,
-  createAttachmentPreview,
-  normalizeAttachmentPreviewText,
-  readFileAsDataUrl,
-  type UploadedAttachmentPreview,
-} from "../../shared/attachment-preview";
 import { useAgentRunStream } from "../../shared/ag-ui-stream";
-import {
-  ConversationCardView,
-  type ConversationToolCall,
-  ToolCallView,
-} from "../../shared/conversation-message-rendering";
+import { type ConversationToolCall } from "../../shared/conversation-message-rendering";
 import { CopilotWorkspaceBridge } from "../../shared/copilotkit-adapter";
-import type { ConversationCard } from "../../shared/card-schema-contract";
+import { CARD_SCHEMAS, type CardSchema, type ConversationCard } from "../../shared/card-schema-contract";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader } from "@/components/ui/card";
@@ -28,6 +16,22 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
+import { CopilotConversationSurface } from "./copilot-conversation-surface";
+import {
+  cancelAgentRun,
+  deleteConversation as deleteConversationRequest,
+  getArtifactPreview,
+  listConversations,
+  listRuns,
+  listWorkspaceAgents,
+  renameConversation as renameConversationRequest,
+  type ApiArtifactPreview,
+  type ApiConversation,
+  type ApiConversationCard,
+  type ApiRun,
+  type ApiWorkspaceAgent,
+} from "./workspace-api";
+import { getCurrentUser, logout, type CurrentUser } from "./auth-api";
 
 type ModelOption = {
   id: string;
@@ -36,9 +40,12 @@ type ModelOption = {
 
 type WorkspaceAgent = {
   id: string;
+  backendId: number;
+  copilotAgentId: string;
   name: string;
   status: "enabled";
   allowedModels: ModelOption[];
+  defaultModelId: string | null;
   capabilitySnapshot: {
     mcpServerCount: number;
     sandbox: boolean;
@@ -65,9 +72,10 @@ type Conversation = {
   id: string;
   title: string;
   agentId: string;
-  status: "idle" | "running" | "completed" | "failed" | "cancelled";
+  status: "idle" | "queued" | "running" | "completed" | "failed" | "cancelled";
   updatedAt: string;
   selectedModelId: string;
+  latestRunId: number | null;
   completedAt?: string;
   cancelledAt?: string;
   runError?: string;
@@ -88,424 +96,40 @@ type CommandRun = {
   updatedAt: string;
 };
 
-type InspectorTab = "artifact" | "run" | "tools";
 type ArtifactPanelView = "preview" | "metadata";
 
-const workspaceAgents: WorkspaceAgent[] = [
-  {
-    id: "default",
-    name: "默认智能体",
-    status: "enabled",
-    allowedModels: [{ id: "openai-gpt-5", label: "OpenAI / GPT-5" }],
-    capabilitySnapshot: {
-      mcpServerCount: 1,
-      sandbox: true,
-      search: true,
-    },
-  },
-  {
-    id: "research",
-    name: "研究智能体",
-    status: "enabled",
-    allowedModels: [
-      { id: "doubao-seed", label: "Doubao / Seed 1.6" },
-      { id: "minimax-m1", label: "MiniMax / M1" },
-    ],
-    capabilitySnapshot: {
-      mcpServerCount: 0,
-      sandbox: false,
-      search: true,
-    },
-  },
-];
-
-const copilotChatLabels = {
-  assistantMessageToolbarCopyCodeCopiedLabel: "已复制",
-  assistantMessageToolbarCopyCodeLabel: "复制代码",
-  assistantMessageToolbarCopyMessageLabel: "复制消息",
-  assistantMessageToolbarReadAloudLabel: "朗读",
-  assistantMessageToolbarRegenerateLabel: "重新生成",
-  assistantMessageToolbarThumbsDownLabel: "反馈无效",
-  assistantMessageToolbarThumbsUpLabel: "反馈有效",
-  chatDisclaimerText: "策略约束由管理员配置",
-  chatInputPlaceholder: "向当前智能体发送消息",
-  chatInputToolbarAddButtonLabel: "添加",
-  chatInputToolbarCancelTranscribeButtonLabel: "取消语音",
-  chatInputToolbarFinishTranscribeButtonLabel: "结束语音",
-  chatInputToolbarStartTranscribeButtonLabel: "开始语音",
-  chatInputToolbarToolsButtonLabel: "工具",
-  chatToggleCloseLabel: "关闭 Copilot",
-  chatToggleOpenLabel: "打开 Copilot",
-  modalHeaderTitle: "工作台 Copilot",
-  userMessageToolbarCopyMessageLabel: "复制消息",
-  userMessageToolbarEditMessageLabel: "编辑消息",
-  welcomeMessageText: "当前会话由 CopilotKit 渲染。运行与权限由后端治理。",
-};
-
-const runAttachmentAccept = "text/*,application/json,application/pdf,image/*,.md,.csv";
-
-const initialConversations: Conversation[] = [
-  {
-    id: "conversation-1",
-    title: "市场调研",
-    agentId: "default",
-    status: "idle",
-    updatedAt: "刚刚",
-    selectedModelId: "openai-gpt-5",
-    messages: [
-      {
-        id: "message-1",
-        role: "user",
-        content: "调研生产级 AI 工作台的会话、运行和制品设计逻辑。",
-      },
-      {
-        id: "message-2",
-        role: "assistant",
-        content:
-          "已建立调研范围：会话线程、运行状态、工具调用、附件和制品预览。",
-      },
-      {
-        id: "message-3",
-        role: "assistant",
-        content: "制品已生成：brief.md",
-        artifactReference: {
-          artifactId: 1,
-          filename: "brief.md",
-          previewType: "markdown",
-        },
-      },
-      {
-        id: "message-4",
-        role: "assistant",
-        content: "制品已生成：metrics.json",
-        artifactReference: {
-          artifactId: 2,
-          filename: "metrics.json",
-          previewType: "json",
-        },
-      },
-      {
-        id: "message-4-code",
-        role: "assistant",
-        content: "制品已生成：analysis.ts",
-        artifactReference: {
-          artifactId: 5,
-          filename: "analysis.ts",
-          previewType: "code",
-        },
-      },
-      {
-        id: "message-4-html",
-        role: "assistant",
-        content: "制品已生成：demo.html",
-        artifactReference: {
-          artifactId: 6,
-          filename: "demo.html",
-          previewType: "html",
-        },
-      },
-      {
-        id: "message-4-text",
-        role: "assistant",
-        content: "制品已生成：notes.txt",
-        artifactReference: {
-          artifactId: 7,
-          filename: "notes.txt",
-          previewType: "plaintext",
-        },
-      },
-      {
-        id: "message-4-image",
-        role: "assistant",
-        content: "制品已生成：diagram.png",
-        artifactReference: {
-          artifactId: 8,
-          filename: "diagram.png",
-          previewType: "image",
-        },
-      },
-      {
-        id: "message-4-pdf",
-        role: "assistant",
-        content: "制品已生成：report.pdf",
-        artifactReference: {
-          artifactId: 9,
-          filename: "report.pdf",
-          previewType: "pdf",
-        },
-      },
-      {
-        id: "message-5",
-        role: "assistant",
-        content: "工具调用：search.web 已完成",
-        toolCall: {
-          toolName: "search.web",
-          status: "completed",
-          safeInput: {
-            query: "Minimalist Agent WorkBuddy patterns",
-          },
-          safeOutput: {
-            summary: "search.web 已完成。",
-          },
-          provenance: {
-            gateway: "agent_tool_gateway",
-            provider: "mock",
-          },
-        },
-      },
-      {
-        id: "message-6",
-        role: "assistant",
-        content: "制品卡片：artifact_card",
-        card: {
-          schema: "artifact_card",
-          payload: {
-            artifact_id: 1,
-            filename: "brief.md",
-            preview_type: "markdown",
-          },
-        },
-      },
-      {
-        id: "message-7",
-        role: "assistant",
-        content: "工具结果卡片：tool_result_card",
-        card: {
-          schema: "tool_result_card",
-          payload: {
-            tool_name: "doubao_search",
-            status: "completed",
-            summary: "找到 4 条相关结果。",
-          },
-        },
-      },
-      {
-        id: "message-8",
-        role: "assistant",
-        content: "选择卡片：choice_card",
-        card: {
-          schema: "choice_card",
-          payload: {
-            prompt: "选择输出格式。",
-            options: [
-              { id: "brief", label: "简报" },
-              { id: "table", label: "表格", description: "结构化对比。" },
-            ],
-          },
-        },
-      },
-      {
-        id: "message-9",
-        role: "assistant",
-        content: "引用卡片：citation_card",
-        card: {
-          schema: "citation_card",
-          payload: {
-            title: "AG-UI protocol",
-            url: "https://docs.ag-ui.com/",
-            source: "AG-UI docs",
-            snippet: "Event streams carry agent state.",
-          },
-        },
-      },
-      {
-        id: "message-10",
-        role: "assistant",
-        content: "状态卡片：status_card",
-        card: {
-          schema: "status_card",
-          payload: {
-            status: "running",
-            title: "读取来源",
-            detail: "智能体正在收集证据。",
-          },
-        },
-      },
-      {
-        id: "message-11",
-        role: "assistant",
-        content: "表单请求卡片：form_request_card",
-        card: {
-          schema: "form_request_card",
-          payload: {
-            title: "需要补充输入",
-            fields: [
-              { id: "audience", label: "目标用户", type: "text", required: true },
-            ],
-          },
-        },
-      },
-    ],
-  },
-  {
-    id: "conversation-2",
-    title: "竞品分析",
-    agentId: "default",
-    status: "running",
-    updatedAt: "2 分钟前",
-    selectedModelId: "openai-gpt-5",
-    messages: [
-      {
-        id: "conversation-2-message-1",
-        role: "user",
-        content: "对比三个同类产品的对话工作台信息架构。",
-      },
-      {
-        id: "conversation-2-message-2",
-        role: "assistant",
-        content: "正在整理竞品的会话导航、运行状态和制品预览差异。",
-        card: {
-          schema: "status_card",
-          payload: {
-            status: "running",
-            title: "分析进行中",
-            detail: "智能体正在归纳竞品页面结构。",
-          },
-        },
-      },
-    ],
-  },
-  {
-    id: "conversation-3",
-    title: "行业报告",
-    agentId: "default",
-    status: "failed",
-    updatedAt: "5 分钟前",
-    selectedModelId: "openai-gpt-5",
-    runError: "模型网关超时，运行未完成。可重新运行或调整输入。",
-    messages: [
-      {
-        id: "conversation-3-message-1",
-        role: "user",
-        content: "生成一份行业报告结构和关键数据清单。",
-      },
-      {
-        id: "conversation-3-message-2",
-        role: "assistant",
-        content: "模型网关超时，运行未完成。可重新运行或调整输入。",
-        card: {
-          schema: "status_card",
-          payload: {
-            status: "failed",
-            title: "运行失败",
-            detail: "模型网关超时，运行未完成。可重新运行或调整输入。",
-          },
-        },
-      },
-    ],
-  },
-  {
-    id: "conversation-4",
-    title: "品牌简报",
-    agentId: "default",
-    status: "completed",
-    updatedAt: "12 分钟前",
-    selectedModelId: "openai-gpt-5",
-    completedAt: "12 分钟前",
-    messages: [
-      {
-        id: "conversation-4-message-1",
-        role: "user",
-        content: "整理品牌定位简报，输出 Markdown 文档。",
-      },
-      {
-        id: "conversation-4-message-2",
-        role: "assistant",
-        content: "已完成品牌定位简报，并生成可预览制品。",
-      },
-      {
-        id: "conversation-4-message-3",
-        role: "assistant",
-        content: "制品已生成：brand-brief.md",
-        artifactReference: {
-          artifactId: 3,
-          filename: "brand-brief.md",
-          previewType: "markdown",
-        },
-      },
-    ],
-  },
-  {
-    id: "conversation-5",
-    title: "资料整理",
-    agentId: "default",
-    status: "cancelled",
-    updatedAt: "8 分钟前",
-    selectedModelId: "openai-gpt-5",
-    cancelledAt: "8 分钟前",
-    messages: [
-      {
-        id: "conversation-5-message-1",
-        role: "user",
-        content: "整理上传材料，先输出可复用的中间笔记。",
-      },
-      {
-        id: "conversation-5-message-2",
-        role: "assistant",
-        content: "运行已停止，已有输出已保留。",
-      },
-      {
-        id: "conversation-5-message-3",
-        role: "assistant",
-        content: "制品已保留：partial-notes.md",
-        artifactReference: {
-          artifactId: 4,
-          filename: "partial-notes.md",
-          previewType: "markdown",
-        },
-      },
-    ],
-  },
-];
-
 export function ConversationShell() {
-  const [conversations, setConversations] = useState<Conversation[]>(initialConversations);
-  const [selectedConversationId, setSelectedConversationId] = useState<string | null>(
-    initialConversations[0]?.id ?? null,
-  );
+  const [workspaceAgents, setWorkspaceAgents] = useState<WorkspaceAgent[]>([]);
+  const [conversations, setConversations] = useState<Conversation[]>([]);
+  const [runs, setRuns] = useState<ApiRun[]>([]);
+  const [selectedConversationId, setSelectedConversationId] = useState<string | null>(null);
   const [conversationSearch, setConversationSearch] = useState("");
   const [commandSearch, setCommandSearch] = useState("");
   const [isCommandPaletteOpen, setIsCommandPaletteOpen] = useState(false);
-  const [draftAgentId] = useState(workspaceAgents[0].id);
-  const [draftModelId, setDraftModelId] = useState(workspaceAgents[0].allowedModels[0].id);
+  const [draftAgentId, setDraftAgentId] = useState("");
+  const [draftModelId, setDraftModelId] = useState("");
   const [isRenaming, setIsRenaming] = useState(false);
-  const [renameValue, setRenameValue] = useState(initialConversations[0]?.title ?? "");
-  const [previewArtifactId, setPreviewArtifactId] = useState<number | null>(
-    initialConversations[0]?.messages.find((message) => message.artifactReference)?.artifactReference
-      ?.artifactId ?? null,
-  );
-  const [inspectorTab, setInspectorTab] = useState<InspectorTab>("artifact");
+  const [renameValue, setRenameValue] = useState("");
+  const [previewArtifactId, setPreviewArtifactId] = useState<number | null>(null);
+  const [artifactPreviews, setArtifactPreviews] = useState<Record<number, ApiArtifactPreview>>({});
   const [artifactPanelView, setArtifactPanelView] = useState<ArtifactPanelView>("preview");
-  const [isInspectorCollapsed, setIsInspectorCollapsed] = useState(false);
-  const [attachmentPreview, setAttachmentPreview] = useState<UploadedAttachmentPreview | null>(null);
+  const [isSidebarCollapsed, setIsSidebarCollapsed] = useState(false);
+  const [latestAttachmentPreviewName, setLatestAttachmentPreviewName] = useState<string | null>(null);
   const [copiedArtifactId, setCopiedArtifactId] = useState<number | null>(null);
+  const [isLoadingWorkspace, setIsLoadingWorkspace] = useState(true);
+  const [workspaceError, setWorkspaceError] = useState<string | null>(null);
+  const [currentUser, setCurrentUser] = useState<CurrentUser | null>(null);
 
   const selectedConversation = conversations.find(
     (conversation) => conversation.id === selectedConversationId,
   );
-  const activeRunId = selectedConversation
-    ? conversations.findIndex((conversation) => conversation.id === selectedConversation.id) + 1
-    : null;
+  const activeRunId = selectedConversation?.latestRunId ?? null;
   const { lastSeenSequence, status: streamStatus } = useAgentRunStream(activeRunId);
-  const activeAgent = getAgent(selectedConversation?.agentId ?? draftAgentId);
+  const activeAgent = getAgent(workspaceAgents, selectedConversation?.agentId ?? draftAgentId);
   const allowedModels = activeAgent.allowedModels;
   const selectedModelId = selectedConversation?.selectedModelId ?? draftModelId;
   const selectedModelLabel =
-    allowedModels.find((model) => model.id === selectedModelId)?.label ?? selectedModelId;
-  const selectedToolCalls = useMemo(
-    () =>
-      selectedConversation?.messages.flatMap((message) =>
-        message.toolCall ? [message.toolCall] : [],
-      ) ?? [],
-    [selectedConversation],
-  );
-  const processSummaries = useMemo(
-    () =>
-      selectedConversation?.messages
-        .filter((message) => message.role === "assistant" && message.content.startsWith("已建立"))
-        .map((message) => message.content) ?? [],
-    [selectedConversation],
-  );
+    allowedModels.find((model) => model.id === selectedModelId)?.label ?? (selectedModelId || "未配置模型");
   const selectedArtifactReferences = useMemo(
     () =>
       selectedConversation?.messages
@@ -513,37 +137,13 @@ export function ConversationShell() {
         .filter((artifact): artifact is ArtifactReference => Boolean(artifact)) ?? [],
     [selectedConversation],
   );
-  const completedArtifactReference =
-    selectedConversation?.status === "completed" ? selectedArtifactReferences[0] ?? null : null;
-  const retainedArtifactReference =
-    selectedConversation?.status === "cancelled" ? selectedArtifactReferences[0] ?? null : null;
-  const copilotThreadId = selectedConversation?.id;
-  const copilotAttachments = useMemo(
-    () => ({
-      enabled: true,
-      accept: runAttachmentAccept,
-      maxSize: 20 * 1024 * 1024,
-      onUpload: async (file: File) => {
-        setPreviewArtifactId(null);
-        await updateAttachmentPreview(file);
-
-        return {
-          type: "data" as const,
-          value: await readFileAsDataUrl(file),
-          mimeType: file.type || "application/octet-stream",
-          metadata: { filename: file.name },
-        };
-      },
-      onUploadFailed: ({ message }: { message: string }) => {
-        console.warn("[copilotkit attachments]", message);
-      },
-    }),
-    [],
-  );
   const selectedArtifactReference =
     previewArtifactId != null
       ? selectedArtifactReferences.find((artifact) => artifact.artifactId === previewArtifactId) ?? null
       : null;
+  const selectedArtifactPreview = previewArtifactId != null
+    ? artifactPreviews[previewArtifactId] ?? null
+    : null;
   const visibleConversations = useMemo(
     () =>
       conversations.filter((conversation) =>
@@ -552,7 +152,7 @@ export function ConversationShell() {
     [conversationSearch, conversations],
   );
   const commandArtifacts = useMemo(() => collectCommandArtifacts(conversations), [conversations]);
-  const commandRuns = useMemo(() => collectCommandRuns(conversations), [conversations]);
+  const commandRuns = useMemo(() => collectCommandRuns(conversations, runs), [conversations, runs]);
   const visibleCommandConversations = useMemo(
     () =>
       conversations.filter((conversation) =>
@@ -579,6 +179,30 @@ export function ConversationShell() {
   );
 
   useEffect(() => {
+    void refreshWorkspace();
+  }, []);
+
+  useEffect(() => {
+    let isCurrent = true;
+
+    getCurrentUser()
+      .then((user) => {
+        if (isCurrent) {
+          setCurrentUser(user);
+        }
+      })
+      .catch(() => {
+        if (isCurrent) {
+          setCurrentUser(null);
+        }
+      });
+
+    return () => {
+      isCurrent = false;
+    };
+  }, []);
+
+  useEffect(() => {
     function openCommandPaletteFromKeyboard(event: KeyboardEvent) {
       if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "k") {
         event.preventDefault();
@@ -590,12 +214,58 @@ export function ConversationShell() {
     return () => window.removeEventListener("keydown", openCommandPaletteFromKeyboard);
   }, []);
 
+  async function refreshWorkspace(preferredConversationId?: string | null) {
+    setWorkspaceError(null);
+    try {
+      const [apiAgents, apiConversations, apiRuns] = await Promise.all([
+        listWorkspaceAgents(),
+        listConversations(),
+        listRuns(),
+      ]);
+      const nextAgents = apiAgents.map(mapWorkspaceAgent);
+      const nextRuns = apiRuns;
+      const nextConversations = apiConversations.map((conversation) =>
+        mapConversation(conversation, nextRuns),
+      );
+      const preferredId = preferredConversationId ?? selectedConversationId;
+      const nextSelectedId = preferredId && nextConversations.some((conversation) => conversation.id === preferredId)
+        ? preferredId
+        : nextConversations[0]?.id ?? null;
+      const nextSelectedConversation = nextConversations.find(
+        (conversation) => conversation.id === nextSelectedId,
+      );
+      const nextDraftAgentId = nextSelectedConversation?.agentId ?? nextAgents[0]?.id ?? "";
+      const nextAgent = getAgent(nextAgents, nextDraftAgentId);
+      const nextDraftModelId = nextSelectedConversation?.selectedModelId
+        ?? nextAgent.defaultModelId
+        ?? nextAgent.allowedModels[0]?.id
+        ?? "";
+
+      setWorkspaceAgents(nextAgents);
+      setRuns(nextRuns);
+      setConversations(nextConversations);
+      setSelectedConversationId(nextSelectedId);
+      setDraftAgentId(nextDraftAgentId);
+      setDraftModelId(nextDraftModelId);
+      setRenameValue(nextSelectedConversation?.title ?? "未命名对话");
+    } catch (error) {
+      setWorkspaceError(error instanceof Error ? error.message : "工作台数据加载失败。");
+    } finally {
+      setIsLoadingWorkspace(false);
+    }
+  }
+
   function startNewConversation() {
     setSelectedConversationId(null);
     setIsRenaming(false);
     setRenameValue("未命名对话");
     setPreviewArtifactId(null);
-    setInspectorTab("artifact");
+    setLatestAttachmentPreviewName(null);
+    const firstAgent = workspaceAgents[0];
+    if (firstAgent) {
+      setDraftAgentId(firstAgent.id);
+      setDraftModelId(firstAgent.defaultModelId ?? firstAgent.allowedModels[0]?.id ?? "");
+    }
   }
 
   function startNewConversationFromCommand() {
@@ -608,10 +278,7 @@ export function ConversationShell() {
     setSelectedConversationId(conversationId);
     setRenameValue(conversation?.title ?? "");
     setIsRenaming(false);
-    setPreviewArtifactId(
-      conversation?.messages.find((message) => message.artifactReference)?.artifactReference
-        ?.artifactId ?? null,
-    );
+    setPreviewArtifactId(null);
   }
 
   function selectConversationFromCommand(conversationId: string) {
@@ -627,8 +294,6 @@ export function ConversationShell() {
 
   function openRunFromCommand(conversationId: string) {
     selectConversation(conversationId);
-    setInspectorTab("run");
-    setIsInspectorCollapsed(false);
     closeCommandPalette();
   }
 
@@ -637,20 +302,25 @@ export function ConversationShell() {
     setIsCommandPaletteOpen(false);
   }
 
-  function openArtifactPreview(artifactId: number) {
+  async function openArtifactPreview(artifactId: number) {
     setPreviewArtifactId(artifactId);
-    setInspectorTab("artifact");
     setArtifactPanelView("preview");
-    setIsInspectorCollapsed(false);
-  }
-
-  function removeAttachmentPreview() {
-    setAttachmentPreview(null);
-    setPreviewArtifactId(null);
+    if (artifactPreviews[artifactId]) {
+      return;
+    }
+    try {
+      const preview = await getArtifactPreview(artifactId);
+      setArtifactPreviews((currentPreviews) => ({
+        ...currentPreviews,
+        [artifactId]: preview,
+      }));
+    } catch (error) {
+      setWorkspaceError(error instanceof Error ? error.message : "制品预览加载失败。");
+    }
   }
 
   async function copyArtifactPreview(reference: ArtifactReference) {
-    const content = getArtifactPreviewContent(reference);
+    const content = getArtifactPreviewContent(reference, artifactPreviews[reference.artifactId]);
     try {
       await navigator.clipboard?.writeText(content);
     } finally {
@@ -658,35 +328,7 @@ export function ConversationShell() {
     }
   }
 
-  async function uploadContextAttachment(event: ChangeEvent<HTMLInputElement>) {
-    const input = event.currentTarget;
-    const file = input.files?.[0];
-    if (!file) {
-      return;
-    }
-
-    setPreviewArtifactId(null);
-    await updateAttachmentPreview(file);
-    input.value = "";
-  }
-
-  async function updateAttachmentPreview(file: File) {
-    const preview = createAttachmentPreview(file);
-    setInspectorTab("artifact");
-    if (preview.previewType === "image" || preview.previewType === "pdf") {
-      const dataUrl = await readFileAsDataUrl(file);
-      setAttachmentPreview({ ...preview, dataUrl });
-      return;
-    }
-
-    const text = await file.text();
-    setAttachmentPreview({
-      ...preview,
-      text: normalizeAttachmentPreviewText(preview.previewType, text),
-    });
-  }
-
-  function renameConversation(event: FormEvent<HTMLFormElement>) {
+  async function renameConversation(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     const nextTitle = renameValue.trim();
 
@@ -694,36 +336,66 @@ export function ConversationShell() {
       return;
     }
 
-    setConversations((currentConversations) =>
-      currentConversations.map((conversation) =>
-        conversation.id === selectedConversation.id
-          ? { ...conversation, title: nextTitle, updatedAt: "刚刚" }
-          : conversation,
-      ),
-    );
-    setIsRenaming(false);
+    try {
+      const updatedConversation = await renameConversationRequest(selectedConversation.id, nextTitle);
+      const mappedConversation = mapConversation(updatedConversation, runs);
+      setConversations((currentConversations) =>
+        currentConversations.map((conversation) =>
+          conversation.id === selectedConversation.id ? mappedConversation : conversation,
+        ),
+      );
+      setIsRenaming(false);
+      setWorkspaceError(null);
+    } catch (error) {
+      setWorkspaceError(error instanceof Error ? error.message : "重命名失败。");
+    }
   }
 
-  function deleteConversation() {
+  async function deleteConversation() {
     if (!selectedConversation) {
       return;
     }
 
-    const remainingConversations = conversations.filter(
-      (conversation) => conversation.id !== selectedConversation.id,
-    );
-    setConversations(remainingConversations);
-    setSelectedConversationId(remainingConversations[0]?.id ?? null);
-    setRenameValue(remainingConversations[0]?.title ?? "未命名对话");
-    setIsRenaming(false);
+    try {
+      await deleteConversationRequest(selectedConversation.id);
+      const remainingConversations = conversations.filter(
+        (conversation) => conversation.id !== selectedConversation.id,
+      );
+      setConversations(remainingConversations);
+      setSelectedConversationId(remainingConversations[0]?.id ?? null);
+      setRenameValue(remainingConversations[0]?.title ?? "未命名对话");
+      setIsRenaming(false);
+      setPreviewArtifactId(null);
+      setWorkspaceError(null);
+    } catch (error) {
+      setWorkspaceError(error instanceof Error ? error.message : "删除对话失败。");
+    }
   }
 
+  async function stopActiveRun() {
+    if (!selectedConversation?.latestRunId) {
+      return;
+    }
+    try {
+      await cancelAgentRun(selectedConversation.latestRunId);
+      await refreshWorkspace(selectedConversation.id);
+    } catch (error) {
+      setWorkspaceError(error instanceof Error ? error.message : "停止运行失败。");
+    }
+  }
+
+  const shellClassName = [
+    "app-shell",
+    isSidebarCollapsed ? "sidebar-collapsed" : "",
+    selectedArtifactReference ? "file-preview-open" : "file-preview-closed",
+  ].filter(Boolean).join(" ");
+
   return (
-    <main className={isInspectorCollapsed ? "app-shell inspector-collapsed" : "app-shell"}>
+    <main className={shellClassName}>
       <CopilotWorkspaceBridge
         activeRunId={activeRunId}
         agents={workspaceAgents}
-        attachmentPreviewName={attachmentPreview?.filename ?? null}
+        attachmentPreviewName={latestAttachmentPreviewName}
         conversations={conversations}
         draftAgentId={draftAgentId}
         draftModelId={draftModelId}
@@ -737,7 +409,7 @@ export function ConversationShell() {
         setSelectedConversationId={setSelectedConversationId}
         streamStatus={streamStatus}
       />
-      <aside className="conversation-sidebar" aria-label="智能体会话">
+      <aside className="conversation-sidebar" aria-label="智能体会话" data-collapsed={isSidebarCollapsed}>
         <div className="brand-block">
           <a className="brand-link" href="/app/conversations" aria-label="Minimalist Agent 首页">
             <span className="brand-mark" aria-hidden="true">
@@ -745,6 +417,14 @@ export function ConversationShell() {
             </span>
             <h1 id="app-title">Minimalist Agent</h1>
           </a>
+          <Button
+            aria-label={isSidebarCollapsed ? "展开侧边栏" : "收起侧边栏"}
+            className="sidebar-toggle"
+            type="button"
+            onClick={() => setIsSidebarCollapsed((isCollapsed) => !isCollapsed)}
+          >
+            {isSidebarCollapsed ? "展开" : "收起"}
+          </Button>
           <p>对话工作台</p>
         </div>
         <Button
@@ -759,11 +439,6 @@ export function ConversationShell() {
         <Button className="primary-button full-width" type="button" onClick={startNewConversation}>
           新建对话
         </Button>
-        <nav className="workspace-nav" aria-label="工作台导航">
-          <a className="workspace-nav-item active" href="/app/conversations">会话</a>
-          <a className="workspace-nav-item" href="/admin/run-audit">运行审计</a>
-          <a className="workspace-nav-item" href="/admin">管理员控制台</a>
-        </nav>
         <section className="sidebar-section" aria-label="历史对话">
           <div className="sidebar-section-head">
             <span>历史对话</span>
@@ -781,7 +456,7 @@ export function ConversationShell() {
           </label>
           <nav className="conversation-list" aria-label="最近对话">
             {visibleConversations.map((conversation) => {
-              const conversationAgent = getAgent(conversation.agentId);
+              const conversationAgent = getAgent(workspaceAgents, conversation.agentId);
 
               return (
                 <Button
@@ -810,13 +485,7 @@ export function ConversationShell() {
             ) : null}
           </nav>
         </section>
-        <footer className="conversation-sidebar-footer">
-          <a className="user-pill" href="/account-settings">
-            <span className="brand-mark">oil</span>
-            <span>oil</span>
-          </a>
-          <a className="secondary-button full-width" href="/admin">管理员控制台</a>
-        </footer>
+        <AccountCenter currentUser={currentUser} />
       </aside>
 
       <section className="conversation-workspace" aria-labelledby="conversation-title">
@@ -850,8 +519,9 @@ export function ConversationShell() {
             </span>
             <Button
               className="secondary-button"
-              disabled={!selectedConversation || selectedConversation.status !== "running"}
+              disabled={!selectedConversation || !isActiveConversationRun(selectedConversation)}
               type="button"
+              onClick={stopActiveRun}
             >
               停止运行
             </Button>
@@ -862,13 +532,6 @@ export function ConversationShell() {
               onClick={() => setIsRenaming(true)}
             >
               重命名
-            </Button>
-            <Button
-              className="secondary-button"
-              type="button"
-              onClick={() => setIsInspectorCollapsed((isCollapsed) => !isCollapsed)}
-            >
-              {isInspectorCollapsed ? "展开检查面板" : "收起检查面板"}
             </Button>
             <Button
               className="danger-button"
@@ -896,6 +559,9 @@ export function ConversationShell() {
             </Button>
           </form>
         ) : null}
+        {workspaceError ? (
+          <p className="workspace-error" role="alert">{workspaceError}</p>
+        ) : null}
 
         <section className="copilot-chat-panel" aria-label="对话消息">
           <Card className="stream-banner" role="status" aria-live="polite">
@@ -903,348 +569,113 @@ export function ConversationShell() {
             <span>{selectedConversation ? `Run ${activeRunId ?? 0}` : "无运行"}</span>
             <span>{formatRunActivity(lastSeenSequence)}</span>
           </Card>
-          <section className="conversation-transcript" aria-label="消息记录">
-            {selectedConversation ? (
-              selectedConversation.messages.map((message) => (
-                <article className={`message-row ${message.role}`} key={message.id}>
-                  <span className="message-role">
-                    {message.role === "user" ? "你" : activeAgent.name}
-                  </span>
-                  {hasPlainMessageContent(message) ? (
-                    <p className="message-content">{message.content}</p>
-                  ) : null}
-                  {message.artifactReference ? (
-                    <ArtifactReferenceCard
-                      isActive={message.artifactReference.artifactId === previewArtifactId}
-                      reference={message.artifactReference}
-                      onOpen={openArtifactPreview}
-                    />
-                  ) : null}
-                  {message.toolCall ? <ToolCallView toolCall={message.toolCall} /> : null}
-                  {message.card ? (
-                    <ConversationCardView
-                      card={message.card}
-                      onOpenArtifact={openArtifactPreview}
-                    />
-                  ) : null}
-                </article>
-              ))
-            ) : (
-              <div className="draft-state">
-                <h3>开始一个新对话</h3>
-                <p>输入问题或添加上下文附件，发送后创建 Agent Conversation。</p>
-              </div>
-            )}
-          </section>
-          <section className="conversation-composer" aria-label="对话输入区">
-            <div className="composer-model-row">
-              <label className="model-select-field">
-                <span>模型选择</span>
-                <Select
-                  disabled={Boolean(selectedConversation)}
-                  value={selectedModelId}
-                  onValueChange={setDraftModelId}
-                >
-                  <SelectTrigger>
-                    <SelectValue placeholder={selectedModelLabel} />
-                  </SelectTrigger>
-                  <SelectContent>
-                    {allowedModels.map((model) => (
-                      <SelectItem key={model.id} value={model.id}>
-                        {model.label}
-                      </SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
-              </label>
-              <div className="composer-context-actions">
-                <label className="context-upload-control">
-                  <Paperclip aria-hidden="true" />
-                  <span>添加上下文</span>
-                  <input
-                    aria-label="添加上下文"
-                    accept={runAttachmentAccept}
-                    type="file"
-                    onChange={uploadContextAttachment}
-                  />
+          <CopilotConversationSurface
+            key={`${activeAgent.copilotAgentId}:${selectedConversation?.id ?? "draft"}:${selectedModelId}`}
+            activeAgent={{
+              backendId: activeAgent.backendId,
+              copilotAgentId: activeAgent.copilotAgentId,
+              name: activeAgent.name,
+            }}
+            conversationId={selectedConversation?.id ?? null}
+            conversationMessages={selectedConversation?.messages ?? []}
+            isBackendRunActive={Boolean(selectedConversation && isActiveConversationRun(selectedConversation))}
+            isLoadingWorkspace={isLoadingWorkspace}
+            modelControls={(
+              <>
+                <label className="model-select-field">
+                  <span>模型选择</span>
+                  <Select
+                    disabled={Boolean(selectedConversation)}
+                    value={selectedModelId}
+                    onValueChange={setDraftModelId}
+                  >
+                    <SelectTrigger>
+                      <SelectValue placeholder={selectedModelLabel} />
+                    </SelectTrigger>
+                    <SelectContent>
+                      {allowedModels.map((model) => (
+                        <SelectItem key={model.id} value={model.id}>
+                          {model.label}
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
                 </label>
                 <Badge variant="secondary">能力边界由管理员策略决定</Badge>
-              </div>
-            </div>
-            {attachmentPreview ? (
-              <section className="composer-attachment-list" aria-label="已添加上下文附件">
-                <div className="composer-attachment-chip">
-                  <Paperclip aria-hidden="true" />
-                  <span className="composer-attachment-meta">
-                    <strong>{attachmentPreview.filename}</strong>
-                    <span>{attachmentPreview.previewType}</span>
-                  </span>
-                  <Button
-                    aria-label={`移除附件 ${attachmentPreview.filename}`}
-                    className="attachment-remove-button"
-                    type="button"
-                    onClick={removeAttachmentPreview}
-                  >
-                    <X aria-hidden="true" />
-                  </Button>
-                </div>
-              </section>
-            ) : null}
-            <CopilotChat
-              agentId={activeAgent.id}
-              attachments={copilotAttachments}
-              className="embedded-copilot-chat"
-              labels={copilotChatLabels}
-              threadId={copilotThreadId}
-            />
-          </section>
+              </>
+            )}
+            previewArtifactId={previewArtifactId}
+            selectedModelId={selectedModelId}
+            onArtifactOpen={openArtifactPreview}
+            onAttachmentUploaded={setLatestAttachmentPreviewName}
+            onRunSettled={refreshWorkspace}
+            onStopBackendRun={stopActiveRun}
+            onWorkspaceError={setWorkspaceError}
+          />
         </section>
       </section>
 
-      {isInspectorCollapsed ? null : (
-        <aside className="artifact-inspector" aria-label="检查面板">
+      {selectedArtifactReference ? (
+        <aside className="artifact-inspector" aria-label="文件预览">
           <Card className="app-panel preview-panel inspector-panel">
             <CardHeader className="inspector-header">
               <div>
-                <p className="eyebrow">检查面板</p>
-                <h2 id="artifact-preview-title">
-                  {inspectorTab === "artifact" ? "制品" : inspectorTab === "run" ? "运行" : "工具"}
-                </h2>
+                <p className="eyebrow">文件预览</p>
+                <h2 id="artifact-preview-title">制品</h2>
               </div>
               <div className="inspector-actions">
                 <Badge variant="outline">只读</Badge>
-                {inspectorTab === "artifact" ? (
-                  <Button
-                    className="artifact-tab"
-                    disabled={!selectedArtifactReference}
-                    type="button"
-                    onClick={() => setPreviewArtifactId(null)}
-                  >
-                    关闭预览
-                  </Button>
-                ) : null}
+                <Button
+                  className="artifact-tab"
+                  type="button"
+                  onClick={() => setPreviewArtifactId(null)}
+                >
+                  关闭文件预览
+                </Button>
               </div>
             </CardHeader>
-            <div className="inspector-tab-list" role="tablist" aria-label="检查面板分组">
-              <button
-                aria-controls="inspector-panel-artifact"
-                aria-selected={inspectorTab === "artifact"}
-                className={inspectorTab === "artifact" ? "inspector-tab active" : "inspector-tab"}
-                id="inspector-tab-artifact"
-                role="tab"
-                type="button"
-                onClick={() => setInspectorTab("artifact")}
-              >
-                制品
-              </button>
-              <button
-                aria-controls="inspector-panel-run"
-                aria-selected={inspectorTab === "run"}
-                className={inspectorTab === "run" ? "inspector-tab active" : "inspector-tab"}
-                id="inspector-tab-run"
-                role="tab"
-                type="button"
-                onClick={() => setInspectorTab("run")}
-              >
-                运行
-              </button>
-              <button
-                aria-controls="inspector-panel-tools"
-                aria-selected={inspectorTab === "tools"}
-                className={inspectorTab === "tools" ? "inspector-tab active" : "inspector-tab"}
-                id="inspector-tab-tools"
-                role="tab"
-                type="button"
-                onClick={() => setInspectorTab("tools")}
-              >
-                工具
-              </button>
-            </div>
-            {inspectorTab === "artifact" ? (
-              <CardContent
-                aria-label="制品预览"
-                className="flex flex-col gap-4"
-                id="inspector-panel-artifact"
-                role="tabpanel"
-                aria-labelledby="inspector-tab-artifact"
-              >
-                <div className="artifact-actions">
-                  <Button
-                    aria-pressed={artifactPanelView === "preview"}
-                    className={artifactPanelView === "preview" ? "artifact-tab active" : "artifact-tab"}
-                    type="button"
-                    onClick={() => setArtifactPanelView("preview")}
-                  >
-                    预览
-                  </Button>
-                  <Button
-                    aria-pressed={artifactPanelView === "metadata"}
-                    className={artifactPanelView === "metadata" ? "artifact-tab active" : "artifact-tab"}
-                    disabled={!selectedArtifactReference}
-                    type="button"
-                    onClick={() => setArtifactPanelView("metadata")}
-                  >
-                    元数据
-                  </Button>
-                </div>
-                <div className="preview-surface" role="presentation">
-                  {selectedArtifactReference && artifactPanelView === "metadata" ? (
-                    <ArtifactMetadataView
-                      conversationTitle={selectedConversation?.title ?? "未命名对话"}
-                      reference={selectedArtifactReference}
-                    />
-                  ) : selectedArtifactReference ? (
-                    <GeneratedArtifactPreview
-                      copiedArtifactId={copiedArtifactId}
-                      reference={selectedArtifactReference}
-                      onCopy={copyArtifactPreview}
-                    />
-                  ) : attachmentPreview ? (
-                    <AttachmentPreview preview={attachmentPreview} />
-                  ) : (
-                    <p className="preview-text">打开制品或在对话中添加文件后在此预览。</p>
-                  )}
-                </div>
-              </CardContent>
-            ) : null}
-            {inspectorTab === "run" ? (
-              <CardContent
-                aria-label="运行上下文"
-                className="flex flex-col gap-3"
-                id="inspector-panel-run"
-                role="tabpanel"
-                aria-labelledby="inspector-tab-run"
-              >
-                <div className="context-row">
-                  <span>AG-UI</span>
-                  <strong>{streamStatus === "connected" ? "已连接" : "空闲"}</strong>
-                </div>
-                <div className="context-row">
-                  <span>Run</span>
-                  <strong>{activeRunId ?? "无"}</strong>
-                </div>
-                <div className="context-row">
-                  <span>运行状态</span>
-                  <strong>{selectedConversation ? formatConversationStatus(selectedConversation.status) : "未开始"}</strong>
-                </div>
-                <div className="context-row">
-                  <span>最近活动</span>
-                  <strong>{formatRecentRunActivity(lastSeenSequence)}</strong>
-                </div>
-                {selectedConversation?.status === "completed" ? (
-                  <div className="context-row">
-                    <span>完成时间</span>
-                    <strong>{selectedConversation.completedAt ?? selectedConversation.updatedAt}</strong>
-                  </div>
-                ) : null}
-                {selectedConversation?.status === "cancelled" ? (
-                  <div className="context-row">
-                    <span>停止时间</span>
-                    <strong>{selectedConversation.cancelledAt ?? selectedConversation.updatedAt}</strong>
-                  </div>
-                ) : null}
-                <div className="context-row">
-                  <span>智能体 / 模型</span>
-                  <strong>{activeAgent.name} · {selectedModelLabel}</strong>
-                </div>
-                <div className="context-row">
-                  <span>策略</span>
-                  <strong>后端治理</strong>
-                </div>
-                <div className="context-row">
-                  <span>附件</span>
-                  <strong>{attachmentPreview ? attachmentPreview.filename : "无"}</strong>
-                </div>
-                <section className="run-detail-block" aria-label="过程摘要">
-                  <h3>过程摘要</h3>
-                  {processSummaries.length > 0 ? (
-                    processSummaries.map((summary) => (
-                      <p className="run-summary-text" key={summary}>{summary}</p>
-                    ))
-                  ) : (
-                    <p className="run-summary-text">当前运行还没有可见过程摘要。</p>
-                  )}
-                </section>
-                {selectedConversation?.status === "failed" ? (
-                  <section className="run-detail-block failed-run-block" aria-label="失败恢复">
-                    <h3>失败恢复</h3>
-                    <p className="run-summary-text">{selectedConversation.runError}</p>
-                    <Button className="secondary-button" type="button">
-                      重新运行
-                    </Button>
-                  </section>
-                ) : null}
-                {completedArtifactReference ? (
-                  <section className="run-detail-block" aria-label="完成输出">
-                    <h3>完成输出</h3>
-                    <p className="run-summary-text">运行已完成，可直接打开生成制品继续检查或追问。</p>
-                    <Button
-                      className="secondary-button"
-                      type="button"
-                      onClick={() => openArtifactPreview(completedArtifactReference.artifactId)}
-                    >
-                      打开完成制品 {completedArtifactReference.filename}
-                    </Button>
-                  </section>
-                ) : null}
-                {retainedArtifactReference ? (
-                  <section className="run-detail-block" aria-label="已保留输出">
-                    <h3>已保留输出</h3>
-                    <p className="run-summary-text">运行已停止，已有输出已保留。</p>
-                    <Button
-                      className="secondary-button"
-                      type="button"
-                      onClick={() => openArtifactPreview(retainedArtifactReference.artifactId)}
-                    >
-                      打开保留制品 {retainedArtifactReference.filename}
-                    </Button>
-                  </section>
-                ) : null}
-                <section className="run-detail-block" aria-label="能力快照">
-                  <h3>能力快照</h3>
-                  <div className="capability-snapshot-list">
-                    <span>{formatCapabilitySnapshot("Search", activeAgent.capabilitySnapshot.search)}</span>
-                    <span>{formatCapabilitySnapshot("Sandbox", activeAgent.capabilitySnapshot.sandbox)}</span>
-                    <span>MCP：{activeAgent.capabilitySnapshot.mcpServerCount} 个服务器</span>
-                  </div>
-                  <p className="capability-policy-note">由管理员策略控制</p>
-                </section>
-              </CardContent>
-            ) : null}
-            {inspectorTab === "tools" ? (
-              <CardContent
-                aria-label="工具调用"
-                className="flex flex-col gap-3"
-                id="inspector-panel-tools"
-                role="tabpanel"
-                aria-labelledby="inspector-tab-tools"
-              >
-                {selectedToolCalls.length > 0 ? (
-                  selectedToolCalls.map((toolCall, index) => (
-                    <article className="tool-inspector-card" key={`${toolCall.toolName}-${index}`}>
-                      <div className="tool-inspector-head">
-                        <strong>{toolCall.toolName}</strong>
-                        <span className={`tool-call-status ${toolCall.status}`}>
-                          {formatToolCallStatus(toolCall.status)}
-                        </span>
-                      </div>
-                      <p className="preview-text">{formatSafeInputSummary(toolCall.safeInput)}</p>
-                      {toolCall.safeOutput?.summary ? (
-                        <p className="tool-call-meta">输出：{String(toolCall.safeOutput.summary)}</p>
-                      ) : null}
-                      <p className="tool-call-meta">
-                        网关：{toolCall.provenance.gateway} · 提供方：{toolCall.provenance.provider}
-                      </p>
-                    </article>
-                  ))
+            <CardContent
+              aria-label="文件预览内容"
+              className="flex flex-col gap-4"
+            >
+              <div className="artifact-actions">
+                <Button
+                  aria-pressed={artifactPanelView === "preview"}
+                  className={artifactPanelView === "preview" ? "artifact-tab active" : "artifact-tab"}
+                  type="button"
+                  onClick={() => setArtifactPanelView("preview")}
+                >
+                  预览
+                </Button>
+                <Button
+                  aria-pressed={artifactPanelView === "metadata"}
+                  className={artifactPanelView === "metadata" ? "artifact-tab active" : "artifact-tab"}
+                  type="button"
+                  onClick={() => setArtifactPanelView("metadata")}
+                >
+                  元数据
+                </Button>
+              </div>
+              <div className="preview-surface" role="presentation">
+                {artifactPanelView === "metadata" ? (
+                  <ArtifactMetadataView
+                    conversationTitle={selectedConversation?.title ?? "未命名对话"}
+                    preview={selectedArtifactPreview}
+                    reference={selectedArtifactReference}
+                  />
                 ) : (
-                  <p className="empty-state">当前对话暂无工具调用。</p>
+                  <GeneratedArtifactPreview
+                    copiedArtifactId={copiedArtifactId}
+                    preview={selectedArtifactPreview}
+                    reference={selectedArtifactReference}
+                    onCopy={copyArtifactPreview}
+                  />
                 )}
-              </CardContent>
-            ) : null}
+              </div>
+            </CardContent>
           </Card>
         </aside>
-      )}
+      ) : null}
       {isCommandPaletteOpen ? (
         <CommandPalette
           artifacts={visibleCommandArtifacts}
@@ -1263,8 +694,103 @@ export function ConversationShell() {
   );
 }
 
-function getAgent(agentId: string): WorkspaceAgent {
-  return workspaceAgents.find((agent) => agent.id === agentId) ?? workspaceAgents[0];
+const emptyWorkspaceAgent: WorkspaceAgent = {
+  id: "",
+  backendId: 0,
+  copilotAgentId: "default",
+  name: "未配置智能体",
+  status: "enabled",
+  allowedModels: [],
+  defaultModelId: null,
+  capabilitySnapshot: {
+    mcpServerCount: 0,
+    sandbox: false,
+    search: false,
+  },
+};
+
+function getAgent(agents: WorkspaceAgent[], agentId: string): WorkspaceAgent {
+  return agents.find((agent) => agent.id === agentId) ?? agents[0] ?? emptyWorkspaceAgent;
+}
+
+function mapWorkspaceAgent(response: ApiWorkspaceAgent): WorkspaceAgent {
+  const allowedModels = response.allowed_model_configurations.map((configuration) => ({
+    id: String(configuration.id),
+    label: `${configuration.name} / ${configuration.model_name}`,
+  }));
+  return {
+    id: String(response.agent.id),
+    backendId: response.agent.id,
+    copilotAgentId: response.agent.is_default ? "default" : `agent-${response.agent.id}`,
+    name: response.agent.name,
+    status: "enabled",
+    allowedModels,
+    defaultModelId: response.agent.default_model_configuration_id != null
+      ? String(response.agent.default_model_configuration_id)
+      : allowedModels[0]?.id ?? null,
+    capabilitySnapshot: {
+      mcpServerCount: response.agent.capability_policy.mcp_server_ids.length,
+      sandbox: response.agent.capability_policy.sandbox_enabled,
+      search: response.agent.capability_policy.search_enabled,
+    },
+  };
+}
+
+function mapConversation(conversation: ApiConversation, runs: ApiRun[]): Conversation {
+  const latestRun = runs
+    .filter((run) => run.conversation_id === conversation.id)
+    .sort((first, second) => second.id - first.id)[0];
+  const status = latestRun?.status ?? conversation.status;
+
+  return {
+    id: String(conversation.id),
+    title: conversation.title,
+    agentId: String(conversation.agent.id),
+    status,
+    updatedAt: conversation.updated_at,
+    selectedModelId: conversation.selected_model_configuration_id != null
+      ? String(conversation.selected_model_configuration_id)
+      : conversation.agent.default_model_configuration_id != null
+        ? String(conversation.agent.default_model_configuration_id)
+        : "",
+    latestRunId: latestRun?.id ?? null,
+    completedAt: status === "completed" ? conversation.updated_at : undefined,
+    cancelledAt: status === "cancelled" ? conversation.updated_at : undefined,
+    runError: latestRun?.error ?? undefined,
+    messages: conversation.messages.map((message, index) => mapConversationMessage(message, conversation.id, index)),
+  };
+}
+
+function mapConversationMessage(
+  message: ApiConversation["messages"][number],
+  conversationId: number,
+  index: number,
+): ConversationMessage {
+  return {
+    id: `conversation-${conversationId}-message-${index + 1}`,
+    role: message.role,
+    content: message.content,
+    artifactReference: message.artifact_reference
+      ? {
+          artifactId: message.artifact_reference.artifact_id,
+          filename: message.artifact_reference.filename,
+          previewType: message.artifact_reference.preview_type,
+        }
+      : undefined,
+    card: message.card ? mapConversationCard(message.card) : undefined,
+  };
+}
+
+function mapConversationCard(card: ApiConversationCard): ConversationCard {
+  const schema = String(card.schema ?? card.card_schema ?? "");
+  return {
+    schema: isCardSchema(schema) ? schema : "status_card",
+    payload: card.payload,
+  };
+}
+
+function isCardSchema(schema: string): schema is CardSchema {
+  return (CARD_SCHEMAS as readonly string[]).includes(schema);
 }
 
 function getMessageArtifactReference(message: ConversationMessage): ArtifactReference | null {
@@ -1311,18 +837,159 @@ function collectCommandArtifacts(conversations: Conversation[]): CommandArtifact
   return artifacts;
 }
 
-function collectCommandRuns(conversations: Conversation[]): CommandRun[] {
-  return conversations.map((conversation, index) => ({
-    conversationId: conversation.id,
-    conversationTitle: conversation.title,
-    runId: index + 1,
-    status: conversation.status,
-    updatedAt: conversation.updatedAt,
-  }));
+function collectCommandRuns(conversations: Conversation[], runs: ApiRun[]): CommandRun[] {
+  const conversationById = new Map(
+    conversations.map((conversation) => [conversation.id, conversation]),
+  );
+  const commandRuns: CommandRun[] = [];
+  for (const run of runs) {
+      const conversation = conversationById.get(String(run.conversation_id));
+      if (!conversation) {
+        continue;
+      }
+      commandRuns.push({
+        conversationId: conversation.id,
+        conversationTitle: conversation.title,
+        runId: run.id,
+        status: run.status,
+        updatedAt: conversation.updatedAt,
+      });
+  }
+  return commandRuns;
 }
 
-function hasPlainMessageContent(message: ConversationMessage) {
-  return !message.artifactReference && !message.toolCall && !message.card;
+function AccountCenter({ currentUser }: { currentUser: CurrentUser | null }) {
+  const [isAccountMenuOpen, setIsAccountMenuOpen] = useState(false);
+  const accountCenterRef = useRef<HTMLElement | null>(null);
+  const displayName = currentUser?.username ?? "加载账号";
+  const accountMeta = currentUser?.email ?? (currentUser ? "本地账号" : "加载中");
+  const accountRole = formatSidebarUserRole(currentUser?.role);
+
+  useEffect(() => {
+    if (!isAccountMenuOpen) {
+      return;
+    }
+
+    function closeAccountMenu(event: PointerEvent) {
+      if (!accountCenterRef.current?.contains(event.target as Node)) {
+        setIsAccountMenuOpen(false);
+      }
+    }
+
+    function closeAccountMenuFromKeyboard(event: KeyboardEvent) {
+      if (event.key === "Escape") {
+        setIsAccountMenuOpen(false);
+      }
+    }
+
+    document.addEventListener("pointerdown", closeAccountMenu);
+    document.addEventListener("keydown", closeAccountMenuFromKeyboard);
+    return () => {
+      document.removeEventListener("pointerdown", closeAccountMenu);
+      document.removeEventListener("keydown", closeAccountMenuFromKeyboard);
+    };
+  }, [isAccountMenuOpen]);
+
+  return (
+    <footer className="conversation-sidebar-footer account-center" aria-label="账号中心" ref={accountCenterRef}>
+      {isAccountMenuOpen ? (
+        <section className="account-menu" id="account-menu" role="dialog" aria-label="账号菜单">
+          <div className="account-menu-profile">
+            <span className="account-avatar large" aria-hidden="true">{avatarInitials(displayName)}</span>
+            <span className="account-summary-copy">
+              <strong>{displayName}</strong>
+              <span>{accountMeta}</span>
+            </span>
+            <Badge variant={currentUser?.role === "admin" ? "default" : "secondary"}>
+              {accountRole}
+            </Badge>
+          </div>
+          <nav className="account-menu-actions" aria-label="账号操作">
+            {currentUser?.role === "admin" ? (
+              <>
+                <a className="account-action" href="/admin" aria-label="管理控制台">
+                  <Shield aria-hidden="true" />
+                  <span>
+                    <strong>管理控制台</strong>
+                    <small>账号、模型与工具治理</small>
+                  </span>
+                </a>
+                <a className="account-action" href="/admin/run-audit" aria-label="运行审计">
+                  <Activity aria-hidden="true" />
+                  <span>
+                    <strong>运行审计</strong>
+                    <small>查看智能体执行记录</small>
+                  </span>
+                </a>
+              </>
+            ) : null}
+            <a className="account-action" href="/account-settings" aria-label="个人信息维护">
+              <UserRound aria-hidden="true" />
+              <span>
+                <strong>个人信息维护</strong>
+                <small>更新账号资料</small>
+              </span>
+            </a>
+            <Button className="account-action logout-action" type="button" aria-label="退出登录" onClick={logout}>
+              <LogOut aria-hidden="true" />
+              <span>
+                <strong>退出登录</strong>
+                <small>结束当前会话</small>
+              </span>
+            </Button>
+          </nav>
+        </section>
+      ) : null}
+      <div className="account-bottom-bar">
+        <Button
+          aria-controls="account-menu"
+          aria-expanded={isAccountMenuOpen}
+          aria-haspopup="dialog"
+          aria-label="打开账号菜单"
+          className="account-profile-trigger"
+          type="button"
+          onClick={() => setIsAccountMenuOpen((isOpen) => !isOpen)}
+        >
+          <span className="account-avatar" aria-hidden="true">{avatarInitials(displayName)}</span>
+          <span className="account-trigger-copy">
+            <strong>{displayName}</strong>
+            <span>{accountRole}</span>
+          </span>
+        </Button>
+        <Button
+          aria-label="消息通知，1 条未读"
+          className="account-notification-button"
+          title="消息通知"
+          type="button"
+        >
+          <Bell aria-hidden="true" />
+          <span className="notification-indicator" aria-hidden="true">1</span>
+        </Button>
+      </div>
+    </footer>
+  );
+}
+
+function avatarInitials(value: string) {
+  const normalized = value.trim();
+  if (!normalized || normalized === "加载账号") {
+    return "MA";
+  }
+  return normalized.slice(0, 2).toUpperCase();
+}
+
+function formatSidebarUserRole(role: CurrentUser["role"] | undefined) {
+  if (role === "admin") {
+    return "管理员";
+  }
+  if (role === "user") {
+    return "成员";
+  }
+  return "加载中";
+}
+
+function isActiveConversationRun(conversation: Conversation) {
+  return conversation.status === "queued" || conversation.status === "running";
 }
 
 function CommandPalette({
@@ -1427,44 +1094,16 @@ function CommandPalette({
   );
 }
 
-function ArtifactReferenceCard({
-  isActive,
-  onOpen,
-  reference,
-}: {
-  isActive: boolean;
-  onOpen: (artifactId: number) => void;
-  reference: ArtifactReference;
-}) {
-  return (
-    <Button
-      aria-label={`打开制品 ${reference.filename}`}
-      className={isActive ? "artifact-reference-card active" : "artifact-reference-card"}
-      type="button"
-      onClick={() => onOpen(reference.artifactId)}
-    >
-      <span className="artifact-reference-icon" aria-hidden="true">
-        {formatArtifactType(reference.previewType)}
-      </span>
-      <span className="artifact-reference-body">
-        <strong>{reference.filename}</strong>
-        <span>刚刚生成 · 点击预览</span>
-      </span>
-      <span className="artifact-reference-thumb" aria-hidden="true">
-        # 简报
-      </span>
-    </Button>
-  );
-}
-
 function ArtifactMetadataView({
   conversationTitle,
+  preview,
   reference,
 }: {
   conversationTitle: string;
+  preview: ApiArtifactPreview | null;
   reference: ArtifactReference;
 }) {
-  const content = getArtifactPreviewContent(reference);
+  const content = getArtifactPreviewContent(reference, preview);
   const rows = [
     ["文件名", reference.filename],
     ["类型", reference.previewType],
@@ -1488,13 +1127,15 @@ function ArtifactMetadataView({
 function GeneratedArtifactPreview({
   copiedArtifactId,
   onCopy,
+  preview,
   reference,
 }: {
   copiedArtifactId: number | null;
   onCopy: (reference: ArtifactReference) => void;
+  preview: ApiArtifactPreview | null;
   reference: ArtifactReference;
 }) {
-  const content = getArtifactPreviewContent(reference);
+  const content = getArtifactPreviewContent(reference, preview);
 
   return (
     <>
@@ -1526,7 +1167,7 @@ function GeneratedArtifactPreview({
           <a
             aria-label={`打开独立预览 ${reference.filename}`}
             className="artifact-tool-button"
-            href={`/artifacts/${reference.artifactId}/preview`}
+            href={createTextDownloadHref(content, reference.previewType)}
             target="_blank"
             rel="noreferrer"
           >
@@ -1535,7 +1176,9 @@ function GeneratedArtifactPreview({
           </a>
         </div>
       </div>
-      {reference.previewType === "markdown" ? (
+      {!preview ? (
+        <p className="preview-text">正在加载文件预览。</p>
+      ) : reference.previewType === "markdown" ? (
         <article className="artifact-document-preview">
           {renderMarkdownPreview(content)}
         </article>
@@ -1558,29 +1201,8 @@ function GeneratedArtifactPreview({
   );
 }
 
-function getArtifactPreviewContent(reference: ArtifactReference) {
-  switch (reference.artifactId) {
-    case 1:
-      return "# 简报\n\nalpha";
-    case 2:
-      return JSON.stringify({ coverage: 82, latency_ms: 184, sources: 4 }, null, 2);
-    case 3:
-      return "# 品牌简报\n\n定位：面向团队的 Agent 对话工作台。";
-    case 4:
-      return "# 中间笔记\n\n已保留的中间输出：材料索引、摘要和待确认问题。";
-    case 5:
-      return "export function summarize(items: string[]) {\n  return items.length;\n}\n";
-    case 6:
-      return "<!doctype html><html><body><main><h1>Agent Workspace Demo</h1><p>Sandboxed preview.</p></main></body></html>";
-    case 7:
-      return "调研笔记\n\n保留给下一轮追问的上下文。";
-    case 8:
-      return "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+/p9sAAAAASUVORK5CYII=";
-    case 9:
-      return "data:application/pdf;base64,JVBERi0xLjEKMSAwIG9iago8PCAvVHlwZSAvQ2F0YWxvZyAvUGFnZXMgMiAwIFIgPj4KZW5kb2JqCjIgMCBvYmoKPDwgL1R5cGUgL1BhZ2VzIC9LaWRzIFszIDAgUl0gL0NvdW50IDEgPj4KZW5kb2JqCjMgMCBvYmoKPDwgL1R5cGUgL1BhZ2UgL1BhcmVudCAyIDAgUiAvTWVkaWFCb3ggWzAgMCAyMDAgMjAwXSA+PgplbmRvYmoKeHJlZgowIDQKMDAwMDAwMDAwMCA2NTUzNSBmIAowMDAwMDAwMDA5IDAwMDAwIG4gCjAwMDAwMDAwNTggMDAwMDAgbiAKMDAwMDAwMDExNSAwMDAwMCBuIAp0cmFpbGVyCjw8IC9TaXplIDQgL1Jvb3QgMSAwIFIgPj4Kc3RhcnR4cmVmCjE4OQolJUVPRgo=";
-    default:
-      return "# 摘要\n\n制品正文保留在对象存储。";
-  }
+function getArtifactPreviewContent(_reference: ArtifactReference, preview: ApiArtifactPreview | null) {
+  return preview?.text ?? preview?.data_url ?? "";
 }
 
 function createTextDownloadHref(content: string, previewType: string) {
@@ -1742,27 +1364,6 @@ function formatRecentRunActivity(lastSeenSequence: number) {
   return lastSeenSequence > 0
     ? `已同步 ${lastSeenSequence} 条运行更新`
     : "暂无新活动";
-}
-
-function formatArtifactType(previewType: string) {
-  switch (previewType) {
-    case "markdown":
-      return "MD";
-    case "json":
-      return "JSON";
-    case "pdf":
-      return "PDF";
-    case "image":
-      return "IMG";
-    case "code":
-      return "CODE";
-    case "html":
-      return "HTML";
-    case "plaintext":
-      return "TXT";
-    default:
-      return "FILE";
-  }
 }
 
 function formatConversationStatus(status: Conversation["status"]) {

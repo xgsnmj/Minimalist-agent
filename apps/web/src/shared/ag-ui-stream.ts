@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
+import { getAuthenticatedStreamUrl } from "../features/workspace/workspace-api";
 
 type AgentRunStreamStatus = "idle" | "connected" | "unavailable";
 
@@ -8,10 +9,10 @@ const STORAGE_PREFIX = "minimalist-agent:last-seen-event";
 
 export function buildAgentRunEventsUrl(runId: number, lastSeenSequence: number) {
   if (lastSeenSequence > 0) {
-    return `/api/runs/${runId}/events?after=${lastSeenSequence}`;
+    return getAuthenticatedStreamUrl(`/runs/${runId}/events?after=${lastSeenSequence}`);
   }
 
-  return `/api/runs/${runId}/events`;
+  return getAuthenticatedStreamUrl(`/runs/${runId}/events`);
 }
 
 function storageKey(runId: number) {

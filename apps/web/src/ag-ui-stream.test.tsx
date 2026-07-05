@@ -37,8 +37,8 @@ describe("AG-UI SSE stream subscription", () => {
   });
 
   it("builds a resume-aware AG-UI SSE URL", () => {
-    expect(buildAgentRunEventsUrl(7, 0)).toBe("/api/runs/7/events");
-    expect(buildAgentRunEventsUrl(7, 4)).toBe("/api/runs/7/events?after=4");
+    expect(buildAgentRunEventsUrl(7, 0)).toBe("/api/runs/7/events?access_token=local-test-token");
+    expect(buildAgentRunEventsUrl(7, 4)).toBe("/api/runs/7/events?after=4&access_token=local-test-token");
   });
 
   it("subscribes to active run events and tracks the last seen sequence", async () => {
@@ -46,7 +46,7 @@ describe("AG-UI SSE stream subscription", () => {
 
     const { result } = renderHook(() => useAgentRunStream(7));
 
-    expect(MockEventSource.instances[0].url).toBe("/api/runs/7/events");
+    expect(MockEventSource.instances[0].url).toBe("/api/runs/7/events?access_token=local-test-token");
 
     act(() => {
       MockEventSource.instances[0].emit(

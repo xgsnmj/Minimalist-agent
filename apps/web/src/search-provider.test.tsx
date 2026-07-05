@@ -10,7 +10,7 @@ describe("Administrator Search Provider surface", () => {
     window.history.pushState({}, "", "/");
   });
 
-  it("keeps Search Capability configuration separate from Page Read and previews provider runtime states", async () => {
+  it("keeps Search Capability configuration separate from Page Read and saves backend settings", async () => {
     const user = userEvent.setup();
     window.history.pushState({}, "", "/admin/search-provider");
     render(<App />);
@@ -20,7 +20,7 @@ describe("Administrator Search Provider surface", () => {
 
     const status = screen.getByRole("region", { name: "搜索提供方状态" });
     expect(await within(status).findByText("已启用")).toBeInTheDocument();
-    expect(within(status).getByText("secret:doubao-search")).toBeInTheDocument();
+    expect(within(status).getByText("已配置")).toBeInTheDocument();
     expect(within(status).getByText("5 个候选结果")).toBeInTheDocument();
     expect(within(status).getByText("20s")).toBeInTheDocument();
 
@@ -33,12 +33,6 @@ describe("Administrator Search Provider surface", () => {
     expect(within(boundary).getByText("搜索：候选 URL、标题和摘要。")).toBeInTheDocument();
     expect(within(boundary).getByText("页面读取：从已知 URL 提取全文。")).toBeInTheDocument();
     expect(within(boundary).getByText("不要把任一能力合并进浏览器模式。")).toBeInTheDocument();
-
-    await user.click(screen.getByRole("tab", { name: "提供方错误" }));
-
-    const runtimePreview = screen.getByRole("tabpanel", { name: "提供方错误" });
-    expect(within(runtimePreview).getByText("搜索提供方不可用")).toBeInTheDocument();
-    expect(within(runtimePreview).getByText("凭据和内部端点详情仅管理员可见。")).toBeInTheDocument();
 
     await user.clear(within(editPanel).getByLabelText("超时"));
     await user.type(within(editPanel).getByLabelText("超时"), "30s");

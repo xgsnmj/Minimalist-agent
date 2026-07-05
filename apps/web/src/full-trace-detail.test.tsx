@@ -25,7 +25,7 @@ describe("Administrator Full Trace Detail surface", () => {
 
     const timeline = within(fullTrace).getByRole("table", { name: "事件时间线" });
     expect(within(timeline).getByRole("row", { name: /后端追踪 workflow_name Agent workflow/ })).toBeInTheDocument();
-    expect(within(timeline).getByRole("row", { name: /后端追踪 model_name gpt-5/ })).toBeInTheDocument();
+    expect(within(timeline).getByRole("row", { name: /后端追踪 model_name gpt-5\.5/ })).toBeInTheDocument();
     expect(within(timeline).getByRole("row", { name: /后端追踪 tool_name sandbox\.exec/ })).toBeInTheDocument();
 
     const rawPayload = within(fullTrace).getByLabelText("原始诊断载荷");

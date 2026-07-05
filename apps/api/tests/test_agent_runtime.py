@@ -8,6 +8,7 @@ from apps.api.app.app import app
 from apps.api.app.model_configurations import model_configuration_store
 from apps.api.app.run_event_log import run_event_log_store
 from apps.api.app.runtime import runtime_store
+from apps.api.tests.support import use_fake_agent_runtime
 
 
 def setup_function():
@@ -18,6 +19,7 @@ def setup_function():
     agent_run_store.reset()
     run_event_log_store.reset_for_tests()
     runtime_store.reset()
+    use_fake_agent_runtime()
 
 
 def approved_user_token(client: TestClient) -> str:
@@ -95,6 +97,10 @@ def test_default_agent_run_uses_enabled_model_configuration_and_records_trace():
     ).json()
 
     runtime_result = runtime_store.execute(run["id"])
+    run_response = client.get(
+        f"/runs/{run['id']}",
+        headers={"Authorization": f"Bearer {token}"},
+    ).json()
 
     assert runtime_result["status"] == "completed"
     assert runtime_result["model_name"] == "gpt-5"
@@ -102,3 +108,76 @@ def test_default_agent_run_uses_enabled_model_configuration_and_records_trace():
     assert runtime_result["process_summaries"]
     assert runtime_result["full_trace"]["workflow_name"] == "Agent workflow"
     assert runtime_result["full_trace"]["model_name"] == "gpt-5"
+    assert runtime_result["full_trace"]["model_configuration_id"] == model["id"]
+    assert runtime_result["full_trace"]["model_configuration_snapshot"]["model_name"] == "gpt-5"
+    assert runtime_result["full_trace"]["provider_id"] == "openai"
+    assert runtime_result["full_trace"]["endpoint"] == "https://api.openai.com/v1"
+    assert run_response["capability_snapshot"]["selected_model_configuration_snapshot"] == {
+        "id": model["id"],
+        "provider_id": "openai",
+        "name": "Primary",
+        "model_name": "gpt-5",
+        "endpoint": "https://api.openai.com/v1",
+        "credential_reference": "secret://models/openai-primary",
+        "default_parameters": {},
+        "enabled": True,
+    }
+
+
+def test_runtime_missing_model_secret_fails_run_without_mock_fallback(monkeypatch):
+    monkeypatch.delenv("TEST_MODEL_API_KEY", raising=False)
+    client = TestClient(app)
+    runtime_store.reset()
+    admin_token = administrator_token(client)
+    model = client.post(
+        "/admin/model-configurations",
+        headers={"Authorization": f"Bearer {admin_token}"},
+        json={
+            "provider_id": "openai",
+            "name": "Primary",
+            "model_name": "gpt-5",
+            "endpoint": "https://api.openai.com/v1",
+            "credential_reference": "env:TEST_MODEL_API_KEY",
+            "enabled": True,
+        },
+    ).json()
+    client.patch(
+        "/admin/agents/1",
+        headers={"Authorization": f"Bearer {admin_token}"},
+        json={
+            "default_model_configuration_id": model["id"],
+            "allowed_model_configuration_ids": [model["id"]],
+        },
+    )
+    token = approved_user_token(client)
+    conversation = client.post(
+        "/conversations",
+        headers={"Authorization": f"Bearer {token}"},
+        json={
+            "title": "Missing secret",
+            "agent_id": 1,
+            "initial_message": "Start this conversation.",
+        },
+    ).json()
+    run = client.post(
+        f"/conversations/{conversation['id']}/runs",
+        headers={"Authorization": f"Bearer {token}"},
+        json={"message": "Use the configured model."},
+    ).json()
+
+    runtime_result = runtime_store.execute(run["id"])
+    run_response = client.get(
+        f"/runs/{run['id']}",
+        headers={"Authorization": f"Bearer {token}"},
+    ).json()
+    conversation_response = client.get(
+        f"/conversations/{conversation['id']}",
+        headers={"Authorization": f"Bearer {token}"},
+    ).json()
+
+    assert runtime_result["status"] == "failed"
+    assert runtime_result["model_name"] == "gpt-5"
+    assert run_response["error"] == (
+        "Model credential is not configured. Set one of: TEST_MODEL_API_KEY"
+    )
+    assert conversation_response["status"] == "idle"

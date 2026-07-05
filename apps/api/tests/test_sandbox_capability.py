@@ -11,6 +11,7 @@ from apps.api.app.run_attachments import run_attachment_store
 from apps.api.app.run_event_log import run_event_log_store
 from apps.api.app.sandbox_runtime import sandbox_runtime_store
 from apps.api.app.tool_gateway import agent_tool_gateway_store
+from apps.api.tests.support import configure_default_agent_model, create_model_configuration_for_tests
 
 
 class FailingObjectStorage:
@@ -35,6 +36,7 @@ def setup_function():
     run_event_log_store.reset_for_tests()
     agent_tool_gateway_store.reset()
     sandbox_runtime_store.reset()
+    configure_default_agent_model()
 
 
 def administrator_token(client: TestClient) -> str:
@@ -77,6 +79,7 @@ def create_sandbox_run(
     *,
     sandbox_enabled: bool,
 ) -> tuple[int, int]:
+    model_id = create_model_configuration_for_tests()
     agent = client.post(
         "/admin/agents",
         headers={"Authorization": f"Bearer {admin_token}"},
@@ -85,6 +88,8 @@ def create_sandbox_run(
             "description": "Uses Sandbox Capability.",
             "icon": "terminal",
             "instruction": "Use sandbox execution only through the Agent Tool Gateway.",
+            "default_model_configuration_id": model_id,
+            "allowed_model_configuration_ids": [model_id],
             "capability_policy": {
                 "mcp_server_ids": [],
                 "sandbox_enabled": sandbox_enabled,

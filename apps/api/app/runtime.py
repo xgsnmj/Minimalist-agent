@@ -1,9 +1,11 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+import os
+import re
 from typing import Any
 
-from agents import Agent, Model, ModelProvider, ModelSettings, ModelTracing, Runner, RunConfig
+from agents import Agent, Model, ModelProvider, ModelSettings, ModelTracing, OpenAIProvider, Runner, RunConfig
 from agents.items import ModelResponse, MessageOutputItem, ReasoningItem, ToolCallItem
 from agents.tracing import flush_traces, set_trace_processors
 from agents.tracing.processor_interface import TracingProcessor as TracingProcessorProtocol
@@ -14,7 +16,8 @@ from openai.types.responses import ResponseOutputMessage, ResponseOutputText
 from apps.api.app.agent_run_lifecycle import agent_run_lifecycle
 from apps.api.app.agent_runs import AgentRunStatus, agent_run_store
 from apps.api.app.agents import agent_store
-from apps.api.app.model_configurations import model_configuration_store
+from apps.api.app.model_configurations import ModelConfiguration, model_configuration_store
+from apps.api.app.secret_vault import secret_vault_store
 
 
 @dataclass
@@ -116,8 +119,20 @@ class _LocalModelProvider(ModelProvider):
 
 
 class RuntimeStore:
+    def __init__(self) -> None:
+        self.reset()
+
     def reset(self) -> None:
-        return None
+        self._model_provider_factory = None
+
+    def set_model_provider_factory_for_tests(self, factory) -> None:
+        self._model_provider_factory = factory
+
+    def use_fake_model_provider_for_tests(self) -> None:
+        self._model_provider_factory = lambda configuration: _LocalModelProvider(
+            provider_id=configuration.provider_id,
+            model_name=configuration.model_name,
+        )
 
     def execute(self, run_id: int) -> dict[str, object]:
         run = agent_run_store.get(run_id)
@@ -129,7 +144,8 @@ class RuntimeStore:
                 run_id=run.id,
                 message="Mock Agent Runtime failed.",
             )
-            return self._runtime_result_from_run(run, full_trace=_trace_fallback(run))
+            failed_run = agent_run_store.get(run.id)
+            return self._runtime_result_from_run(failed_run, full_trace=_trace_fallback(failed_run))
 
         try:
             model_configuration = _resolve_model_configuration(
@@ -140,10 +156,21 @@ class RuntimeStore:
                 run_id=run.id,
                 message=_error_message(exc),
             )
-            return self._runtime_result_from_run(run, full_trace=_trace_fallback(run))
+            failed_run = agent_run_store.get(run.id)
+            return self._runtime_result_from_run(failed_run, full_trace=_trace_fallback(failed_run))
         agent = agent_store.get(run.capability_snapshot.agent_id)
-        provider_id = model_configuration.provider_id if model_configuration else "openai"
-        model_name = model_configuration.model_name if model_configuration else "gpt-5"
+        provider_id = model_configuration.provider_id
+        model_name = model_configuration.model_name
+        try:
+            model_provider = self._model_provider(model_configuration)
+            model_settings = _model_settings_for_configuration(model_configuration)
+        except Exception as exc:
+            agent_run_lifecycle.apply_runtime_failure(
+                run_id=run.id,
+                message=_error_message(exc),
+            )
+            failed_run = agent_run_store.get(run.id)
+            return self._runtime_result_from_run(failed_run, full_trace=_trace_fallback(failed_run))
 
         trace_processor = _CapturedTraceProcessor()
         set_trace_processors([trace_processor])
@@ -156,16 +183,18 @@ class RuntimeStore:
             model=model_name,
         )
         run_config = RunConfig(
-            model_provider=_LocalModelProvider(provider_id=provider_id, model_name=model_name),
-            model_settings=ModelSettings(include_usage=True, metadata={"provider_id": provider_id}),
+            model_provider=model_provider,
+            model_settings=model_settings,
             workflow_name="Agent workflow",
             trace_include_sensitive_data=False,
             trace_metadata={
                 "agent_id": str(agent.id),
                 "run_id": str(run.id),
                 "conversation_id": str(run.conversation_id),
+                "model_configuration_id": str(model_configuration.id),
                 "provider_id": provider_id,
                 "model_name": model_name,
+                "endpoint": model_configuration.endpoint,
             },
         )
 
@@ -178,7 +207,8 @@ class RuntimeStore:
             )
             set_trace_processors([])
             flush_traces()
-            return self._runtime_result_from_run(run, full_trace=_trace_fallback(run))
+            failed_run = agent_run_store.get(run.id)
+            return self._runtime_result_from_run(failed_run, full_trace=_trace_fallback(failed_run))
 
         assistant_message = _extract_final_output(result.final_output)
         process_summaries = [
@@ -190,7 +220,11 @@ class RuntimeStore:
         trace.setdefault("metadata", {})
         trace["run_id"] = run.id
         trace["agent_id"] = agent.id
+        trace["model_configuration_id"] = model_configuration.id
+        trace["model_configuration_snapshot"] = _model_configuration_snapshot(model_configuration)
+        trace["provider_id"] = provider_id
         trace["model_name"] = model_name
+        trace["endpoint"] = model_configuration.endpoint
         agent_run_lifecycle.apply_runtime_success(
             run_id=run.id,
             assistant_message=assistant_message,
@@ -199,7 +233,8 @@ class RuntimeStore:
         )
         set_trace_processors([])
         flush_traces()
-        return self._runtime_result_from_run(run, model_name=model_name, full_trace=trace)
+        completed_run = agent_run_store.get(run.id)
+        return self._runtime_result_from_run(completed_run, model_name=model_name, full_trace=trace)
 
     def _runtime_result_from_run(
         self,
@@ -217,12 +252,23 @@ class RuntimeStore:
             "full_trace": full_trace or _trace_fallback(run),
         }
 
+    def _model_provider(self, configuration: ModelConfiguration) -> ModelProvider:
+        if self._model_provider_factory is not None:
+            return self._model_provider_factory(configuration)
+        return OpenAIProvider(
+            api_key=resolve_model_api_key(configuration.credential_reference),
+            base_url=configuration.endpoint,
+            use_responses=False,
+        )
+
 
 def _resolve_model_configuration(configuration_id: int | None):
-    if configuration_id is not None:
-        return model_configuration_store.get(configuration_id)
-    configs = model_configuration_store.list_configurations()
-    return configs[0] if configs else None
+    if configuration_id is None:
+        raise RuntimeError("Agent Run does not have a selected Model Configuration.")
+    configuration = model_configuration_store.get(configuration_id)
+    if not configuration.enabled:
+        raise RuntimeError("Model Configuration is disabled.")
+    return configuration
 
 
 def _run_model_name(run) -> str:
@@ -231,8 +277,8 @@ def _run_model_name(run) -> str:
             run.capability_snapshot.selected_model_configuration_id
         )
     except Exception:
-        return "gpt-5"
-    return model_configuration.model_name if model_configuration else "gpt-5"
+        return "unresolved"
+    return model_configuration.model_name
 
 
 def _trace_fallback(run) -> dict[str, object]:
@@ -242,7 +288,24 @@ def _trace_fallback(run) -> dict[str, object]:
             "run_id": run.id,
             "conversation_id": run.conversation_id,
             "agent_id": run.capability_snapshot.agent_id,
+            "model_configuration_id": run.capability_snapshot.selected_model_configuration_id,
+            "model_configuration_snapshot": (
+                run.capability_snapshot.selected_model_configuration_snapshot
+            ),
         },
+    }
+
+
+def _model_configuration_snapshot(configuration: ModelConfiguration) -> dict[str, object]:
+    return {
+        "id": configuration.id,
+        "provider_id": configuration.provider_id,
+        "name": configuration.name,
+        "model_name": configuration.model_name,
+        "endpoint": configuration.endpoint,
+        "credential_reference": configuration.credential_reference,
+        "default_parameters": dict(configuration.default_parameters),
+        "enabled": configuration.enabled,
     }
 
 
@@ -276,6 +339,72 @@ def _extract_final_output(final_output: object) -> str:
         if isinstance(text, str):
             return text
     return str(final_output)
+
+
+def resolve_model_api_key(credential_reference: str) -> str:
+    reference = credential_reference.strip()
+    if reference and not reference.startswith(("env:", "secret:", "secret://")):
+        return reference
+
+    vault_value = secret_vault_store.get(reference)
+    if vault_value:
+        return vault_value
+    candidates = _credential_environment_candidates(reference)
+    for candidate in candidates:
+        value = os.environ.get(candidate)
+        if value:
+            return value
+    raise RuntimeError(
+        "Model credential is not configured. Set one of: "
+        + ", ".join(candidates)
+    )
+
+
+def _credential_environment_candidates(credential_reference: str) -> list[str]:
+    reference = credential_reference.strip()
+    if reference.startswith("env:"):
+        return [reference.removeprefix("env:").strip()]
+
+    normalized = re.sub(r"[^A-Za-z0-9]+", "_", reference).strip("_").upper()
+    candidates = []
+    if normalized:
+        candidates.append(normalized)
+        candidates.append(f"MODEL_SECRET_{normalized}")
+    return candidates or ["MODEL_SECRET"]
+
+
+def _model_settings_for_configuration(configuration: ModelConfiguration) -> ModelSettings:
+    parameters = dict(configuration.default_parameters)
+    model_settings_kwargs: dict[str, Any] = {
+        "include_usage": True,
+        "metadata": {"provider_id": configuration.provider_id},
+    }
+
+    for source_key, target_key in {
+        "temperature": "temperature",
+        "top_p": "top_p",
+        "frequency_penalty": "frequency_penalty",
+        "presence_penalty": "presence_penalty",
+        "tool_choice": "tool_choice",
+        "parallel_tool_calls": "parallel_tool_calls",
+        "truncation": "truncation",
+        "max_tokens": "max_tokens",
+        "max_output_tokens": "max_tokens",
+        "reasoning": "reasoning",
+        "verbosity": "verbosity",
+        "store": "store",
+        "response_include": "response_include",
+        "top_logprobs": "top_logprobs",
+        "extra_query": "extra_query",
+        "extra_body": "extra_body",
+        "extra_headers": "extra_headers",
+        "extra_args": "extra_args",
+    }.items():
+        value = parameters.get(source_key)
+        if value is not None:
+            model_settings_kwargs[target_key] = value
+
+    return ModelSettings(**model_settings_kwargs)
 
 
 runtime_store = RuntimeStore()

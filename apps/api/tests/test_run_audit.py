@@ -12,6 +12,7 @@ from apps.api.app.run_event_log import run_event_log_store
 from apps.api.app.runtime import runtime_store
 from apps.api.app.sandbox_runtime import sandbox_runtime_store
 from apps.api.app.tool_gateway import agent_tool_gateway_store
+from apps.api.tests.support import use_fake_agent_runtime
 
 
 def setup_function():
@@ -26,6 +27,7 @@ def setup_function():
     agent_tool_gateway_store.reset()
     sandbox_runtime_store.reset()
     runtime_store.reset()
+    use_fake_agent_runtime()
 
 
 def administrator_token(client: TestClient) -> str:
@@ -129,6 +131,11 @@ def test_administrator_can_filter_and_inspect_run_audit_with_full_trace():
     user_id, user_token = approved_user(client, "user")
     model_id = create_model(client, admin_token)
     conversation_id, run_id = create_audited_run(client, admin_token, user_token, model_id)
+    client.patch(
+        f"/admin/model-configurations/{model_id}",
+        headers={"Authorization": f"Bearer {admin_token}"},
+        json={"name": "Edited after run", "model_name": "gpt-5.5"},
+    )
 
     list_response = client.get(
         "/admin/run-audit",
@@ -160,6 +167,12 @@ def test_administrator_can_filter_and_inspect_run_audit_with_full_trace():
 
     assert detail_response.status_code == 200
     assert detail_response.json()["conversation_id"] == conversation_id
+    assert (
+        detail_response.json()["capability_snapshot"]["selected_model_configuration_snapshot"][
+            "model_name"
+        ]
+        == "gpt-5"
+    )
     assert detail_response.json()["capability_snapshot"]["capability_policy"]["sandbox_enabled"] is True
     assert detail_response.json()["tool_calls"][0]["tool_name"] == "sandbox.exec"
     assert detail_response.json()["artifacts"][0]["filename"] == "audit-report.md"
@@ -171,6 +184,7 @@ def test_administrator_can_filter_and_inspect_run_audit_with_full_trace():
     assert trace_response.json()["retention_days"] == 90
     assert trace_response.json()["trace"]["workflow_name"] == "Agent workflow"
     assert trace_response.json()["trace"]["model_name"] == "gpt-5"
+    assert trace_response.json()["trace"]["model_configuration_snapshot"]["model_name"] == "gpt-5"
 
 
 def test_regular_users_cannot_access_run_audit_or_full_trace():

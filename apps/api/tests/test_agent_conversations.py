@@ -5,6 +5,10 @@ from apps.api.app.auth import local_account_store
 from apps.api.app.app import app
 from apps.api.app.model_configurations import model_configuration_store
 from apps.api.app.conversations import conversation_store
+from apps.api.tests.support import (
+    configure_default_agent_model,
+    create_model_configuration_for_tests,
+)
 
 
 def setup_function():
@@ -106,6 +110,7 @@ def test_user_can_create_list_and_continue_agent_conversation_bound_to_agent_and
 
 def test_user_can_rename_and_soft_delete_agent_conversation():
     client = TestClient(app)
+    configure_default_agent_model()
     user_token = approved_user_token(client)
     conversation = client.post(
         "/conversations",
@@ -141,3 +146,69 @@ def test_user_can_rename_and_soft_delete_agent_conversation():
     assert delete_response.json()["deleted"] is True
     assert list_response.json() == []
     assert detail_response.status_code == 404
+
+
+def test_user_conversation_uses_agent_default_model_when_selection_is_omitted():
+    client = TestClient(app)
+    model_id = configure_default_agent_model()
+    user_token = approved_user_token(client)
+
+    response = client.post(
+        "/conversations",
+        headers={"Authorization": f"Bearer {user_token}"},
+        json={
+            "title": "Default model",
+            "agent_id": 1,
+            "initial_message": "Use the default model.",
+        },
+    )
+
+    assert response.status_code == 201
+    assert response.json()["selected_model_configuration_id"] == model_id
+
+
+def test_user_conversation_rejects_unconfigured_agent_model_selection():
+    client = TestClient(app)
+    user_token = approved_user_token(client)
+
+    response = client.post(
+        "/conversations",
+        headers={"Authorization": f"Bearer {user_token}"},
+        json={
+            "title": "Missing model",
+            "agent_id": 1,
+            "initial_message": "Start this conversation.",
+        },
+    )
+
+    assert response.status_code == 409
+    assert response.json()["detail"] == "Agent does not have a default Model Configuration."
+
+
+def test_user_conversation_rejects_model_outside_agent_allowed_selection():
+    client = TestClient(app)
+    allowed_model_id = configure_default_agent_model()
+    rejected_model_id = create_model_configuration_for_tests(model_name="gpt-5-mini")
+    client.patch(
+        "/admin/agents/1",
+        headers={"Authorization": f"Bearer {administrator_token(client)}"},
+        json={
+            "default_model_configuration_id": allowed_model_id,
+            "allowed_model_configuration_ids": [allowed_model_id],
+        },
+    )
+    user_token = approved_user_token(client)
+
+    response = client.post(
+        "/conversations",
+        headers={"Authorization": f"Bearer {user_token}"},
+        json={
+            "title": "Rejected model",
+            "agent_id": 1,
+            "selected_model_configuration_id": rejected_model_id,
+            "initial_message": "Start this conversation.",
+        },
+    )
+
+    assert response.status_code == 409
+    assert response.json()["detail"] == "Model Configuration is not allowed for this Agent."

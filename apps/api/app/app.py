@@ -4,6 +4,7 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI
 
 from apps.api.app.auth import local_account_store
+from apps.api.app.bootstrap import bootstrap_default_model_configuration
 from apps.api.app.features.admin import router as admin_router
 from apps.api.app.features.auth import router as auth_router
 from apps.api.app.features.copilotkit.routes import router as copilotkit_router
@@ -16,6 +17,7 @@ async def lifespan(_app: FastAPI):
     password = os.getenv("ADMIN_BOOTSTRAP_PASSWORD", "").strip()
     if username and password:
         local_account_store.bootstrap_administrator(username=username, password=password)
+    bootstrap_default_model_configuration()
     yield
 
 

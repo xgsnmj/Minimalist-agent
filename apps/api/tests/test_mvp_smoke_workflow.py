@@ -12,6 +12,7 @@ from apps.api.app.run_event_log import run_event_log_store
 from apps.api.app.runtime import runtime_store
 from apps.api.app.sandbox_runtime import sandbox_runtime_store
 from apps.api.app.tool_gateway import agent_tool_gateway_store
+from apps.api.tests.support import use_fake_agent_runtime
 from apps.worker.app.celery_app import process_agent_run
 
 
@@ -30,6 +31,7 @@ def setup_function():
     agent_tool_gateway_store.reset()
     sandbox_runtime_store.reset()
     runtime_store.reset()
+    use_fake_agent_runtime()
 
 
 def login(client: TestClient, login_name: str) -> str:

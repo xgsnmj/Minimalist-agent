@@ -63,7 +63,7 @@ class AgentRunLifecycle:
             event_type="run.status",
             data={"status": AgentRunStatus.QUEUED.value, "worker_enqueued": True},
         )
-        return run
+        return agent_run_store.save(run)
 
     def cancel_for_user(self, *, owner_user_id: int, run_id: int) -> AgentRun:
         run = agent_run_store.get_for_user(owner_user_id=owner_user_id, run_id=run_id)
@@ -75,6 +75,7 @@ class AgentRunLifecycle:
                 event_type="run.status",
                 data={"status": AgentRunStatus.CANCELLED.value},
             )
+            run = agent_run_store.save(run)
             self._release_conversation(run)
         return run
 
@@ -87,7 +88,7 @@ class AgentRunLifecycle:
             event_type="run.status",
             data={"status": AgentRunStatus.RUNNING.value},
         )
-        return run
+        return agent_run_store.save(run)
 
     def apply_runtime_success(
         self,
@@ -120,6 +121,7 @@ class AgentRunLifecycle:
             event_type="run.status",
             data={"status": AgentRunStatus.COMPLETED.value},
         )
+        run = agent_run_store.save(run)
         self._release_conversation(run)
         return run
 
@@ -137,16 +139,19 @@ class AgentRunLifecycle:
                 "message": run.error,
             },
         )
+        run = agent_run_store.save(run)
         self._release_conversation(run)
         return run
 
     def record_process_summary(self, run: AgentRun, *, summary: str) -> RunEvent:
         run.process_summaries.append(summary)
-        return self._append_event(
+        event = self._append_event(
             run,
             event_type="process.summary",
             data={"summary": summary},
         )
+        agent_run_store.save(run)
+        return event
 
     def append_card_event_for_user(
         self,

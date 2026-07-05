@@ -7,6 +7,8 @@ from apps.api.app.conversations import conversation_store
 from apps.api.app.run_event_log import run_event_log_store
 from apps.api.app.app import app
 from apps.api.app.model_configurations import model_configuration_store
+from apps.api.app.runtime import runtime_store
+from apps.api.tests.support import configure_default_agent_model, use_fake_agent_runtime
 from apps.worker.app.celery_app import process_agent_run
 
 
@@ -17,6 +19,9 @@ def setup_function():
     conversation_store.reset()
     agent_run_store.reset()
     run_event_log_store.reset_for_tests()
+    runtime_store.reset()
+    configure_default_agent_model()
+    use_fake_agent_runtime()
 
 
 def approved_user_token(client: TestClient) -> str:

@@ -20,6 +20,7 @@ describe("Local Account access flow", () => {
     render(<App />);
 
     expect(screen.getByRole("heading", { name: "登录" })).toBeInTheDocument();
+    expect(screen.getAllByRole("link", { name: "申请" })).toHaveLength(1);
     expect(screen.queryByText("对话工作台")).not.toBeInTheDocument();
   });
 
@@ -44,18 +45,44 @@ describe("Local Account access flow", () => {
     expect(window.localStorage.getItem("minimalist-agent:auth-token")).toBe("local-1");
   });
 
-  it("shows a pending approval state after registration", async () => {
+  it("returns to the login page after a registration request is submitted", async () => {
     const user = userEvent.setup();
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: true,
+      status: 201,
+      json: async () => ({
+        id: 6,
+        username: "lin",
+        email: "lin@example.com",
+        role: "user",
+        status: "pending",
+      }),
+    });
+    vi.stubGlobal("fetch", fetchMock);
     window.history.pushState({}, "", "/register");
     render(<App />);
 
+    expect(screen.getAllByRole("link", { name: "登录" })).toHaveLength(1);
     await user.type(screen.getByLabelText("用户名"), "lin");
     await user.type(screen.getByLabelText("邮箱"), "lin@example.com");
     await user.type(screen.getByLabelText("密码"), "correct horse battery staple");
     await user.type(screen.getByLabelText("确认密码"), "correct horse battery staple");
     await user.click(screen.getByRole("button", { name: "提交申请" }));
 
-    expect(await screen.findByRole("heading", { name: "待审批" })).toBeInTheDocument();
-    expect(screen.getByText("等待管理员")).toBeInTheDocument();
+    expect(fetchMock).toHaveBeenCalledWith("/api/auth/register", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        username: "lin",
+        email: "lin@example.com",
+        password: "correct horse battery staple",
+      }),
+    });
+    expect(window.location.pathname).toBe("/login");
+    expect(await screen.findByRole("heading", { name: "登录" })).toBeInTheDocument();
+    expect(screen.getByRole("status")).toHaveTextContent("账号申请已提交，审批通过后即可登录");
+    expect(screen.queryByRole("heading", { name: "待审批" })).not.toBeInTheDocument();
   });
 });

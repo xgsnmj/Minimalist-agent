@@ -7,6 +7,8 @@ from apps.api.app.conversations import conversation_store
 from apps.api.app.app import app
 from apps.api.app.model_configurations import model_configuration_store
 from apps.api.app.run_event_log import run_event_log_store
+from apps.api.app.runtime import runtime_store
+from apps.api.tests.support import configure_default_agent_model, use_fake_agent_runtime
 from apps.worker.app.celery_app import process_agent_run
 
 
@@ -17,6 +19,9 @@ def setup_function():
     conversation_store.reset()
     agent_run_store.reset()
     run_event_log_store.reset_for_tests()
+    runtime_store.reset()
+    configure_default_agent_model()
+    use_fake_agent_runtime()
 
 
 def approved_user_token(client: TestClient, username: str = "user") -> str:
@@ -192,10 +197,60 @@ def test_mock_runtime_failure_marks_background_agent_run_failed():
     ]
 
 
-def test_runtime_configuration_failure_releases_conversation_and_streams_error_event():
+def test_worker_processes_persisted_run_without_api_process_memory_state():
     client = TestClient(app)
     token = approved_user_token(client)
-    conversation = client.post(
+    conversation_id = create_conversation(client, token)
+
+    run = client.post(
+        f"/conversations/{conversation_id}/runs",
+        headers={"Authorization": f"Bearer {token}"},
+        json={"message": "Use persisted run state."},
+    ).json()
+    runtime_store.reset()
+    use_fake_agent_runtime()
+
+    worker_response = process_agent_run.run(run["id"])
+    detail_response = client.get(
+        f"/conversations/{conversation_id}",
+        headers={"Authorization": f"Bearer {token}"},
+    )
+
+    assert worker_response == {"id": run["id"], "status": "completed"}
+    assert detail_response.json()["messages"][-1] == {
+        "role": "assistant",
+        "content": "openai:gpt-5 handled Use persisted run state.",
+    }
+
+
+def test_starting_run_dispatches_celery_task_when_configured(monkeypatch):
+    client = TestClient(app)
+    token = approved_user_token(client)
+    conversation_id = create_conversation(client, token)
+    dispatched_run_ids: list[int] = []
+
+    monkeypatch.setenv("AGENT_RUN_DISPATCH_MODE", "celery")
+    monkeypatch.setattr(
+        process_agent_run,
+        "delay",
+        lambda run_id: dispatched_run_ids.append(run_id),
+    )
+
+    response = client.post(
+        f"/conversations/{conversation_id}/runs",
+        headers={"Authorization": f"Bearer {token}"},
+        json={"message": "Dispatch through Redis worker."},
+    )
+
+    assert response.status_code == 201
+    assert response.json()["worker_enqueued"] is True
+    assert dispatched_run_ids == [response.json()["id"]]
+
+
+def test_run_rejects_conversation_when_selected_model_is_missing():
+    client = TestClient(app)
+    token = approved_user_token(client)
+    response = client.post(
         "/conversations",
         headers={"Authorization": f"Bearer {token}"},
         json={
@@ -204,38 +259,7 @@ def test_runtime_configuration_failure_releases_conversation_and_streams_error_e
             "selected_model_configuration_id": 404,
             "initial_message": "Start this conversation.",
         },
-    ).json()
-    run = client.post(
-        f"/conversations/{conversation['id']}/runs",
-        headers={"Authorization": f"Bearer {token}"},
-        json={"message": "Use the selected model."},
-    ).json()
-
-    worker_response = process_agent_run.run(run["id"])
-    run_response = client.get(
-        f"/runs/{run['id']}",
-        headers={"Authorization": f"Bearer {token}"},
-    )
-    conversation_response = client.get(
-        f"/conversations/{conversation['id']}",
-        headers={"Authorization": f"Bearer {token}"},
-    )
-    events_response = client.get(
-        f"/runs/{run['id']}/events",
-        headers={
-            "Authorization": f"Bearer {token}",
-            "Accept": "text/event-stream",
-            "Last-Event-ID": "2",
-        },
     )
 
-    assert worker_response == {"id": run["id"], "status": "failed"}
-    assert run_response.json()["status"] == "failed"
-    assert run_response.json()["status_events"] == [
-        "queued",
-        "worker_enqueued",
-        "failed",
-    ]
-    assert conversation_response.json()["status"] == "idle"
-    assert "event: run.error" in events_response.text
-    assert '"status":"failed"' in events_response.text
+    assert response.status_code == 409
+    assert response.json()["detail"] == "Model Configuration is not allowed for this Agent."

@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 from typing import Any, Iterable
 
-from fastapi import APIRouter, Depends, HTTPException, Response, status
+from fastapi import APIRouter, Depends, Header, HTTPException, Query, Response, status
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
@@ -15,11 +15,12 @@ from apps.api.app.agent_runs import (
     agent_run_store,
 )
 from apps.api.app.agents import Agent, AgentStatus, agent_store
-from apps.api.app.auth import LocalAccount, current_user
+from apps.api.app.auth import LocalAccount, local_account_store
 from apps.api.app.conversations import (
     AgentConversation,
     conversation_store,
 )
+from apps.api.app.model_selection import resolve_agent_model_configuration_id
 from apps.api.app.runtime import runtime_store
 
 
@@ -55,9 +56,29 @@ class CopilotThreadMappingStore:
 copilot_thread_mapping_store = CopilotThreadMappingStore()
 
 
+def authenticated_copilotkit_account(
+    authorization: str | None = Header(default=None),
+    access_token: str | None = Query(default=None),
+) -> LocalAccount:
+    if authorization is not None and authorization.startswith("Bearer "):
+        account = local_account_store.account_for_token(
+            authorization.removeprefix("Bearer ").strip(),
+        )
+        if account is not None:
+            return account
+    if access_token:
+        account = local_account_store.account_for_token(access_token)
+        if account is not None:
+            return account
+    raise HTTPException(
+        status_code=status.HTTP_401_UNAUTHORIZED,
+        detail="Authentication required.",
+    )
+
+
 @router.get("/info")
 def get_copilotkit_runtime_info(
-    _account: LocalAccount = Depends(current_user),
+    _account: LocalAccount = Depends(authenticated_copilotkit_account),
 ) -> dict[str, object]:
     return {
         "version": "1.62.1",
@@ -89,13 +110,10 @@ def get_copilotkit_runtime_info(
 def connect_copilotkit_agent(
     copilot_agent_id: str,
     request: CopilotKitRunRequest,
-    account: LocalAccount = Depends(current_user),
+    account: LocalAccount = Depends(authenticated_copilotkit_account),
 ) -> StreamingResponse:
     _resolve_agent(copilot_agent_id)
-    conversation = _existing_conversation_for_thread(
-        owner_user_id=account.id,
-        thread_id=request.threadId,
-    )
+    conversation = _existing_conversation_for_request(account=account, request=request)
     events = [
         _run_started_event(request),
         *_conversation_snapshot_events(conversation),
@@ -108,7 +126,7 @@ def connect_copilotkit_agent(
 def run_copilotkit_agent(
     copilot_agent_id: str,
     request: CopilotKitRunRequest,
-    account: LocalAccount = Depends(current_user),
+    account: LocalAccount = Depends(authenticated_copilotkit_account),
 ) -> StreamingResponse:
     agent = _resolve_agent(copilot_agent_id)
     user_message = _latest_user_text(request.messages)
@@ -152,7 +170,7 @@ def run_copilotkit_agent(
 def stop_copilotkit_agent(
     copilot_agent_id: str,
     thread_id: str,
-    account: LocalAccount = Depends(current_user),
+    account: LocalAccount = Depends(authenticated_copilotkit_account),
 ) -> Response:
     _resolve_agent(copilot_agent_id)
     conversation = _existing_conversation_for_thread(
@@ -335,25 +353,58 @@ def _conversation_for_run(
     request: CopilotKitRunRequest,
     user_message: str,
 ) -> AgentConversation:
-    conversation = _existing_conversation_for_thread(
-        owner_user_id=account.id,
-        thread_id=request.threadId,
-    )
+    conversation = _existing_conversation_for_request(account=account, request=request)
     if conversation is not None:
+        _remember_thread_mappings(
+            owner_user_id=account.id,
+            request=request,
+            conversation_id=conversation.id,
+        )
         return conversation
 
+    selected_model_configuration_id = resolve_agent_model_configuration_id(
+        agent=agent,
+        selected_model_configuration_id=_selected_model_configuration_id(request),
+    )
     created = conversation_store.create_empty(
         owner_user_id=account.id,
         title=_conversation_title(user_message),
         agent=agent,
-        selected_model_configuration_id=agent.default_model_configuration_id,
+        selected_model_configuration_id=selected_model_configuration_id,
     )
-    copilot_thread_mapping_store.set(
+    _remember_thread_mappings(
         owner_user_id=account.id,
-        thread_id=request.threadId,
+        request=request,
         conversation_id=created.id,
     )
     return created
+
+
+def _existing_conversation_for_request(
+    *,
+    account: LocalAccount,
+    request: CopilotKitRunRequest,
+) -> AgentConversation | None:
+    forwarded_conversation_id = _forwarded_conversation_id(request)
+    if forwarded_conversation_id is not None:
+        return _conversation_for_id(
+            owner_user_id=account.id,
+            conversation_id=forwarded_conversation_id,
+        )
+
+    forwarded_thread_id = _forwarded_thread_id(request)
+    if forwarded_thread_id is not None:
+        conversation = _existing_conversation_for_thread(
+            owner_user_id=account.id,
+            thread_id=forwarded_thread_id,
+        )
+        if conversation is not None:
+            return conversation
+
+    return _existing_conversation_for_thread(
+        owner_user_id=account.id,
+        thread_id=request.threadId,
+    )
 
 
 def _existing_conversation_for_thread(
@@ -369,6 +420,17 @@ def _existing_conversation_for_thread(
         )
     if conversation_id is None:
         return None
+    return _conversation_for_id(
+        owner_user_id=owner_user_id,
+        conversation_id=conversation_id,
+    )
+
+
+def _conversation_for_id(
+    *,
+    owner_user_id: int,
+    conversation_id: int,
+) -> AgentConversation | None:
     try:
         return conversation_store.get_for_user(
             owner_user_id=owner_user_id,
@@ -380,6 +442,25 @@ def _existing_conversation_for_thread(
         raise
 
 
+def _remember_thread_mappings(
+    *,
+    owner_user_id: int,
+    request: CopilotKitRunRequest,
+    conversation_id: int,
+) -> None:
+    thread_ids = {
+        request.threadId,
+        _forwarded_thread_id(request),
+    }
+    for thread_id in thread_ids:
+        if thread_id:
+            copilot_thread_mapping_store.set(
+                owner_user_id=owner_user_id,
+                thread_id=thread_id,
+                conversation_id=conversation_id,
+            )
+
+
 def _conversation_id_from_thread(thread_id: str) -> int | None:
     if thread_id.isdigit():
         return int(thread_id)
@@ -387,6 +468,66 @@ def _conversation_id_from_thread(thread_id: str) -> int | None:
         suffix = thread_id.removeprefix("conversation-")
         if suffix.isdigit():
             return int(suffix)
+    return None
+
+
+def _forwarded_conversation_id(request: CopilotKitRunRequest) -> int | None:
+    return _optional_int_payload_field(
+        _forwarded_props(request),
+        "conversation_id",
+        "conversationId",
+    )
+
+
+def _forwarded_thread_id(request: CopilotKitRunRequest) -> str | None:
+    forwarded_props = _forwarded_props(request)
+    value = forwarded_props.get("thread_id", forwarded_props.get("threadId"))
+    return value if isinstance(value, str) and value.strip() else None
+
+
+def _selected_model_configuration_id(request: CopilotKitRunRequest) -> int | None:
+    for payload in (_forwarded_props(request), _request_state(request)):
+        value = _optional_int_payload_field(
+            payload,
+            "selected_model_configuration_id",
+            "selectedModelConfigurationId",
+        )
+        if value is not None:
+            return value
+    return None
+
+
+def _forwarded_props(request: CopilotKitRunRequest) -> dict[str, Any]:
+    return request.forwardedProps if isinstance(request.forwardedProps, dict) else {}
+
+
+def _request_state(request: CopilotKitRunRequest) -> dict[str, Any]:
+    return request.state if isinstance(request.state, dict) else {}
+
+
+def _optional_int_payload_field(
+    payload: dict[str, Any],
+    *field_names: str,
+) -> int | None:
+    for field_name in field_names:
+        if field_name not in payload:
+            continue
+        value = payload[field_name]
+        if value is None:
+            return None
+        if isinstance(value, bool):
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"{field_name} must be an integer.",
+            )
+        if isinstance(value, int):
+            return value
+        if isinstance(value, str) and value.isdigit():
+            return int(value)
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"{field_name} must be an integer.",
+        )
     return None
 
 

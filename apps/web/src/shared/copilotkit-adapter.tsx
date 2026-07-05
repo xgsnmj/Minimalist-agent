@@ -1,6 +1,11 @@
 import { type Dispatch, type ReactNode, type SetStateAction, useMemo } from "react";
 import { CopilotKit, useAgentContext, useFrontendTool } from "@copilotkit/react-core/v2";
+import type { ReactCustomMessageRenderer } from "@copilotkit/react-core/v2";
+import "@copilotkit/react-core/v2/styles.css";
 import { z } from "zod";
+
+import { getAuthToken } from "../features/workspace/auth-api";
+import { minimalistRichMessageRenderer } from "./copilotkit-rich-message-rendering";
 
 type ModelOption = {
   id: string;
@@ -9,6 +14,7 @@ type ModelOption = {
 
 type WorkspaceAgent = {
   id: string;
+  copilotAgentId?: string;
   name: string;
   status: "enabled";
   allowedModels: ModelOption[];
@@ -29,7 +35,7 @@ type Conversation = {
   id: string;
   title: string;
   agentId: string;
-  status: "idle" | "running" | "completed" | "failed" | "cancelled";
+  status: "idle" | "queued" | "running" | "completed" | "failed" | "cancelled";
   updatedAt: string;
   selectedModelId: string;
   messages: ConversationMessage[];
@@ -261,12 +267,28 @@ const fullTraceRawPayloadPreviewSchema = z.object({
 });
 
 export function CopilotKitWorkspaceProvider({ children }: { children: ReactNode }) {
+  const token = getAuthToken();
+  const headers = useMemo<Record<string, string>>(() => {
+    if (!token) {
+      const emptyHeaders: Record<string, string> = {};
+      return emptyHeaders;
+    }
+    return { Authorization: `Bearer ${token}` };
+  }, [token]);
+  const renderCustomMessages = useMemo<ReactCustomMessageRenderer[]>(
+    () => [minimalistRichMessageRenderer],
+    [],
+  );
+
   return (
     <CopilotKit
       runtimeUrl={copilotRuntimeUrl}
+      headers={headers}
       credentials="same-origin"
       enableInspector={false}
+      renderCustomMessages={renderCustomMessages}
       showDevConsole={false}
+      useSingleEndpoint={false}
       onError={(event) => {
         console.warn("[copilotkit]", event);
       }}
@@ -304,6 +326,7 @@ export function CopilotWorkspaceBridge({
         "Frontend tools may only change UI state. Agent Runs, capability policy, Tool Calls, Card Rendering, Run Audit, and Full Trace stay backend-owned.",
       agents: agents.map((agent) => ({
         id: agent.id,
+        copilotAgentId: agent.copilotAgentId ?? agent.id,
         name: agent.name,
         status: agent.status,
         allowedModels: agent.allowedModels.map((model) => model.label),
@@ -495,7 +518,7 @@ export function CopilotAgentLifecycleBridge({
       })),
       currentPage: "Agent Lifecycle",
       governanceBoundary:
-        "Copilot may focus an Agent row or open a local Create Agent draft. It must not create, disable, retire, edit instructions, change model policy, or save Agent Capability Policy.",
+        "Copilot may focus an Agent row or open the Create Agent dialog. It must not submit the dialog, disable, retire, edit instructions, change model policy, or save Agent Capability Policy.",
       isCreateDraftOpen,
       selectedAgentId,
     }),
@@ -530,14 +553,14 @@ export function CopilotAgentLifecycleBridge({
 
   useFrontendTool(
     {
-      name: "openCreateAgentDraft",
+      name: "openCreateAgentDialog",
       description:
-        "Open the local Create Agent draft without creating a backend Agent.",
+        "Open the Create Agent dialog without submitting it to the backend.",
       parameters: z.object({}),
       followUp: false,
       handler: async () => {
         setIsCreateDraftOpen(true);
-        return "Opened a local Create Agent draft.";
+        return "Opened the Create Agent dialog.";
       },
     },
     [],
@@ -568,7 +591,7 @@ export function CopilotModelConfigurationsBridge({
       })),
       currentPage: "Model Configurations",
       governanceBoundary:
-        "Copilot may focus Model Configuration rows or open a local creation draft. It must not create or edit configurations, reveal secrets, run model health checks, or change Agent Allowed Model Selection.",
+        "Copilot may focus Model Configuration rows or open the creation dialog. It must not submit the dialog, edit configurations, reveal secrets, run model health checks, or change Agent Allowed Model Selection.",
       isCreateDraftOpen,
       providerCatalog,
       providerCatalogBoundary:
@@ -606,14 +629,14 @@ export function CopilotModelConfigurationsBridge({
 
   useFrontendTool(
     {
-      name: "openCreateModelConfigurationDraft",
+      name: "openCreateModelConfigurationDialog",
       description:
-        "Open the local Create Model Configuration draft without saving provider, endpoint, credential, or parameter changes.",
+        "Open the Create Model Configuration dialog without saving provider, endpoint, credential, or parameter changes.",
       parameters: z.object({}),
       followUp: false,
       handler: async () => {
         setIsCreateDraftOpen(true);
-        return "Opened a local Create Model Configuration draft.";
+        return "Opened the Create Model Configuration dialog.";
       },
     },
     [],
@@ -709,7 +732,7 @@ export function CopilotMcpServersBridge({
       authorizationAgent,
       currentPage: "MCP Servers",
       governanceBoundary:
-        "Copilot may focus remote MCP Servers, open local configuration drafts, or switch the authorization Agent. It must not register servers, discover tools, save authorization, reveal raw credentials, or bypass the Agent Tool Gateway.",
+        "Copilot may focus remote MCP Servers, open the creation dialog, or switch the authorization Agent. It must not submit server registration, discover tools, save authorization, reveal raw credentials, or bypass the Agent Tool Gateway.",
       isConfigurationDraftOpen,
       selectedServerName,
       servers: servers.map((server) => ({
@@ -751,9 +774,9 @@ export function CopilotMcpServersBridge({
 
   useFrontendTool(
     {
-      name: "openMcpServerConfigurationDraft",
+      name: "openMcpServerCreationDialog",
       description:
-        "Open the local MCP Server configuration draft. This does not register or update a backend MCP Server.",
+        "Open the MCP Server creation dialog without registering or updating a backend MCP Server.",
       parameters: optionalMcpServerNameSchema,
       followUp: false,
       handler: async ({ serverName }) => {
@@ -769,8 +792,8 @@ export function CopilotMcpServersBridge({
 
         setIsConfigurationDraftOpen(true);
         return serverName
-          ? `Opened a local configuration draft for ${serverName}.`
-          : "Opened a local MCP Server configuration draft.";
+          ? `Opened the MCP Server creation dialog while focusing ${serverName}.`
+          : "Opened the MCP Server creation dialog.";
       },
     },
     [servers],

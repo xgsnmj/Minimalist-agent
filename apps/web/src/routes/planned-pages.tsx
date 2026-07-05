@@ -1,4 +1,4 @@
-import { FormEvent, type ElementType, useEffect, useMemo, useRef, useState } from "react";
+import { FormEvent, type ElementType, type ReactNode, useEffect, useMemo, useRef, useState } from "react";
 
 import {
   CopilotAccountApprovalBridge,
@@ -7,11 +7,16 @@ import {
   CopilotFullTraceBridge,
   CopilotMcpServersBridge,
   CopilotModelConfigurationsBridge,
-  CopilotPageReadProviderBridge,
   CopilotRunAuditBridge,
-  CopilotSandboxStatusBridge,
-  CopilotSearchProviderBridge,
 } from "../shared/copilotkit-adapter";
+import {
+  authTokenStorageKey,
+  getCurrentUser,
+  logout,
+  notifyAuthChanged,
+  updateCurrentUser,
+  type CurrentUser,
+} from "../features/workspace/auth-api";
 import { useGSAP } from "@gsap/react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -29,6 +34,8 @@ import {
   BadgeCheck,
   Bot,
   Database,
+  Eye,
+  EyeOff,
   FileSearch,
   FileText,
   Gauge,
@@ -92,6 +99,8 @@ type LocalAccount = {
   role: "admin" | "user";
   status: LocalAccountStatus;
   createdAt: string;
+  note: string;
+  statusReason: string;
   lastAction: string;
   riskNote: string;
   history: string[];
@@ -107,6 +116,8 @@ type McpServer = {
   discoveryStatus: "Discovered" | "Pending discovery";
   authorization: string;
   toolCount: number;
+  timeoutSeconds: number;
+  url: string;
 };
 
 type McpToolDiscovery = {
@@ -116,9 +127,6 @@ type McpToolDiscovery = {
   lastDiscovered: string;
 };
 
-type SearchProviderScenario = "success" | "empty" | "error";
-type PageReadScenario = "success" | "policy-violation";
-type SandboxScenario = "completed" | "rejected";
 type RunAuditStatus = "running" | "completed" | "failed" | "cancelled";
 type RunAuditStatusFilter = "all" | RunAuditStatus;
 
@@ -165,36 +173,41 @@ type AgentLifecycleRecord = {
   avatar: string;
   instruction: string;
   processVisibility: string;
+  processVisibilityValue: ApiAgent["process_visibility"];
   defaultModel: string;
+  defaultModelConfigurationId: number | null;
   allowedModels: string[];
+  allowedModelConfigurationIds: number[];
   capabilitySummary: string;
   capabilityPolicy: string[];
+  capabilityPolicyValue: ApiAgent["capability_policy"];
   mcpToolAuthorization: string[];
 };
 
-type ModelConfigurationStatus = "enabled" | "disabled" | "draft";
+type ModelConfigurationStatus = "enabled" | "disabled";
+type ModelHealthStatus = "not_checked" | "healthy" | "unhealthy";
 
 type ModelConfigurationRecord = {
   id: string;
+  providerId: string;
   provider: string;
+  name: string;
   model: string;
   credentialReference: string;
   status: ModelConfigurationStatus;
+  enabled: boolean;
   baseUrl: string;
   defaultParameters: string;
+  defaultParametersValue: Record<string, unknown>;
   lastUpdated: string;
+  healthStatus: ModelHealthStatus;
+  healthLabel: string;
+  lastCheckedAt: string;
+  lastError: string;
   risk: string;
 };
 
-const authTokenStorageKey = "minimalist-agent:auth-token";
-
-type ApiLocalAccount = {
-  id: number;
-  username: string;
-  email: string | null;
-  role: "admin" | "user";
-  status: LocalAccountStatus;
-};
+type ApiLocalAccount = CurrentUser;
 
 type ApiAgent = {
   id: number;
@@ -300,6 +313,32 @@ type ApiModelConfiguration = {
   credential_reference: string;
   default_parameters: Record<string, unknown>;
   enabled: boolean;
+  health_status: ModelHealthStatus;
+  last_checked_at: string | null;
+  last_error: string | null;
+};
+
+type ApiModelConfigurationHealthCheck = {
+  configuration: ApiModelConfiguration;
+  status: ModelHealthStatus;
+  checked_at: string;
+  message: string;
+};
+
+type ApiAgentReadiness = {
+  agent_id: number;
+  ready: boolean;
+  issues: string[];
+};
+
+type ApiAccountAuditEvent = {
+  id: number;
+  account_id: number;
+  actor_id: number | null;
+  action: "registered" | "bootstrapped" | "approved" | "rejected" | "disabled" | "enabled" | "updated";
+  reason: string;
+  note: string;
+  created_at: string;
 };
 
 type ApiMcpServer = {
@@ -360,6 +399,7 @@ type AdminOverviewState = {
 };
 
 type AdminOverviewTask = {
+  href: string;
   title: string;
   meta: string;
   status: "pending" | "ready" | "warning";
@@ -390,6 +430,66 @@ function parseAdminInteger(value: string, fallback: number): number {
   return Number.isFinite(parsed) ? parsed : fallback;
 }
 
+function credentialStatus(reference: string | null | undefined) {
+  return reference && reference.trim().length > 0 ? "已配置" : "未配置";
+}
+
+function SecretTextInput({
+  autoComplete = "new-password",
+  defaultValue = "",
+  name,
+  placeholder,
+  required = false,
+}: {
+  autoComplete?: string;
+  defaultValue?: string;
+  name: string;
+  placeholder?: string;
+  required?: boolean;
+}) {
+  const [isVisible, setIsVisible] = useState(false);
+  const Icon = isVisible ? EyeOff : Eye;
+
+  return (
+    <div className="secret-input-control">
+      <Input
+        autoComplete={autoComplete}
+        defaultValue={defaultValue}
+        name={name}
+        placeholder={placeholder}
+        required={required}
+        type={isVisible ? "text" : "password"}
+      />
+      <Button
+        aria-label={isVisible ? "隐藏 API Key" : "显示 API Key"}
+        className="secret-input-toggle"
+        size="icon-sm"
+        type="button"
+        variant="ghost"
+        onClick={() => setIsVisible((current) => !current)}
+      >
+        <Icon aria-hidden="true" strokeWidth={2} />
+      </Button>
+    </div>
+  );
+}
+
+function compactTimestamp(value: string | null | undefined) {
+  if (!value) {
+    return "未记录";
+  }
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) {
+    return value;
+  }
+  return date.toLocaleString("zh-CN", {
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+  });
+}
+
 function mapLocalAccount(account: ApiLocalAccount): LocalAccount {
   return {
     id: account.id,
@@ -397,12 +497,19 @@ function mapLocalAccount(account: ApiLocalAccount): LocalAccount {
     email: account.email ?? "未填写",
     role: account.role,
     status: account.status,
-    createdAt: "后端未记录",
-    lastAction: accountStatusAction(account.status),
+    createdAt: compactTimestamp(account.created_at),
+    note: account.note ?? "",
+    statusReason: account.status_reason ?? "",
+    lastAction: accountStatusAction(account.status, account.status_reason),
     riskNote: account.role === "admin"
       ? "管理员账号。当前页面不会禁用管理员账号。"
-      : "后端暂未记录风险备注或登录失败历史。",
-    history: [accountStatusAction(account.status), "后端暂未记录审批时间线"],
+      : account.status_reason
+        ? account.status_reason
+        : "未记录风险备注。",
+    history: [
+      accountStatusAction(account.status, account.status_reason),
+      `创建：${compactTimestamp(account.created_at)}`,
+    ],
   };
 }
 
@@ -416,10 +523,14 @@ function mapAgent(agent: ApiAgent): AgentLifecycleRecord {
     avatar: agent.icon || "agent",
     instruction: agent.instruction,
     processVisibility: `过程可见性：${processVisibilityLabel(agent.process_visibility)}`,
+    processVisibilityValue: agent.process_visibility,
     defaultModel: agent.default_model_configuration_id ? `模型配置 #${agent.default_model_configuration_id}` : "未设置",
+    defaultModelConfigurationId: agent.default_model_configuration_id,
     allowedModels: allowedModels.length > 0 ? allowedModels : ["未设置"],
+    allowedModelConfigurationIds: agent.allowed_model_configuration_ids,
     capabilitySummary: capabilitySummary(agent.capability_policy),
     capabilityPolicy: capabilityPolicyLines(agent.capability_policy),
+    capabilityPolicyValue: agent.capability_policy,
     mcpToolAuthorization: agent.capability_policy.mcp_server_ids.length > 0
       ? agent.capability_policy.mcp_server_ids.map((id) => `MCP 服务器 #${id}`)
       : ["未授权 MCP 服务器"],
@@ -483,16 +594,26 @@ function mapModelConfiguration(
     .join(", ");
   return {
     id: String(configuration.id),
+    providerId: configuration.provider_id,
     provider: providerName,
+    name: configuration.name,
     model: configuration.model_name,
     credentialReference: configuration.credential_reference,
     status: configuration.enabled ? "enabled" : "disabled",
+    enabled: configuration.enabled,
     baseUrl: configuration.endpoint,
     defaultParameters: parameterText || "未设置",
-    lastUpdated: "后端未记录",
-    risk: configuration.credential_reference
-      ? "凭据以引用方式保存，页面不会暴露密钥明文。"
-      : "凭据引用缺失，请补齐后再启用。",
+    defaultParametersValue: configuration.default_parameters,
+    lastUpdated: compactTimestamp(configuration.last_checked_at),
+    healthStatus: configuration.health_status,
+    healthLabel: modelHealthLabel(configuration.health_status),
+    lastCheckedAt: compactTimestamp(configuration.last_checked_at),
+    lastError: configuration.last_error ?? "",
+    risk: configuration.last_error
+      ? configuration.last_error
+      : configuration.credential_reference
+      ? "API Key 已配置。"
+      : "API Key 缺失，请补齐后再启用。",
   };
 }
 
@@ -505,6 +626,8 @@ function mapMcpServer(server: ApiMcpServer): McpServer {
     discoveryStatus: server.last_discovery_status === "succeeded" ? "Discovered" : "Pending discovery",
     authorization: server.enabled ? "按智能体策略授权" : "已停用",
     toolCount: 0,
+    timeoutSeconds: server.timeout_seconds,
+    url: server.url,
   };
 }
 
@@ -547,6 +670,10 @@ const adminModules: AdminModule[] = [
   { route: "page-read-provider", href: "/admin/page-read-provider", title: "页面读取提供方", meta: "页面读取能力", icon: FileText },
   { route: "sandbox-status", href: "/admin/sandbox", title: "沙箱状态", meta: "沙箱能力", icon: TerminalSquare },
   { route: "run-audit", href: "/admin/run-audit", title: "运行审计", meta: "运行治理", icon: Activity },
+];
+
+const adminPageModules: AdminModule[] = [
+  ...adminModules,
   { route: "full-trace", href: "/admin/full-trace", title: "完整追踪详情", meta: "管理员诊断", icon: ScrollText },
 ];
 
@@ -592,10 +719,12 @@ export function resolveAppRoute(pathname: string): AppRoute {
 function AuthEntryPage({
   error,
   mode,
+  notice,
   onSubmit,
 }: {
   error?: string;
   mode: "login" | "register";
+  notice?: string;
   onSubmit: (event: FormEvent<HTMLFormElement>) => void;
 }) {
   const shellRef = useRef<HTMLDivElement | null>(null);
@@ -733,13 +862,6 @@ function AuthEntryPage({
               </span>
               <span>Minimalist Agent</span>
             </a>
-            <a
-              className="auth-switch"
-              href={isLogin ? "/register" : "/login"}
-              aria-label={isLogin ? "切换到申请" : "切换到登录"}
-            >
-              {isLogin ? "申请" : "登录"}
-            </a>
           </div>
 
           <div className="auth-card-header">
@@ -790,6 +912,7 @@ function AuthEntryPage({
             ) : null}
 
             {error ? <p role="alert" className="form-error">{error}</p> : null}
+            {notice ? <p role="status" className="form-success">{notice}</p> : null}
 
             <Button className="auth-submit" type="submit" aria-label={isLogin ? "登录" : "提交申请"}>
               <ArrowRight size={18} strokeWidth={2.2} />
@@ -809,6 +932,9 @@ function AuthEntryPage({
 
 export function LoginPage() {
   const [loginError, setLoginError] = useState("");
+  const registrationNotice = new URLSearchParams(window.location.search).get("registered") === "1"
+    ? "账号申请已提交，审批通过后即可登录"
+    : "";
 
   async function login(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -841,27 +967,66 @@ export function LoginPage() {
 
     const result = await response.json() as { access_token: string };
     window.localStorage.setItem(authTokenStorageKey, result.access_token);
-    window.dispatchEvent(new Event("minimalist-agent:auth-changed"));
+    notifyAuthChanged();
     window.history.pushState({}, "", "/app/conversations");
     window.dispatchEvent(new Event("minimalist-agent:navigate"));
   }
 
-  return <AuthEntryPage error={loginError} mode="login" onSubmit={login} />;
+  return (
+    <AuthEntryPage
+      error={loginError}
+      mode="login"
+      notice={loginError ? "" : registrationNotice}
+      onSubmit={login}
+    />
+  );
 }
 
 export function RegisterPage() {
-  const [isPending, setIsPending] = useState(false);
+  const [registerError, setRegisterError] = useState("");
 
-  function requestAccess(event: FormEvent<HTMLFormElement>) {
+  async function requestAccess(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
-    setIsPending(true);
+    setRegisterError("");
+
+    const form = new FormData(event.currentTarget);
+    const password = String(form.get("password") ?? "");
+    const confirmPassword = String(form.get("confirm-password") ?? "");
+
+    if (password !== confirmPassword) {
+      setRegisterError("两次输入的密码不一致");
+      return;
+    }
+
+    const email = String(form.get("email") ?? "").trim();
+    let response: Response;
+    try {
+      response = await fetch("/api/auth/register", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          username: String(form.get("username") ?? "").trim(),
+          email: email || null,
+          password,
+        }),
+      });
+    } catch {
+      setRegisterError("账号申请提交失败，请检查后端服务。");
+      return;
+    }
+
+    if (!response.ok) {
+      setRegisterError(response.status === 409 ? "账号或邮箱已存在" : "账号申请提交失败，请稍后重试");
+      return;
+    }
+
+    window.history.pushState({}, "", "/login?registered=1");
+    window.dispatchEvent(new Event("minimalist-agent:navigate"));
   }
 
-  if (isPending) {
-    return <ApprovalPendingPage />;
-  }
-
-  return <AuthEntryPage mode="register" onSubmit={requestAccess} />;
+  return <AuthEntryPage error={registerError} mode="register" onSubmit={requestAccess} />;
 }
 
 export function ApprovalPendingPage() {
@@ -913,25 +1078,132 @@ export function ApprovalPendingPage() {
 }
 
 export function AccountSettingsPage() {
+  const [currentUser, setCurrentUser] = useState<CurrentUser | null>(null);
+  const [username, setUsername] = useState("");
+  const [email, setEmail] = useState("");
+  const [statusMessage, setStatusMessage] = useState("");
+  const [error, setError] = useState("");
+  const [isSaving, setIsSaving] = useState(false);
+
+  useEffect(() => {
+    let isCurrent = true;
+
+    getCurrentUser()
+      .then((user) => {
+        if (!isCurrent) {
+          return;
+        }
+        setCurrentUser(user);
+        setUsername(user.username);
+        setEmail(user.email ?? "");
+      })
+      .catch((loadError) => {
+        if (!isCurrent) {
+          return;
+        }
+        setError(loadError instanceof Error ? loadError.message : "账号信息加载失败。");
+      });
+
+    return () => {
+      isCurrent = false;
+    };
+  }, []);
+
+  async function saveProfile(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    const nextUsername = username.trim();
+    const nextEmail = email.trim();
+    if (!nextUsername) {
+      setError("用户名不能为空。");
+      return;
+    }
+
+    setIsSaving(true);
+    setStatusMessage("");
+    setError("");
+    try {
+      const updatedUser = await updateCurrentUser({
+        username: nextUsername,
+        email: nextEmail || null,
+      });
+      setCurrentUser(updatedUser);
+      setUsername(updatedUser.username);
+      setEmail(updatedUser.email ?? "");
+      setStatusMessage("账号信息已保存。");
+    } catch (saveError) {
+      setError(saveError instanceof Error ? saveError.message : "账号信息保存失败。");
+    } finally {
+      setIsSaving(false);
+    }
+  }
+
   return (
     <main className="route-page" aria-labelledby="account-settings-title">
-      <section className="route-panel">
-        <p className="eyebrow">本地账号</p>
-        <h1 id="account-settings-title">账号设置</h1>
-        <div className="detail-grid">
-          <InfoTile title="用户名" value="oil" />
-          <InfoTile title="邮箱" value="oil@example.com" />
-          <InfoTile title="角色" value="管理员" />
-          <InfoTile title="状态" value="已启用" />
+      <section className="route-panel account-settings-panel">
+        <div className="route-header compact-account-header">
+          <div>
+            <p className="eyebrow">本地账号</p>
+            <h1 id="account-settings-title">账号设置</h1>
+          </div>
+          <a className="secondary-button" href="/app/conversations">返回工作区</a>
         </div>
-        <Button className="danger-button" type="button">退出登录</Button>
+        <div className="detail-grid">
+          <InfoTile title="用户名" value={currentUser?.username ?? "加载中"} />
+          <InfoTile title="邮箱" value={currentUser?.email ?? "未设置"} />
+          <InfoTile title="角色" value={formatUserRole(currentUser?.role)} />
+          <InfoTile title="状态" value={formatUserStatus(currentUser?.status)} />
+        </div>
+        <form className="profile-edit-form" aria-label="个人信息修改" onSubmit={saveProfile}>
+          <label>
+            <span>用户名</span>
+            <Input
+              name="username"
+              value={username}
+              onChange={(event) => setUsername(event.target.value)}
+            />
+          </label>
+          <label>
+            <span>邮箱</span>
+            <Input
+              name="email"
+              type="email"
+              value={email}
+              onChange={(event) => setEmail(event.target.value)}
+            />
+          </label>
+          {statusMessage ? <p className="form-success" role="status">{statusMessage}</p> : null}
+          {error ? <p className="form-error" role="alert">{error}</p> : null}
+          <div className="account-settings-actions">
+            <Button className="primary-button" disabled={isSaving} type="submit">
+              {isSaving ? "保存中" : "保存个人信息"}
+            </Button>
+            <Button className="danger-button" type="button" onClick={logout}>退出登录</Button>
+          </div>
+        </form>
       </section>
     </main>
   );
 }
 
+function formatUserRole(role: CurrentUser["role"] | undefined) {
+  if (role === "admin") {
+    return "管理员";
+  }
+  if (role === "user") {
+    return "成员";
+  }
+  return "加载中";
+}
+
+function formatUserStatus(status: CurrentUser["status"] | undefined) {
+  if (!status) {
+    return "加载中";
+  }
+  return statusLabel(status);
+}
+
 export function AdminPage({ route }: { route: AppRoute }) {
-  const active = adminModules.find((module) => module.route === route) ?? adminModules[0];
+  const active = adminPageModules.find((module) => module.route === route) ?? adminModules[0];
   const shellRef = useRef<HTMLElement | null>(null);
 
   useGSAP(
@@ -983,43 +1255,15 @@ export function AdminPage({ route }: { route: AppRoute }) {
       <div className="admin-route-main">
         <header className="route-header">
           <div>
-            <p className="eyebrow">生产管理后台</p>
             <h1 id="admin-page-title">{active.title}</h1>
-            <p>{adminIntro(route)}</p>
+            <p className="compact-route-meta">{active.meta}</p>
           </div>
-          <a className="secondary-button" href="/app/conversations">返回工作区</a>
+          <a className="secondary-button admin-exit-link" href="/app/conversations">工作区</a>
         </header>
         {adminContent(route)}
       </div>
     </main>
   );
-}
-
-function adminIntro(route: AppRoute) {
-  switch (route) {
-    case "admin-overview":
-      return "聚合待处理事项、运行风险和配置边界，不替代业务分析看板。";
-    case "account-approval":
-      return "在账号进入工作区前完成本地账号的批准、拒绝或禁用。";
-    case "agent-lifecycle":
-      return "管理智能体说明、模型策略、过程可见性和能力授权边界。";
-    case "model-configurations":
-      return "维护模型提供商、凭据引用、端点和默认参数。";
-    case "mcp-servers":
-      return "登记远程 MCP 服务器、查看工具发现结果，并按智能体授权工具。";
-    case "search-provider":
-      return "配置搜索能力背后的提供方，并与页面读取能力保持边界清晰。";
-    case "page-read-provider":
-      return "配置已知 URL 的页面读取、抽取限制和域名策略。";
-    case "sandbox-status":
-      return "查看沙箱能力状态、智能体授权和近期沙箱调用。";
-    case "run-audit":
-      return "审计智能体运行状态、工具调用、产物、失败详情和保留策略。";
-    case "full-trace":
-      return "查看单次智能体运行的管理员诊断详情。";
-    default:
-      return "";
-  }
 }
 
 function adminContent(route: AppRoute) {
@@ -1099,6 +1343,7 @@ function AdminOverviewPanel() {
   const providerReady = Boolean(overview?.searchProviderReady && overview?.pageReadProviderReady);
   const tasks: AdminOverviewTask[] = [
     {
+      href: "/admin/account-approval",
       title: overview && overview.pendingAccounts > 0
         ? `审批 ${overview.pendingAccounts} 个待审批账号`
         : "没有待审批账号",
@@ -1106,11 +1351,13 @@ function AdminOverviewPanel() {
       status: overview && overview.pendingAccounts > 0 ? "pending" : "ready",
     },
     {
+      href: providerReady ? "/admin/search-provider" : "/admin/search-provider",
       title: providerReady ? "搜索与页面读取提供方可用" : "检查能力提供方配置",
       meta: "搜索提供方 / 页面读取提供方",
       status: providerReady ? "ready" : "warning",
     },
     {
+      href: "/admin/run-audit",
       title: overview && overview.failedRuns > 0
         ? `复核 ${overview.failedRuns} 条失败运行`
         : "近期没有失败运行",
@@ -1135,39 +1382,132 @@ function AdminOverviewPanel() {
 }
 
 function TaskList({ tasks }: { tasks: AdminOverviewTask[] }) {
+  const actionableTasks = tasks.filter((task) => task.status !== "ready");
+
   return (
     <Card className="route-panel">
       <CardHeader>
         <CardDescription>治理待办</CardDescription>
-        <CardTitle>需要处理</CardTitle>
+        <CardTitle>{actionableTasks.length > 0 ? "需要处理" : "暂无待处理风险"}</CardTitle>
       </CardHeader>
       <CardContent className="flex flex-col gap-3">
-        {tasks.map((task) => (
-          <TaskRow key={`${task.meta}-${task.title}`} title={task.title} meta={task.meta} status={task.status} />
-        ))}
+        {actionableTasks.length > 0 ? (
+          actionableTasks.map((task) => (
+            <TaskRow
+              href={task.href}
+              key={`${task.meta}-${task.title}`}
+              title={task.title}
+              meta={task.meta}
+              status={task.status}
+            />
+          ))
+        ) : (
+          <EmptyStateAction
+            title="所有治理入口当前正常"
+            description="待审批账号、能力提供方和失败运行都没有需要立即处理的事项。"
+            href="/admin/run-audit"
+            actionLabel="查看运行审计"
+          />
+        )}
       </CardContent>
     </Card>
   );
 }
 
-function TaskRow({ title, meta, status }: { title: string; meta: string; status: string }) {
+function TaskRow({
+  href,
+  title,
+  meta,
+  status,
+}: {
+  href: string;
+  title: string;
+  meta: string;
+  status: string;
+}) {
   return (
-    <Card className="task-row">
+    <a className="task-row" href={href}>
       <div>
         <strong>{title}</strong>
         <p>{meta}</p>
       </div>
-      <Badge variant={taskBadgeVariant(status)}>{taskStatusLabel(status)}</Badge>
-    </Card>
+      <span className="task-row-action">
+        <Badge variant={taskBadgeVariant(status)}>{taskStatusLabel(status)}</Badge>
+        <ArrowRight aria-hidden="true" />
+      </span>
+    </a>
+  );
+}
+
+function EmptyStateAction({
+  actionLabel,
+  description,
+  href,
+  onAction,
+  title,
+}: {
+  actionLabel: string;
+  description: string;
+  href?: string;
+  onAction?: () => void;
+  title: string;
+}) {
+  return (
+    <div className="empty-state action-empty-state">
+      <div>
+        <strong>{title}</strong>
+        <p>{description}</p>
+      </div>
+      {onAction ? (
+        <Button className="secondary-button" type="button" onClick={onAction}>{actionLabel}</Button>
+      ) : href ? (
+        <a className="secondary-button" href={href}>{actionLabel}</a>
+      ) : (
+        <Button className="secondary-button" type="button" disabled>{actionLabel}</Button>
+      )}
+    </div>
+  );
+}
+
+function AdminDialog({
+  children,
+  eyebrow,
+  onClose,
+  title,
+}: {
+  children: ReactNode;
+  eyebrow?: string;
+  onClose: () => void;
+  title: string;
+}) {
+  return (
+    <div className="admin-dialog-backdrop">
+      <section className="admin-dialog" role="dialog" aria-modal="true" aria-label={title}>
+        <div className="panel-head compact-panel-head">
+          <div>
+            {eyebrow ? <p className="eyebrow">{eyebrow}</p> : null}
+            <h2>{title}</h2>
+          </div>
+          <Button className="secondary-button admin-dialog-close" type="button" onClick={onClose}>
+            关闭
+          </Button>
+        </div>
+        {children}
+      </section>
+    </div>
   );
 }
 
 function AccountApprovalPanel() {
   const [accounts, setAccounts] = useState<LocalAccount[]>([]);
   const [loadError, setLoadError] = useState("");
+  const [saveStatus, setSaveStatus] = useState("");
   const [isLoading, setIsLoading] = useState(true);
   const [statusFilter, setStatusFilter] = useState<LocalAccountStatus>("pending");
   const [selectedUsername, setSelectedUsername] = useState<string | null>(null);
+  const [accountActionReason, setAccountActionReason] = useState("");
+  const [accountAuditEvents, setAccountAuditEvents] = useState<string[]>([]);
+  const [accountAuditRefreshKey, setAccountAuditRefreshKey] = useState(0);
 
   useEffect(() => {
     let isCurrent = true;
@@ -1210,8 +1550,7 @@ function AccountApprovalPanel() {
     () => accounts.filter((account) => account.status === statusFilter),
     [accounts, statusFilter],
   );
-  const selectedAccount =
-    accounts.find((account) => account.username === selectedUsername) ?? filteredAccounts[0] ?? null;
+  const selectedAccount = filteredAccounts.find((account) => account.username === selectedUsername) ?? null;
   const accountCounts = useMemo(
     () => ({
       pending: accounts.filter((account) => account.status === "pending").length,
@@ -1222,10 +1561,53 @@ function AccountApprovalPanel() {
     [accounts],
   );
 
+  useEffect(() => {
+    if (!selectedAccount) {
+      setAccountAuditEvents([]);
+      return;
+    }
+    let isCurrent = true;
+    adminFetch<ApiAccountAuditEvent[]>(`/api/admin/accounts/${selectedAccount.id}/audit-events`)
+      .then((events) => {
+        if (!isCurrent) {
+          return;
+        }
+        setAccountAuditEvents(events.length > 0
+          ? events.map(accountAuditLine).reverse()
+          : selectedAccount.history);
+      })
+      .catch(() => {
+        if (isCurrent) {
+          setAccountAuditEvents(selectedAccount.history);
+        }
+      });
+    return () => {
+      isCurrent = false;
+    };
+  }, [selectedAccount?.id, selectedAccount?.lastAction, accountAuditRefreshKey]);
+
+  function updateMappedAccount(updated: ApiLocalAccount) {
+    const mappedAccount = mapLocalAccount(updated);
+    setAccounts((currentAccounts) =>
+      currentAccounts.map((currentAccount) =>
+        currentAccount.id === mappedAccount.id
+          ? {
+              ...mappedAccount,
+              history: [mappedAccount.lastAction, ...currentAccount.history],
+            }
+          : currentAccount,
+      ),
+    );
+    setSelectedUsername(mappedAccount.username);
+    setStatusFilter(mappedAccount.status);
+    setAccountAuditRefreshKey((currentKey) => currentKey + 1);
+    return mappedAccount;
+  }
+
   async function changeStatus(account: LocalAccount, status: LocalAccountStatus) {
     const actionPath = {
       disabled: "disable",
-      enabled: "approve",
+      enabled: account.status === "pending" ? "approve" : "enable",
       pending: "",
       rejected: "reject",
     }[status];
@@ -1233,26 +1615,45 @@ function AccountApprovalPanel() {
       return;
     }
 
+    const reason = accountActionReason.trim();
+    if ((status === "rejected" || status === "disabled") && !reason) {
+      setSaveStatus("请填写原因。");
+      return;
+    }
+
     setLoadError("");
+    setSaveStatus("");
     try {
       const updated = await adminFetch<ApiLocalAccount>(`/api/admin/accounts/${account.id}/${actionPath}`, {
         method: "POST",
+        body: JSON.stringify({ reason }),
       });
-      const mappedAccount = mapLocalAccount(updated);
-      setAccounts((currentAccounts) =>
-        currentAccounts.map((currentAccount) =>
-          currentAccount.id === mappedAccount.id
-            ? {
-                ...mappedAccount,
-                history: [mappedAccount.lastAction, ...currentAccount.history],
-              }
-            : currentAccount,
-        ),
-      );
-      setSelectedUsername(mappedAccount.username);
-      setStatusFilter(mappedAccount.status);
+      updateMappedAccount(updated);
+      setAccountActionReason("");
+      setSaveStatus("账号状态已更新。");
     } catch {
       setLoadError("账号状态更新失败，请稍后重试。");
+    }
+  }
+
+  async function updateAccountNote(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    if (!selectedAccount) {
+      return;
+    }
+    const formData = new FormData(event.currentTarget);
+    setSaveStatus("");
+    try {
+      const updated = await adminFetch<ApiLocalAccount>(`/api/admin/accounts/${selectedAccount.id}`, {
+        method: "PATCH",
+        body: JSON.stringify({
+          note: String(formData.get("note") ?? ""),
+        }),
+      });
+      updateMappedAccount(updated);
+      setSaveStatus("管理员备注已保存。");
+    } catch {
+      setSaveStatus("管理员备注保存失败。");
     }
   }
 
@@ -1287,9 +1688,10 @@ function AccountApprovalPanel() {
         </Tabs>
         <p className="inline-note">当前管理员账号不能在此页面禁用。</p>
       </div>
+      {saveStatus ? <p className="inline-note">{saveStatus}</p> : null}
       {isLoading ? <p className="empty-state">正在加载本地账号...</p> : null}
       {loadError ? <p className="empty-state danger-state" role="alert">{loadError}</p> : null}
-      <div className="account-approval-layout">
+      <div className={selectedAccount ? "account-approval-layout" : "account-approval-layout empty-detail"}>
         <div className="route-table-wrap">
           <table className="route-table" aria-label="本地账号列表">
             <thead>
@@ -1333,6 +1735,11 @@ function AccountApprovalPanel() {
                           禁用
                         </Button>
                       ) : null}
+                      {(account.status === "disabled" || account.status === "rejected") ? (
+                        <Button className="secondary-button" type="button" onClick={() => changeStatus(account, "enabled")}>
+                          重新启用
+                        </Button>
+                      ) : null}
                     </div>
                   </td>
                 </tr>
@@ -1340,11 +1747,18 @@ function AccountApprovalPanel() {
             </tbody>
           </table>
           {filteredAccounts.length === 0 ? (
-            <p className="empty-state">此状态下暂无本地账号。</p>
+            <EmptyStateAction
+              title={`暂无${statusLabel(statusFilter)}账号`}
+              description={statusFilter === "pending"
+                ? "新的账号申请会出现在这里。现在无需处理审批。"
+                : "切换到其他状态可以查看历史账号。"}
+              onAction={() => switchStatus("pending")}
+              actionLabel="查看待审批"
+            />
           ) : null}
         </div>
-        <Card className="account-detail-panel" aria-label="本地账号详情">
-          {selectedAccount ? (
+        {selectedAccount ? (
+          <Card className="account-detail-panel" aria-label="本地账号详情">
             <CardContent className="flex flex-col gap-4">
               <div>
                 <p className="eyebrow">本地账号</p>
@@ -1353,41 +1767,66 @@ function AccountApprovalPanel() {
               </div>
               <Badge variant={accountBadgeVariant(selectedAccount.status)}>{statusLabel(selectedAccount.status)}</Badge>
               <p>{selectedAccount.riskNote}</p>
+              {selectedAccount.statusReason ? (
+                <p className="inline-note">原因：{selectedAccount.statusReason}</p>
+              ) : null}
+              <label>
+                <span>操作原因</span>
+                <Textarea
+                  value={accountActionReason}
+                  onChange={(event) => setAccountActionReason(event.currentTarget.value)}
+                  placeholder="拒绝或禁用时必填"
+                />
+              </label>
               <div className="stack">
                 <h3>审批记录</h3>
                 <ul className="plain-list">
-                  {selectedAccount.history.map((entry) => (
+                  {(accountAuditEvents.length > 0 ? accountAuditEvents : selectedAccount.history).map((entry) => (
                     <li key={entry}>{entry}</li>
                   ))}
                 </ul>
               </div>
-              <label>
-                <span>管理员备注</span>
-                <Textarea placeholder="仅管理员可见" />
-              </label>
+              <form className="admin-inline-form account-note-form" aria-label="保存管理员备注" onSubmit={updateAccountNote}>
+                <label>
+                  <span>管理员备注</span>
+                  <Textarea name="note" placeholder="仅管理员可见" defaultValue={selectedAccount.note} />
+                </label>
+                <Button className="secondary-button" type="submit">保存备注</Button>
+              </form>
             </CardContent>
-          ) : (
-            <CardContent>
-              <p className="empty-state">选择一个本地账号查看详情。</p>
-            </CardContent>
-          )}
-        </Card>
+          </Card>
+        ) : null}
       </div>
     </section>
   );
 }
 
-function accountStatusAction(status: LocalAccountStatus) {
+function accountStatusAction(status: LocalAccountStatus, reason = "") {
+  const suffix = reason ? `：${reason}` : "";
   switch (status) {
     case "enabled":
-      return "管理员已批准";
+      return `管理员已批准${suffix}`;
     case "rejected":
-      return "管理员已拒绝";
+      return `管理员已拒绝${suffix}`;
     case "disabled":
-      return "管理员已禁用";
+      return `管理员已禁用${suffix}`;
     case "pending":
       return "等待管理员审核";
   }
+}
+
+function accountAuditLine(event: ApiAccountAuditEvent) {
+  const label = {
+    approved: "批准",
+    bootstrapped: "初始化管理员",
+    disabled: "禁用",
+    enabled: "重新启用",
+    registered: "注册",
+    rejected: "拒绝",
+    updated: "更新",
+  }[event.action];
+  const reason = event.reason ? `：${event.reason}` : "";
+  return `${compactTimestamp(event.created_at)} ${label}${reason}`;
 }
 
 function processVisibilityLabel(visibility: ApiAgent["process_visibility"]) {
@@ -1435,34 +1874,64 @@ function statusLabel(status: LocalAccountStatus) {
   }
 }
 
+function modelHealthLabel(status: ModelHealthStatus) {
+  switch (status) {
+    case "healthy":
+      return "健康";
+    case "unhealthy":
+      return "异常";
+    case "not_checked":
+      return "未检查";
+  }
+}
+
 function AgentLifecyclePanel() {
   const [agents, setAgents] = useState<AgentLifecycleRecord[]>([]);
+  const [modelConfigurations, setModelConfigurations] = useState<ModelConfigurationRecord[]>([]);
   const [loadError, setLoadError] = useState("");
+  const [saveStatus, setSaveStatus] = useState("");
+  const [agentReadiness, setAgentReadiness] = useState<ApiAgentReadiness | null>(null);
   const [isLoading, setIsLoading] = useState(true);
   const [selectedAgentId, setSelectedAgentId] = useState("");
   const [isCreateDraftOpen, setIsCreateDraftOpen] = useState(false);
+  const [newAgentProcessVisibility, setNewAgentProcessVisibility] = useState<ApiAgent["process_visibility"]>("standard");
+  const [newAgentDefaultModelId, setNewAgentDefaultModelId] = useState("");
   const selectedAgent =
     agents.find((agent) => agent.id === selectedAgentId) ?? agents[0] ?? null;
+
+  useEffect(() => {
+    setAgentReadiness(null);
+  }, [selectedAgent?.id]);
 
   useEffect(() => {
     let isCurrent = true;
     setIsLoading(true);
     setLoadError("");
 
-    adminFetch<ApiAgent[]>("/api/admin/agents")
-      .then((result) => {
+    Promise.all([
+      adminFetch<ApiAgent[]>("/api/admin/agents"),
+      adminFetch<ApiModelConfiguration[]>("/api/admin/model-configurations"),
+      adminFetch<ApiModelProvider[]>("/api/admin/model-providers"),
+    ])
+      .then(([agentResult, modelResult, providerResult]) => {
         if (!isCurrent) {
           return;
         }
-        const mappedAgents = result.map(mapAgent);
+        const mappedAgents = agentResult.map(mapAgent);
+        const mappedConfigurations = modelResult.map((configuration) =>
+          mapModelConfiguration(configuration, providerResult),
+        );
         setAgents(mappedAgents);
+        setModelConfigurations(mappedConfigurations);
         setSelectedAgentId(mappedAgents[0]?.id ?? "");
+        setNewAgentDefaultModelId(String(mappedConfigurations[0]?.id ?? ""));
       })
       .catch(() => {
         if (!isCurrent) {
           return;
         }
         setAgents([]);
+        setModelConfigurations([]);
         setSelectedAgentId("");
         setLoadError("无法加载智能体列表，请检查管理员权限或后端服务。");
       })
@@ -1496,6 +1965,149 @@ function AgentLifecyclePanel() {
     }
   }
 
+  async function checkAgentReadiness() {
+    if (!selectedAgent) {
+      return;
+    }
+    setLoadError("");
+    setSaveStatus("");
+    try {
+      const result = await adminFetch<ApiAgentReadiness>(
+        `/api/admin/agents/${selectedAgent.id}/readiness-check`,
+        { method: "POST" },
+      );
+      setAgentReadiness(result);
+      setSaveStatus(result.ready ? "智能体已就绪。" : "智能体未就绪。");
+    } catch {
+      setSaveStatus("智能体就绪检查失败。");
+    }
+  }
+
+  function checkedModelIds(formData: FormData, fallbackDefaultModelId: number | null) {
+    const selectedIds = formData
+      .getAll("allowedModelIds")
+      .map((value) => Number.parseInt(String(value), 10))
+      .filter(Number.isFinite);
+    if (fallbackDefaultModelId !== null && !selectedIds.includes(fallbackDefaultModelId)) {
+      selectedIds.unshift(fallbackDefaultModelId);
+    }
+    return selectedIds;
+  }
+
+  async function updateAgentPolicy(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    if (!selectedAgent) {
+      return;
+    }
+    const formData = new FormData(event.currentTarget);
+    const defaultModelRaw = String(formData.get("defaultModelId") ?? "");
+    const defaultModelId = defaultModelRaw ? Number.parseInt(defaultModelRaw, 10) : null;
+    const capabilityPolicy = {
+      mcp_server_ids: selectedAgent.capabilityPolicyValue.mcp_server_ids,
+      sandbox_enabled: formData.get("sandboxEnabled") === "on",
+      search_enabled: formData.get("searchEnabled") === "on",
+      page_read_enabled: formData.get("pageReadEnabled") === "on",
+    };
+
+    setLoadError("");
+    setSaveStatus("");
+    try {
+      const updated = await adminFetch<ApiAgent>(`/api/admin/agents/${selectedAgent.id}`, {
+        method: "PATCH",
+        body: JSON.stringify({
+          default_model_configuration_id: defaultModelId,
+          allowed_model_configuration_ids: checkedModelIds(formData, defaultModelId),
+          process_visibility: String(formData.get("processVisibility") ?? selectedAgent.processVisibilityValue),
+          capability_policy: capabilityPolicy,
+        }),
+      });
+      const mappedAgent = mapAgent(updated);
+      setAgents((currentAgents) =>
+        currentAgents.map((agent) => agent.id === mappedAgent.id ? mappedAgent : agent),
+      );
+      setSelectedAgentId(mappedAgent.id);
+      setSaveStatus("智能体策略已保存。");
+    } catch {
+      setSaveStatus("智能体策略保存失败，请检查模型绑定或管理员权限。");
+    }
+  }
+
+  async function updateAgentInstruction(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    if (!selectedAgent) {
+      return;
+    }
+    const formData = new FormData(event.currentTarget);
+    const instruction = String(formData.get("instruction") ?? "").trim();
+    if (!instruction) {
+      setSaveStatus("智能体说明不能为空。");
+      return;
+    }
+
+    setLoadError("");
+    setSaveStatus("");
+    try {
+      const updated = await adminFetch<ApiAgent>(`/api/admin/agents/${selectedAgent.id}`, {
+        method: "PATCH",
+        body: JSON.stringify({
+          description: String(formData.get("description") ?? "").trim(),
+          instruction,
+        }),
+      });
+      const mappedAgent = mapAgent(updated);
+      setAgents((currentAgents) =>
+        currentAgents.map((agent) => agent.id === mappedAgent.id ? mappedAgent : agent),
+      );
+      setSelectedAgentId(mappedAgent.id);
+      setSaveStatus("智能体说明已保存。");
+    } catch {
+      setSaveStatus("智能体说明保存失败。");
+    }
+  }
+
+  async function createAgent(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    const formData = new FormData(event.currentTarget);
+    const name = String(formData.get("name") ?? "").trim();
+    const instruction = String(formData.get("instruction") ?? "").trim();
+    if (!name || !instruction) {
+      setSaveStatus("请填写智能体名称和说明。");
+      return;
+    }
+
+    const defaultModelRaw = String(formData.get("defaultModelId") ?? "");
+    const defaultModelId = defaultModelRaw ? Number.parseInt(defaultModelRaw, 10) : null;
+    setLoadError("");
+    setSaveStatus("");
+    try {
+      const created = await adminFetch<ApiAgent>("/api/admin/agents", {
+        method: "POST",
+        body: JSON.stringify({
+          name,
+          description: String(formData.get("description") ?? "").trim(),
+          icon: String(formData.get("icon") ?? "agent").trim() || "agent",
+          instruction,
+          process_visibility: String(formData.get("processVisibility") ?? "standard"),
+          default_model_configuration_id: defaultModelId,
+          allowed_model_configuration_ids: checkedModelIds(formData, defaultModelId),
+          capability_policy: {
+            mcp_server_ids: [],
+            sandbox_enabled: formData.get("sandboxEnabled") === "on",
+            search_enabled: formData.get("searchEnabled") === "on",
+            page_read_enabled: formData.get("pageReadEnabled") === "on",
+          },
+        }),
+      });
+      const mappedAgent = mapAgent(created);
+      setAgents((currentAgents) => [...currentAgents, mappedAgent]);
+      setSelectedAgentId(mappedAgent.id);
+      setIsCreateDraftOpen(false);
+      setSaveStatus("智能体已创建。");
+    } catch {
+      setSaveStatus("智能体创建失败，请检查后端返回或管理员权限。");
+    }
+  }
+
   return (
     <section className="route-panel" aria-label="智能体生命周期">
       <CopilotAgentLifecycleBridge
@@ -1505,118 +2117,291 @@ function AgentLifecyclePanel() {
         setIsCreateDraftOpen={setIsCreateDraftOpen}
         setSelectedAgentId={setSelectedAgentId}
       />
-      <div className="button-row">
+      <div className="panel-head compact-panel-head">
+        <div>
+          <p className="eyebrow">智能体清单</p>
+          <h2>先选智能体，再调整策略</h2>
+          {saveStatus ? <p className="inline-note">{saveStatus}</p> : null}
+        </div>
         <Button className="primary-button" type="button" onClick={() => setIsCreateDraftOpen(true)}>创建智能体</Button>
-        <Button className="secondary-button" type="button" disabled={!selectedAgent || selectedAgent.status !== "disabled"} onClick={() => setAgentStatus("enable")}>
-          启用智能体
-        </Button>
-        <Button className="secondary-button" type="button" disabled={!selectedAgent || selectedAgent.status !== "enabled"} onClick={() => setAgentStatus("disable")}>
-          停用智能体
-        </Button>
-        <Button className="secondary-button" type="button" disabled={!selectedAgent || selectedAgent.status === "retired"} onClick={() => setAgentStatus("retire")}>
-          归档智能体
-        </Button>
       </div>
       {isLoading ? <p className="empty-state">正在加载智能体...</p> : null}
       {loadError ? <p className="empty-state danger-state" role="alert">{loadError}</p> : null}
-      <div className="route-table-wrap">
-        <table className="route-table" aria-label="智能体列表">
-          <thead>
-            <tr>
-              <th>名称</th>
-              <th>状态</th>
-              <th>默认模型</th>
-              <th>可选模型数</th>
-              <th>能力摘要</th>
-              <th>过程可见性</th>
-              <th>操作</th>
-            </tr>
-          </thead>
-          <tbody>
-            {agents.map((agent) => (
-              <tr className={agent.id === selectedAgent?.id ? "selected-row" : ""} key={agent.id}>
-                <td>{agent.name}</td>
-                <td>{lifecycleStatusLabel(agent.status)}</td>
-                <td>{agent.defaultModel}</td>
-                <td>{agent.allowedModels.length}</td>
-                <td>{agent.capabilitySummary}</td>
-                <td>{agent.processVisibility}</td>
-                <td>
-                  <Button className="secondary-button" type="button" onClick={() => setSelectedAgentId(agent.id)}>
-                    详情
-                  </Button>
-                </td>
+      <div className="admin-master-detail">
+        <div className="route-table-wrap">
+          <table className="route-table" aria-label="智能体列表">
+            <thead>
+              <tr>
+                <th>名称</th>
+                <th>状态</th>
+                <th>默认模型</th>
+                <th>可选模型数</th>
+                <th>能力摘要</th>
+                <th>过程可见性</th>
+                <th>操作</th>
               </tr>
-            ))}
-          </tbody>
-        </table>
-        {!isLoading && agents.length === 0 ? (
-          <p className="empty-state">暂无智能体。</p>
+            </thead>
+            <tbody>
+              {agents.map((agent) => (
+                <tr className={agent.id === selectedAgent?.id ? "selected-row" : ""} key={agent.id}>
+                  <td>{agent.name}</td>
+                  <td>{lifecycleStatusLabel(agent.status)}</td>
+                  <td>{agent.defaultModel}</td>
+                  <td>{agent.allowedModels.length}</td>
+                  <td>{agent.capabilitySummary}</td>
+                  <td>{agent.processVisibility}</td>
+                  <td>
+                    <Button className="secondary-button" type="button" onClick={() => setSelectedAgentId(agent.id)}>
+                      详情
+                    </Button>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+          {!isLoading && agents.length === 0 ? (
+            <EmptyStateAction
+              title="暂无智能体"
+              description="创建后才能配置模型策略、能力授权和过程可见性。"
+              onAction={() => setIsCreateDraftOpen(true)}
+              actionLabel="创建智能体"
+            />
+          ) : null}
+        </div>
+        {selectedAgent ? (
+          <aside className="context-panel" aria-label="智能体详情" role="region">
+            <div className="panel-head">
+              <div>
+                <p className="eyebrow">智能体 {selectedAgent.avatar}</p>
+                <h2>{selectedAgent.name}</h2>
+                <p>{selectedAgent.description}</p>
+              </div>
+              <Badge variant={accountBadgeVariant(selectedAgent.status)}>{lifecycleStatusLabel(selectedAgent.status)}</Badge>
+            </div>
+            <div className="button-row compact-actions">
+              <Button aria-label="启用智能体" className="secondary-button" type="button" disabled={selectedAgent.status !== "disabled"} onClick={() => setAgentStatus("enable")}>
+                启用
+              </Button>
+              <Button aria-label="停用智能体" className="secondary-button" type="button" disabled={selectedAgent.status !== "enabled"} onClick={() => setAgentStatus("disable")}>
+                停用
+              </Button>
+              <Button aria-label="归档智能体" className="secondary-button" type="button" disabled={selectedAgent.status === "retired"} onClick={() => setAgentStatus("retire")}>
+                归档
+              </Button>
+              <Button aria-label="检查智能体就绪状态" className="secondary-button" type="button" onClick={checkAgentReadiness}>
+                就绪检查
+              </Button>
+            </div>
+            {agentReadiness ? (
+              <section className="boundary-list readiness-list" aria-label="智能体就绪结果">
+                <h3>{agentReadiness.ready ? "已就绪" : "未就绪"}</h3>
+                {agentReadiness.issues.length > 0
+                  ? agentReadiness.issues.map((issue) => <p key={issue}>{issue}</p>)
+                  : <p>模型和能力引用可用。</p>}
+              </section>
+            ) : null}
+            <Tabs defaultValue="policy">
+              <TabsList aria-label="智能体详情分组">
+                <TabsTrigger value="policy">策略</TabsTrigger>
+                <TabsTrigger value="instruction">说明</TabsTrigger>
+                <TabsTrigger value="mcp">MCP</TabsTrigger>
+              </TabsList>
+              <TabsContent value="policy">
+                <section className="detail-grid compact-detail-grid">
+                  <InfoTile title="过程可见性" value={selectedAgent.processVisibility} icon={FileSearch} />
+                  <InfoTile title="默认模型" value={selectedAgent.defaultModel} icon={Settings2} />
+                  <InfoTile title="可选模型" value={selectedAgent.allowedModels.join(", ")} icon={Bot} />
+                  <InfoTile title="能力规则" value={selectedAgent.capabilityPolicy.length.toString()} icon={ShieldCheck} />
+                </section>
+                <form className="admin-inline-form" aria-label="编辑智能体策略" key={selectedAgent.id} onSubmit={updateAgentPolicy}>
+                  <label>
+                    <span>默认模型</span>
+                    <Select name="defaultModelId" defaultValue={String(selectedAgent.defaultModelConfigurationId ?? "")}>
+                      <SelectTrigger>
+                        <SelectValue placeholder="未设置" />
+                      </SelectTrigger>
+                      <SelectContent>
+                        {modelConfigurations.map((configuration) => (
+                          <SelectItem key={configuration.id} value={configuration.id}>
+                            {configuration.provider} · {configuration.model}
+                          </SelectItem>
+                        ))}
+                      </SelectContent>
+                    </Select>
+                  </label>
+                  <fieldset className="checkbox-grid">
+                    <legend>允许模型</legend>
+                    {modelConfigurations.map((configuration) => (
+                      <label className="checkbox-row" key={configuration.id}>
+                        <input
+                          defaultChecked={selectedAgent.allowedModelConfigurationIds.includes(Number(configuration.id))}
+                          name="allowedModelIds"
+                          type="checkbox"
+                          value={configuration.id}
+                        />
+                        <span>{configuration.provider} · {configuration.model}</span>
+                      </label>
+                    ))}
+                  </fieldset>
+                  <label>
+                    <span>过程可见性</span>
+                    <Select name="processVisibility" defaultValue={selectedAgent.processVisibilityValue}>
+                      <SelectTrigger>
+                        <SelectValue placeholder="标准" />
+                      </SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value="minimal">最小</SelectItem>
+                        <SelectItem value="standard">标准</SelectItem>
+                        <SelectItem value="verbose">详细</SelectItem>
+                      </SelectContent>
+                    </Select>
+                  </label>
+                  <fieldset className="checkbox-grid">
+                    <legend>能力策略</legend>
+                    <label className="checkbox-row">
+                      <input defaultChecked={selectedAgent.capabilityPolicyValue.search_enabled} name="searchEnabled" type="checkbox" />
+                      <span>搜索</span>
+                    </label>
+                    <label className="checkbox-row">
+                      <input defaultChecked={selectedAgent.capabilityPolicyValue.page_read_enabled} name="pageReadEnabled" type="checkbox" />
+                      <span>页面读取</span>
+                    </label>
+                    <label className="checkbox-row">
+                      <input defaultChecked={selectedAgent.capabilityPolicyValue.sandbox_enabled} name="sandboxEnabled" type="checkbox" />
+                      <span>沙箱</span>
+                    </label>
+                  </fieldset>
+                  <Button className="primary-button" type="submit">保存策略</Button>
+                </form>
+                <section className="boundary-list">
+                  <h3>能力策略</h3>
+                  {selectedAgent.capabilityPolicy.map((policy) => <p key={policy}>{policy}</p>)}
+                </section>
+              </TabsContent>
+              <TabsContent value="instruction">
+                <form className="admin-inline-form" aria-label="编辑智能体说明" key={`${selectedAgent.id}-instruction`} onSubmit={updateAgentInstruction}>
+                  <label>
+                    <span>描述</span>
+                    <Input name="description" defaultValue={selectedAgent.description} />
+                  </label>
+                  <label>
+                    <span>智能体说明</span>
+                    <Textarea name="instruction" defaultValue={selectedAgent.instruction} required />
+                  </label>
+                  <Button className="primary-button" type="submit">保存说明</Button>
+                </form>
+              </TabsContent>
+              <TabsContent value="mcp">
+                <section className="boundary-list">
+                  <h3>MCP 工具授权</h3>
+                  {selectedAgent.mcpToolAuthorization.map((tool) => <p key={tool}>{tool}</p>)}
+                </section>
+              </TabsContent>
+            </Tabs>
+          </aside>
         ) : null}
       </div>
-      {selectedAgent ? (
-        <section className="state-panel" aria-label="智能体详情">
-          <div className="panel-head">
-            <div>
-              <p className="eyebrow">智能体 {selectedAgent.avatar}</p>
-              <h2>{selectedAgent.name}</h2>
-              <p>{selectedAgent.description}</p>
-            </div>
-            <Badge variant={accountBadgeVariant(selectedAgent.status)}>{lifecycleStatusLabel(selectedAgent.status)}</Badge>
-          </div>
-          <section className="boundary-list">
-            <h3>智能体说明</h3>
-            <p>{selectedAgent.instruction}</p>
-            <p>新智能体运行会记录当前说明快照。</p>
-          </section>
-          <section className="detail-grid">
-            <InfoTile title="过程可见性策略" value={selectedAgent.processVisibility} icon={FileSearch} />
-            <InfoTile title="默认模型配置" value={selectedAgent.defaultModel} icon={Settings2} />
-            <InfoTile title="可选模型" value={selectedAgent.allowedModels.join(", ")} icon={Bot} />
-            <InfoTile title="能力规则数" value={selectedAgent.capabilityPolicy.length.toString()} icon={ShieldCheck} />
-          </section>
-          <section className="boundary-list">
-            <h3>智能体能力策略</h3>
-            {selectedAgent.capabilityPolicy.map((policy) => <p key={policy}>{policy}</p>)}
-          </section>
-          <section className="boundary-list">
-            <h3>MCP 工具授权</h3>
-            {selectedAgent.mcpToolAuthorization.map((tool) => <p key={tool}>{tool}</p>)}
-          </section>
-        </section>
-      ) : null}
       {isCreateDraftOpen ? (
-        <section className="state-panel" aria-label="创建智能体草稿">
-          <p className="eyebrow">本地草稿</p>
-          <h2>创建智能体</h2>
-          <p>仅创建本地草稿，真正的智能体必须由后端治理流程创建。</p>
-          <div className="form-grid">
-            <label>
-              智能体名称
-              <Input placeholder="支持智能体" />
-            </label>
-            <label>
-              描述
-              <Input placeholder="说明这个智能体的职责边界" />
-            </label>
-            <label>
-              智能体说明
-              <Textarea placeholder="草拟智能体说明" />
-            </label>
-          </div>
-        </section>
+        <AdminDialog eyebrow="后端创建" title="创建智能体" onClose={() => setIsCreateDraftOpen(false)}>
+          <form className="admin-dialog-form" aria-label="创建智能体" onSubmit={createAgent}>
+            <div className="form-grid">
+              <label>
+                智能体名称
+                <Input name="name" placeholder="支持智能体" required />
+              </label>
+              <label>
+                描述
+                <Input name="description" placeholder="说明这个智能体的职责边界" />
+              </label>
+              <label>
+                图标标识
+                <Input name="icon" placeholder="agent" defaultValue="agent" />
+              </label>
+              <label>
+                过程可见性
+                <input type="hidden" name="processVisibility" value={newAgentProcessVisibility} />
+                <Select value={newAgentProcessVisibility} onValueChange={(value) => setNewAgentProcessVisibility(value as ApiAgent["process_visibility"])}>
+                  <SelectTrigger>
+                    <SelectValue placeholder="标准" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="minimal">最小</SelectItem>
+                    <SelectItem value="standard">标准</SelectItem>
+                    <SelectItem value="verbose">详细</SelectItem>
+                  </SelectContent>
+                </Select>
+              </label>
+              <label>
+                默认模型
+                <input type="hidden" name="defaultModelId" value={newAgentDefaultModelId} />
+                <Select value={newAgentDefaultModelId} onValueChange={setNewAgentDefaultModelId}>
+                  <SelectTrigger>
+                    <SelectValue placeholder="未设置" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {modelConfigurations.map((configuration) => (
+                      <SelectItem key={configuration.id} value={configuration.id}>
+                        {configuration.provider} · {configuration.model}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </label>
+              <fieldset className="checkbox-grid form-grid-span">
+                <legend>允许模型</legend>
+                {modelConfigurations.map((configuration) => (
+                  <label className="checkbox-row" key={configuration.id}>
+                    <input
+                      defaultChecked={configuration.id === newAgentDefaultModelId}
+                      name="allowedModelIds"
+                      type="checkbox"
+                      value={configuration.id}
+                    />
+                    <span>{configuration.provider} · {configuration.model}</span>
+                  </label>
+                ))}
+              </fieldset>
+              <fieldset className="checkbox-grid form-grid-span">
+                <legend>能力策略</legend>
+                <label className="checkbox-row">
+                  <input name="searchEnabled" type="checkbox" />
+                  <span>搜索</span>
+                </label>
+                <label className="checkbox-row">
+                  <input name="pageReadEnabled" type="checkbox" />
+                  <span>页面读取</span>
+                </label>
+                <label className="checkbox-row">
+                  <input name="sandboxEnabled" type="checkbox" />
+                  <span>沙箱</span>
+                </label>
+              </fieldset>
+              <label className="form-grid-span">
+                智能体说明
+                <Textarea name="instruction" placeholder="输入智能体运行时说明" required />
+              </label>
+            </div>
+            <div className="button-row compact-actions">
+              <Button className="primary-button" type="submit">保存智能体</Button>
+              <Button className="secondary-button" type="button" onClick={() => setIsCreateDraftOpen(false)}>取消</Button>
+            </div>
+          </form>
+        </AdminDialog>
       ) : null}
     </section>
   );
 }
 
 function ModelConfigurationsPanel() {
-  const [providerCatalog, setProviderCatalog] = useState<string[]>([]);
+  const [providerCatalog, setProviderCatalog] = useState<ApiModelProvider[]>([]);
   const [configurations, setConfigurations] = useState<ModelConfigurationRecord[]>([]);
   const [selectedConfigurationId, setSelectedConfigurationId] = useState("");
   const [loadError, setLoadError] = useState("");
+  const [saveStatus, setSaveStatus] = useState("");
   const [isLoading, setIsLoading] = useState(true);
   const [isCreateDraftOpen, setIsCreateDraftOpen] = useState(false);
+  const [newModelProviderId, setNewModelProviderId] = useState("openai");
+  const providerNames = providerCatalog.map((provider) => provider.name);
   const selectedConfiguration =
     configurations.find((configuration) => configuration.id === selectedConfigurationId) ??
     configurations[0] ??
@@ -1638,7 +2423,8 @@ function ModelConfigurationsPanel() {
         const mappedConfigurations = modelConfigurations.map((configuration) =>
           mapModelConfiguration(configuration, providers),
         );
-        setProviderCatalog(providers.map((provider) => provider.name));
+        setProviderCatalog(providers);
+        setNewModelProviderId((currentProviderId) => currentProviderId || providers[0]?.id || "openai");
         setConfigurations(mappedConfigurations);
         setSelectedConfigurationId(mappedConfigurations[0]?.id ?? "");
       })
@@ -1662,12 +2448,155 @@ function ModelConfigurationsPanel() {
     };
   }, []);
 
+  async function createModelConfiguration(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    const formData = new FormData(event.currentTarget);
+    const providerId = String(formData.get("providerId") ?? "").trim();
+    const modelName = String(formData.get("modelName") ?? "").trim();
+    const endpoint = String(formData.get("endpoint") ?? "").trim();
+    const apiKey = String(formData.get("apiKey") ?? "").trim();
+    if (!providerId || !modelName || !endpoint || !apiKey) {
+      setSaveStatus("请填写提供商、基础 URL、模型名称和 API Key。");
+      return;
+    }
+
+    const temperature = Number.parseFloat(String(formData.get("temperature") ?? "0.3"));
+    setLoadError("");
+    setSaveStatus("");
+    try {
+      const created = await adminFetch<ApiModelConfiguration>("/api/admin/model-configurations", {
+        method: "POST",
+        body: JSON.stringify({
+          provider_id: providerId,
+          name: modelName,
+          model_name: modelName,
+          endpoint,
+          credential_reference: apiKey,
+          default_parameters: {
+            temperature: Number.isFinite(temperature) ? temperature : 0.3,
+          },
+          enabled: true,
+        }),
+      });
+      const mappedConfiguration = mapModelConfiguration(created, providerCatalog);
+      setConfigurations((currentConfigurations) => [...currentConfigurations, mappedConfiguration]);
+      setSelectedConfigurationId(mappedConfiguration.id);
+      setIsCreateDraftOpen(false);
+      setSaveStatus("模型配置已创建。");
+    } catch {
+      setSaveStatus("模型配置创建失败，请检查后端返回或管理员权限。");
+    }
+  }
+
+  async function updateModelConfiguration(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    if (!selectedConfiguration) {
+      return;
+    }
+
+    const formData = new FormData(event.currentTarget);
+    const modelName = String(formData.get("modelName") ?? "").trim();
+    const endpoint = String(formData.get("endpoint") ?? "").trim();
+    const apiKey = String(formData.get("apiKey") ?? "").trim();
+    if (!modelName || !endpoint || !apiKey) {
+      setSaveStatus("模型名称、基础 URL 和 API Key 不能为空。");
+      return;
+    }
+
+    const temperature = Number.parseFloat(String(formData.get("temperature") ?? ""));
+    const maxTokens = Number.parseInt(String(formData.get("maxTokens") ?? ""), 10);
+    const defaultParameters: Record<string, unknown> = {
+      ...selectedConfiguration.defaultParametersValue,
+    };
+    if (Number.isFinite(temperature)) {
+      defaultParameters.temperature = temperature;
+    }
+    if (Number.isFinite(maxTokens)) {
+      defaultParameters.max_tokens = maxTokens;
+    } else {
+      delete defaultParameters.max_tokens;
+    }
+
+    setLoadError("");
+    setSaveStatus("");
+    try {
+      const updated = await adminFetch<ApiModelConfiguration>(
+        `/api/admin/model-configurations/${selectedConfiguration.id}`,
+        {
+          method: "PATCH",
+          body: JSON.stringify({
+            model_name: modelName,
+            name: modelName,
+            endpoint,
+            credential_reference: apiKey,
+            default_parameters: defaultParameters,
+          }),
+        },
+      );
+      const mappedConfiguration = mapModelConfiguration(updated, providerCatalog);
+      setConfigurations((currentConfigurations) =>
+        currentConfigurations.map((configuration) =>
+          configuration.id === mappedConfiguration.id ? mappedConfiguration : configuration,
+        ),
+      );
+      setSelectedConfigurationId(mappedConfiguration.id);
+      setSaveStatus("模型配置已保存。");
+    } catch {
+      setSaveStatus("模型配置保存失败，请检查后端返回或管理员权限。");
+    }
+  }
+
+  async function setModelConfigurationEnabled(configuration: ModelConfigurationRecord, enabled: boolean) {
+    setLoadError("");
+    setSaveStatus("");
+    try {
+      const updated = await adminFetch<ApiModelConfiguration>(
+        `/api/admin/model-configurations/${configuration.id}`,
+        {
+          method: "PATCH",
+          body: JSON.stringify({ enabled }),
+        },
+      );
+      const mappedConfiguration = mapModelConfiguration(updated, providerCatalog);
+      setConfigurations((currentConfigurations) =>
+        currentConfigurations.map((currentConfiguration) =>
+          currentConfiguration.id === mappedConfiguration.id ? mappedConfiguration : currentConfiguration,
+        ),
+      );
+      setSelectedConfigurationId(mappedConfiguration.id);
+      setSaveStatus(enabled ? "模型配置已启用。" : "模型配置已停用。");
+    } catch {
+      setSaveStatus("模型配置状态更新失败。");
+    }
+  }
+
+  async function checkModelConfigurationHealth(configuration: ModelConfigurationRecord) {
+    setLoadError("");
+    setSaveStatus("");
+    try {
+      const result = await adminFetch<ApiModelConfigurationHealthCheck>(
+        `/api/admin/model-configurations/${configuration.id}/health-check`,
+        { method: "POST" },
+      );
+      const mappedConfiguration = mapModelConfiguration(result.configuration, providerCatalog);
+      setConfigurations((currentConfigurations) =>
+        currentConfigurations.map((currentConfiguration) =>
+          currentConfiguration.id === mappedConfiguration.id ? mappedConfiguration : currentConfiguration,
+        ),
+      );
+      setSelectedConfigurationId(mappedConfiguration.id);
+      setSaveStatus(result.message);
+    } catch {
+      setSaveStatus("模型健康检查失败。");
+    }
+  }
+
   return (
     <section className="route-panel" aria-label="模型配置">
       <CopilotModelConfigurationsBridge
         configurations={configurations}
         isCreateDraftOpen={isCreateDraftOpen}
-        providerCatalog={providerCatalog}
+        providerCatalog={providerNames}
         selectedConfigurationId={selectedConfiguration?.id ?? null}
         setIsCreateDraftOpen={setIsCreateDraftOpen}
         setSelectedConfigurationId={setSelectedConfigurationId}
@@ -1677,113 +2606,165 @@ function ModelConfigurationsPanel() {
           创建模型配置
         </Button>
       </div>
-      <section className="state-panel" aria-label="模型提供商目录">
-        <h2>模型提供商目录</h2>
-        <p>提供商目录只是创建入口，不代表该提供商已经配置或可用。</p>
-        <div className="provider-grid">
-          {providerCatalog.map((provider) => <span className="provider-chip" key={provider}>{provider}</span>)}
-        </div>
-        {!isLoading && providerCatalog.length === 0 ? (
-          <p className="empty-state">后端暂未返回模型提供商目录。</p>
-        ) : null}
-      </section>
+      {saveStatus ? <p className="inline-note">{saveStatus}</p> : null}
       {isLoading ? <p className="empty-state">正在加载模型配置...</p> : null}
       {loadError ? <p className="empty-state danger-state" role="alert">{loadError}</p> : null}
-      <div className="route-table-wrap">
-        <table className="route-table" aria-label="模型配置列表">
-          <thead>
-            <tr>
-              <th>提供商</th>
-              <th>模型</th>
-              <th>凭据引用</th>
-              <th>状态</th>
-              <th>默认参数</th>
-              <th>更新时间</th>
-              <th>操作</th>
-            </tr>
-          </thead>
-          <tbody>
-            {configurations.map((configuration) => (
-              <tr className={configuration.id === selectedConfiguration?.id ? "selected-row" : ""} key={configuration.id}>
-                <td>{configuration.provider}</td>
-                <td>{configuration.model}</td>
-                <td>{configuration.credentialReference}</td>
-                <td>{modelStatusLabel(configuration.status)}</td>
-                <td>{configuration.defaultParameters}</td>
-                <td>{configuration.lastUpdated}</td>
-                <td>
-                  <Button className="secondary-button" type="button" onClick={() => setSelectedConfigurationId(configuration.id)}>
-                    详情
-                  </Button>
-                </td>
+      <div className="admin-master-detail">
+        <div className="route-table-wrap">
+          <table className="route-table" aria-label="模型配置列表">
+            <thead>
+              <tr>
+                <th>提供商</th>
+                <th>模型</th>
+                <th>凭据</th>
+                <th>状态</th>
+                <th>健康</th>
+                <th>默认参数</th>
+                <th>更新时间</th>
+                <th>操作</th>
               </tr>
-            ))}
-          </tbody>
-        </table>
-        {!isLoading && configurations.length === 0 ? (
-          <p className="empty-state">暂无模型配置。</p>
+            </thead>
+            <tbody>
+              {configurations.map((configuration) => (
+                <tr className={configuration.id === selectedConfiguration?.id ? "selected-row" : ""} key={configuration.id}>
+                  <td>{configuration.provider}</td>
+                  <td>{configuration.model}</td>
+                  <td>{credentialStatus(configuration.credentialReference)}</td>
+                  <td>{modelStatusLabel(configuration.status)}</td>
+                  <td>{configuration.healthLabel}</td>
+                  <td>{configuration.defaultParameters}</td>
+                  <td>{configuration.lastUpdated}</td>
+                  <td>
+                    <div className="table-actions">
+                      <Button className="secondary-button" type="button" onClick={() => setSelectedConfigurationId(configuration.id)}>
+                        详情
+                      </Button>
+                      <Button className="secondary-button" type="button" onClick={() => setModelConfigurationEnabled(configuration, !configuration.enabled)}>
+                        {configuration.enabled ? "停用" : "启用"}
+                      </Button>
+                      <Button className="secondary-button" type="button" onClick={() => checkModelConfigurationHealth(configuration)}>
+                        健康检查
+                      </Button>
+                    </div>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+          {!isLoading && configurations.length === 0 ? (
+            <EmptyStateAction
+              title="暂无模型配置"
+              description="先创建一个可用模型配置，再把它授权给智能体。"
+              onAction={() => setIsCreateDraftOpen(true)}
+              actionLabel="创建模型配置"
+            />
+          ) : null}
+        </div>
+        {selectedConfiguration ? (
+          <aside className="context-panel" aria-label="模型配置详情" role="region">
+            <div className="panel-head">
+              <div>
+                <p className="eyebrow">{selectedConfiguration.provider}</p>
+                <h2>{selectedConfiguration.model}</h2>
+                <p>{selectedConfiguration.baseUrl}</p>
+              </div>
+              <Badge variant={accountBadgeVariant(selectedConfiguration.status)}>{modelStatusLabel(selectedConfiguration.status)}</Badge>
+            </div>
+            <section className="detail-grid compact-detail-grid">
+              <InfoTile title="凭据" value={credentialStatus(selectedConfiguration.credentialReference)} icon={LockKeyhole} />
+              <InfoTile title="默认参数" value={selectedConfiguration.defaultParameters} icon={Settings2} />
+              <InfoTile title="最近检查" value={selectedConfiguration.lastCheckedAt} icon={Activity} />
+              <InfoTile title="配置状态" value={modelStatusLabel(selectedConfiguration.status)} icon={ShieldCheck} />
+              <InfoTile title="健康状态" value={selectedConfiguration.healthLabel} icon={Gauge} />
+            </section>
+            <section className="boundary-list">
+              <h3>配置风险</h3>
+                <p>{selectedConfiguration.risk}</p>
+              </section>
+            <form className="admin-inline-form" aria-label="编辑模型配置" key={selectedConfiguration.id} onSubmit={updateModelConfiguration}>
+              <label>
+                <span>模型名称</span>
+                <Input name="modelName" defaultValue={selectedConfiguration.model} required />
+              </label>
+              <label>
+                <span>基础 URL</span>
+                <Input name="endpoint" defaultValue={selectedConfiguration.baseUrl} required />
+              </label>
+              <label>
+                <span>API Key</span>
+                <SecretTextInput name="apiKey" defaultValue={selectedConfiguration.credentialReference} placeholder="sk-..." required />
+              </label>
+              <div className="form-grid compact-form-grid">
+                <label>
+                  <span>Temperature</span>
+                  <Input name="temperature" defaultValue={String(selectedConfiguration.defaultParametersValue.temperature ?? "")} inputMode="decimal" />
+                </label>
+                <label>
+                  <span>Max tokens</span>
+                  <Input name="maxTokens" defaultValue={String(selectedConfiguration.defaultParametersValue.max_tokens ?? selectedConfiguration.defaultParametersValue.max_output_tokens ?? "")} inputMode="numeric" />
+                </label>
+              </div>
+              <div className="button-row compact-actions">
+                <Button className="primary-button" type="submit">保存</Button>
+                <Button className="secondary-button" type="button" onClick={() => setModelConfigurationEnabled(selectedConfiguration, !selectedConfiguration.enabled)}>
+                  {selectedConfiguration.enabled ? "停用" : "启用"}
+                </Button>
+                <Button className="secondary-button" type="button" onClick={() => checkModelConfigurationHealth(selectedConfiguration)}>
+                  健康检查
+                </Button>
+              </div>
+            </form>
+          </aside>
         ) : null}
       </div>
-      {selectedConfiguration ? (
-        <section className="state-panel" aria-label="模型配置详情">
-          <div className="panel-head">
-            <div>
-              <p className="eyebrow">{selectedConfiguration.provider}</p>
-              <h2>{selectedConfiguration.model}</h2>
-              <p>{selectedConfiguration.baseUrl}</p>
-            </div>
-            <Badge variant={accountBadgeVariant(selectedConfiguration.status)}>{modelStatusLabel(selectedConfiguration.status)}</Badge>
-          </div>
-          <section className="detail-grid">
-            <InfoTile title="凭据引用" value={selectedConfiguration.credentialReference} icon={LockKeyhole} />
-            <InfoTile title="默认参数" value={selectedConfiguration.defaultParameters} icon={Settings2} />
-            <InfoTile title="更新时间" value={selectedConfiguration.lastUpdated} icon={Activity} />
-            <InfoTile title="配置状态" value={modelStatusLabel(selectedConfiguration.status)} icon={ShieldCheck} />
-          </section>
-          <section className="boundary-list">
-            <h3>配置风险</h3>
-            <p>{selectedConfiguration.risk}</p>
-          </section>
-        </section>
-      ) : null}
       {isCreateDraftOpen ? (
-        <section className="state-panel" aria-label="创建模型配置草稿">
-          <p className="eyebrow">本地草稿</p>
-          <h2>创建模型配置</h2>
-          <div className="form-grid">
-            <label>
-              提供商
-              <Select defaultValue={providerCatalog[0] ?? "OpenAI"}>
-                <SelectTrigger>
-                  <SelectValue placeholder="OpenAI" />
-                </SelectTrigger>
-                <SelectContent>
-                  {(providerCatalog.length > 0 ? providerCatalog : ["OpenAI"]).map((provider) => (
-                    <SelectItem key={provider} value={provider}>
-                      {provider}
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
-            </label>
-            <label>
-              基础 URL
-              <Input placeholder="https://provider.example/v1" />
-            </label>
-            <label>
-              模型名称
-              <Input placeholder="model-name" />
-            </label>
-            <label>
-              凭据引用
-              <Input placeholder="credential-reference" />
-            </label>
-            <label>
-              温度
-              <Input defaultValue="0.3" inputMode="decimal" />
-            </label>
-          </div>
-        </section>
+        <AdminDialog eyebrow="后端创建" title="创建模型配置" onClose={() => setIsCreateDraftOpen(false)}>
+          <form className="admin-dialog-form" aria-label="创建模型配置" onSubmit={createModelConfiguration}>
+            <div className="provider-grid compact-provider-grid" aria-label="模型提供商目录">
+              {(providerCatalog.length > 0 ? providerCatalog : [{ id: "openai", name: "OpenAI", endpoint_template: "https://api.openai.com/v1", recommended_models: [] }]).map((provider) => (
+                <span className="provider-chip" key={provider.id}>{provider.name}</span>
+              ))}
+            </div>
+            <div className="form-grid">
+              <label>
+                提供商
+                <input type="hidden" name="providerId" value={newModelProviderId} />
+                <Select value={newModelProviderId} onValueChange={setNewModelProviderId}>
+                  <SelectTrigger>
+                    <SelectValue placeholder="OpenAI" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {(providerCatalog.length > 0 ? providerCatalog : [{ id: "openai", name: "OpenAI", endpoint_template: "https://api.openai.com/v1", recommended_models: [] }]).map((provider) => (
+                      <SelectItem key={provider.id} value={provider.id}>
+                        {provider.name}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </label>
+              <label>
+                基础 URL
+                <Input name="endpoint" placeholder="https://provider.example/v1" required />
+              </label>
+              <label>
+                模型名称
+                <Input name="modelName" placeholder="model-name" required />
+              </label>
+              <label>
+                API Key
+                <SecretTextInput name="apiKey" placeholder="sk-..." required />
+              </label>
+              <label>
+                温度
+                <Input name="temperature" defaultValue="0.3" inputMode="decimal" />
+              </label>
+            </div>
+            <div className="button-row compact-actions">
+              <Button className="primary-button" type="submit">保存模型配置</Button>
+              <Button className="secondary-button" type="button" onClick={() => setIsCreateDraftOpen(false)}>取消</Button>
+            </div>
+          </form>
+        </AdminDialog>
       ) : null}
     </section>
   );
@@ -1792,32 +2773,43 @@ function ModelConfigurationsPanel() {
 function McpServersPanel() {
   const [servers, setServers] = useState<McpServer[]>([]);
   const [tools, setTools] = useState<McpToolDiscovery[]>([]);
+  const [agents, setAgents] = useState<AgentLifecycleRecord[]>([]);
   const [selectedServerName, setSelectedServerName] = useState<string | null>(null);
   const [authorizationAgent, setAuthorizationAgent] = useState("Default Agent");
   const [loadError, setLoadError] = useState("");
+  const [saveStatus, setSaveStatus] = useState("");
   const [isLoading, setIsLoading] = useState(true);
   const [isConfigurationDraftOpen, setIsConfigurationDraftOpen] = useState(false);
+  const [newMcpConnectionType, setNewMcpConnectionType] = useState<ApiMcpServer["connection_type"]>("sse");
   const selectedServer = servers.find((server) => server.name === selectedServerName) ?? null;
+  const selectedAuthorizationAgent = agents.find((agent) => agent.name === authorizationAgent) ?? agents[0] ?? null;
 
   useEffect(() => {
     let isCurrent = true;
     setIsLoading(true);
     setLoadError("");
 
-    adminFetch<ApiMcpServer[]>("/api/admin/mcp-servers")
-      .then((result) => {
+    Promise.all([
+      adminFetch<ApiMcpServer[]>("/api/admin/mcp-servers"),
+      adminFetch<ApiAgent[]>("/api/admin/agents"),
+    ])
+      .then(([serverResult, agentResult]) => {
         if (!isCurrent) {
           return;
         }
-        const mappedServers = result.map(mapMcpServer);
+        const mappedServers = serverResult.map(mapMcpServer);
+        const mappedAgents = agentResult.map(mapAgent);
         setServers(mappedServers);
+        setAgents(mappedAgents);
         setSelectedServerName(mappedServers[0]?.name ?? null);
+        setAuthorizationAgent(mappedAgents[0]?.name ?? "Default Agent");
       })
       .catch(() => {
         if (!isCurrent) {
           return;
         }
         setServers([]);
+        setAgents([]);
         setSelectedServerName(null);
         setLoadError("无法加载 MCP 服务器，请检查管理员权限或后端服务。");
       })
@@ -1861,6 +2853,86 @@ function McpServersPanel() {
     setIsConfigurationDraftOpen(true);
   }
 
+  async function createMcpServer(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    const formData = new FormData(event.currentTarget);
+    const name = String(formData.get("name") ?? "").trim();
+    const url = String(formData.get("url") ?? "").trim();
+    const credentialReference = String(formData.get("credentialReference") ?? "").trim();
+    const headerName = String(formData.get("headerName") ?? "Authorization").trim() || "Authorization";
+    if (!name || !url) {
+      setSaveStatus("请填写 MCP 服务器名称和 URL。");
+      return;
+    }
+
+    setLoadError("");
+    setSaveStatus("");
+    try {
+      const created = await adminFetch<ApiMcpServer>("/api/admin/mcp-servers", {
+        method: "POST",
+        body: JSON.stringify({
+          name,
+          connection_type: String(formData.get("connectionType") ?? "sse"),
+          url,
+          header_secret_refs: credentialReference ? { [headerName]: credentialReference } : {},
+          timeout_seconds: parseAdminInteger(String(formData.get("timeoutSeconds") ?? "30"), 30),
+          enabled: true,
+        }),
+      });
+      const mappedServer = mapMcpServer(created);
+      setServers((currentServers) => [...currentServers, mappedServer]);
+      setSelectedServerName(mappedServer.name);
+      setIsConfigurationDraftOpen(false);
+      setSaveStatus("MCP 服务器已创建。");
+    } catch {
+      setSaveStatus("MCP 服务器创建失败，请检查 URL、凭据引用或管理员权限。");
+    }
+  }
+
+  async function discoverSelectedServerTools(server: McpServer) {
+    setLoadError("");
+    setSaveStatus("");
+    try {
+      const updated = await adminFetch<ApiMcpServer>(`/api/admin/mcp-servers/${server.id}/discover`, {
+        method: "POST",
+      });
+      const mappedServer = mapMcpServer(updated);
+      setServers((currentServers) =>
+        currentServers.map((currentServer) => currentServer.id === mappedServer.id ? mappedServer : currentServer),
+      );
+      setSelectedServerName(mappedServer.name);
+      const discoveredTools = await adminFetch<ApiMcpTool[]>(`/api/admin/mcp-servers/${mappedServer.id}/tools`);
+      setTools(discoveredTools.map(mapMcpTool));
+      setSaveStatus("工具发现已完成。");
+    } catch {
+      setSaveStatus("工具发现失败，请检查 MCP 服务器状态或管理员权限。");
+    }
+  }
+
+  async function saveToolAuthorization() {
+    if (!selectedServer || !selectedAuthorizationAgent || tools.length === 0) {
+      return;
+    }
+
+    setLoadError("");
+    setSaveStatus("");
+    try {
+      await Promise.all(tools.map((tool) =>
+        adminFetch(`/api/admin/agents/${selectedAuthorizationAgent.id}/mcp-tool-authorizations`, {
+          method: "POST",
+          body: JSON.stringify({
+            server_id: selectedServer.id,
+            tool_name: tool.name,
+            enabled: true,
+          }),
+        }),
+      ));
+      setSaveStatus("MCP 工具授权已保存。");
+    } catch {
+      setSaveStatus("MCP 工具授权保存失败，请确认工具已完成发现。");
+    }
+  }
+
   return (
     <section className="route-panel" aria-label="MCP 服务器">
       <CopilotMcpServersBridge
@@ -1884,12 +2956,14 @@ function McpServersPanel() {
       </div>
       {isLoading ? <p className="empty-state">正在加载 MCP 服务器...</p> : null}
       {loadError ? <p className="empty-state danger-state" role="alert">{loadError}</p> : null}
+      {saveStatus ? <p className="inline-note">{saveStatus}</p> : null}
       <div className="route-table-wrap">
         <table className="route-table" aria-label="MCP 服务器列表">
           <thead>
             <tr>
               <th>名称</th>
               <th>连接类型</th>
+              <th>URL</th>
               <th>凭据</th>
               <th>发现状态</th>
               <th>授权对象</th>
@@ -1904,124 +2978,136 @@ function McpServersPanel() {
               >
                 <td>{server.name}</td>
                 <td>{server.connectionType}</td>
-                <td>{server.credentialReference}</td>
+                <td>{server.url}</td>
+                <td>{credentialStatus(server.credentialReference)}</td>
                 <td>{discoveryStatusLabel(server.discoveryStatus)}</td>
                 <td>{server.authorization}</td>
                 <td>
-                  <Button
-                    className="secondary-button"
-                    type="button"
-                    onClick={() => openConfigurationDraft(server.name)}
-                  >
-                    {server.discoveryStatus === "Discovered" ? "编辑" : "配置"}
-                  </Button>
+                  <div className="table-actions">
+                    <Button className="secondary-button" type="button" onClick={() => setSelectedServerName(server.name)}>
+                      详情
+                    </Button>
+                    <Button className="secondary-button" type="button" onClick={() => discoverSelectedServerTools(server)}>
+                      发现工具
+                    </Button>
+                  </div>
                 </td>
               </tr>
             ))}
           </tbody>
         </table>
         {!isLoading && servers.length === 0 ? (
-          <p className="empty-state">暂无 MCP 服务器。请创建远程 SSE 或 Streamable HTTP 服务器配置。</p>
+          <EmptyStateAction
+            title="暂无 MCP 服务器"
+            description="先注册一个远程 SSE 或 Streamable HTTP 服务器，之后才能发现工具和授权智能体。"
+            onAction={() => openConfigurationDraft(null)}
+            actionLabel="创建 MCP 服务器"
+          />
         ) : null}
       </div>
-      <div className="admin-workbench-grid">
-        <section className="sub-panel stack" aria-labelledby="mcp-discovery-title">
-          <div>
-            <p className="eyebrow">工具发现</p>
-            <h3 id="mcp-discovery-title">工具发现结果</h3>
-          </div>
-          <div className="task-list">
-            {tools.map((tool) => (
-              <article className="task-row" key={tool.name}>
-                <div>
-                  <strong>{tool.name}</strong>
-                  <p>{tool.description}</p>
-                </div>
-                <span className="audit-chip">{tool.schemaSummary}</span>
-              </article>
-            ))}
-          </div>
-          {tools.length === 0 ? (
-            <p className="empty-state">当前服务器暂无已发现工具。</p>
-          ) : null}
-          <p className="inline-note">
-            最近一次发现由后端智能体工具网关执行，不由此前端面板直接执行。
-          </p>
-        </section>
-        <section className="sub-panel stack" aria-label="MCP 工具授权">
-          <div>
-            <p className="eyebrow">授权面板</p>
-            <h3>MCP 工具授权</h3>
-          </div>
-          <label>
-            <span>智能体</span>
-            <Select value={authorizationAgent} onValueChange={setAuthorizationAgent}>
-              <SelectTrigger aria-label="智能体">
-                <SelectValue placeholder="Default Agent" />
-              </SelectTrigger>
-              <SelectContent>
-                <SelectItem value="Default Agent">Default Agent</SelectItem>
-                <SelectItem value="Research Agent">Research Agent</SelectItem>
-              </SelectContent>
-            </Select>
-          </label>
-          <div className="card-field-list" aria-label="已授权工具">
-            {tools.length > 0 ? tools.map((tool) => (
-              <span className="card-field" key={tool.name}>{tool.name}</span>
-            )) : <span className="card-field">暂无已发现工具</span>}
-          </div>
-          <p>智能体工具网关仍由后端持有；前端不会暴露 MCP 凭据明文。</p>
-          <Button className="secondary-button" type="button">保存授权草稿</Button>
-        </section>
-      </div>
-      {isConfigurationDraftOpen ? (
-        <section className="sub-panel stack" aria-label="MCP 服务器配置草稿">
-          <div className="panel-head">
+      {servers.length > 0 ? (
+        <div className="admin-workbench-grid">
+          <section className="sub-panel stack" aria-labelledby="mcp-discovery-title">
             <div>
-              <p className="eyebrow">配置草稿</p>
-              <h3>{selectedServer ? selectedServer.name : "创建 MCP 服务器"}</h3>
+              <p className="eyebrow">工具发现</p>
+              <h3 id="mcp-discovery-title">工具发现结果</h3>
             </div>
-            <Button
-              className="secondary-button"
-              type="button"
-              onClick={() => setIsConfigurationDraftOpen(false)}
-            >
-              关闭
-            </Button>
-          </div>
-          <div className="form-grid">
+            <div className="task-list">
+              {tools.map((tool) => (
+                <article className="task-row static-task-row" key={tool.name}>
+                  <div>
+                    <strong>{tool.name}</strong>
+                    <p>{tool.description}</p>
+                  </div>
+                  <span className="audit-chip">{tool.schemaSummary}</span>
+                </article>
+              ))}
+            </div>
+            {tools.length === 0 ? (
+              <EmptyStateAction
+                title="当前服务器暂无已发现工具"
+                description="点击当前服务器的发现工具按钮，后端会执行工具发现并返回授权候选。"
+                onAction={() => {
+                  if (selectedServer) {
+                    void discoverSelectedServerTools(selectedServer);
+                  }
+                }}
+                actionLabel="发现工具"
+              />
+            ) : null}
+          </section>
+          <section className="sub-panel stack" aria-label="MCP 工具授权">
+            <div>
+              <p className="eyebrow">授权面板</p>
+              <h3>MCP 工具授权</h3>
+            </div>
             <label>
-              <span>名称</span>
-              <Input defaultValue={selectedServer?.name ?? ""} placeholder="MCP 服务器名称" />
-            </label>
-            <label>
-              <span>连接类型</span>
-              <Select defaultValue={selectedServer?.connectionType ?? "SSE"}>
-                <SelectTrigger>
-                  <SelectValue placeholder="SSE" />
+              <span>智能体</span>
+              <Select value={authorizationAgent} onValueChange={setAuthorizationAgent}>
+                <SelectTrigger aria-label="智能体">
+                  <SelectValue placeholder="选择智能体" />
                 </SelectTrigger>
                 <SelectContent>
-                  <SelectItem value="SSE">SSE</SelectItem>
-                  <SelectItem value="Streamable HTTP">Streamable HTTP</SelectItem>
+                  {agents.map((agent) => (
+                    <SelectItem key={agent.id} value={agent.name}>{agent.name}</SelectItem>
+                  ))}
                 </SelectContent>
               </Select>
             </label>
-            <label>
-              <span>凭据引用</span>
-              <Input
-                defaultValue={selectedServer?.credentialReference ?? ""}
-                placeholder="secret/mcp-server"
-              />
-            </label>
-            <label>
-              <span>超时</span>
-              <Input placeholder="30s" />
-            </label>
-          </div>
-          <p className="inline-note">
-            保存草稿后，仍需后端授权流程完成 MCP 服务器登记。
-          </p>
-        </section>
+            <div className="card-field-list" aria-label="已授权工具">
+              {tools.length > 0 ? tools.map((tool) => (
+                <span className="card-field" key={tool.name}>{tool.name}</span>
+              )) : <span className="card-field muted-field">暂无可授权工具</span>}
+            </div>
+            <p>授权只保存工具选择，不暴露 MCP 凭据明文。</p>
+            <Button className="secondary-button" type="button" disabled={tools.length === 0 || !selectedAuthorizationAgent} onClick={saveToolAuthorization}>保存授权</Button>
+          </section>
+        </div>
+      ) : null}
+      {isConfigurationDraftOpen ? (
+        <AdminDialog eyebrow="后端创建" title="创建 MCP 服务器" onClose={() => setIsConfigurationDraftOpen(false)}>
+          <form className="admin-dialog-form" aria-label="创建 MCP 服务器" onSubmit={createMcpServer}>
+            <div className="form-grid">
+              <label>
+                <span>名称</span>
+                <Input name="name" placeholder="MCP 服务器名称" required />
+              </label>
+              <label>
+                <span>URL</span>
+                <Input name="url" placeholder="https://mcp.example/sse" required />
+              </label>
+              <label>
+                <span>连接类型</span>
+                <input type="hidden" name="connectionType" value={newMcpConnectionType} />
+                <Select value={newMcpConnectionType} onValueChange={(value) => setNewMcpConnectionType(value as ApiMcpServer["connection_type"])}>
+                  <SelectTrigger>
+                    <SelectValue placeholder="SSE" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="sse">SSE</SelectItem>
+                    <SelectItem value="streamable_http">Streamable HTTP</SelectItem>
+                  </SelectContent>
+                </Select>
+              </label>
+              <label>
+                <span>凭据 Header</span>
+                <Input name="headerName" defaultValue="Authorization" />
+              </label>
+              <label>
+                <span>凭据引用</span>
+                <Input name="credentialReference" placeholder="secret/mcp-server" />
+              </label>
+              <label>
+                <span>超时</span>
+                <Input name="timeoutSeconds" placeholder="30s" defaultValue="30" inputMode="numeric" />
+              </label>
+            </div>
+            <div className="button-row compact-actions">
+              <Button className="primary-button" type="submit">保存 MCP 服务器</Button>
+              <Button className="secondary-button" type="button" onClick={() => setIsConfigurationDraftOpen(false)}>取消</Button>
+            </div>
+          </form>
+        </AdminDialog>
       ) : null}
     </section>
   );
@@ -2038,7 +3124,6 @@ function SearchProviderPanel() {
   const [loadError, setLoadError] = useState("");
   const [saveStatus, setSaveStatus] = useState("");
   const [isLoading, setIsLoading] = useState(true);
-  const [scenario, setScenario] = useState<SearchProviderScenario>("success");
 
   useEffect(() => {
     let isCurrent = true;
@@ -2113,20 +3198,18 @@ function SearchProviderPanel() {
 
   return (
     <section className="route-panel" aria-label="搜索提供方配置">
-      <CopilotSearchProviderBridge scenario={scenario} setScenario={setScenario} />
       <div className="panel-head">
         <div>
           <p className="eyebrow">能力配置</p>
           <h2>{provider?.name ?? "搜索提供方"}</h2>
           <p>搜索能力负责查找候选 URL 和摘要；页面读取能力只读取已知 URL。</p>
         </div>
-        <Button className="secondary-button" type="button">健康检查</Button>
       </div>
       {isLoading ? <p className="empty-state">正在加载搜索提供方...</p> : null}
       {loadError ? <p className="empty-state danger-state" role="alert">{loadError}</p> : null}
       <section className="detail-grid" aria-label="搜索提供方状态">
         <InfoTile title="提供方" value={provider?.enabled ? "已启用" : "已停用"} tone={provider?.enabled ? "success" : "warning"} icon={Search} />
-        <InfoTile title="凭据" value={provider?.credential_reference ?? "未配置"} icon={LockKeyhole} />
+        <InfoTile title="凭据" value={credentialStatus(provider?.credential_reference)} icon={LockKeyhole} />
         <InfoTile title="结果上限" value={provider ? `${provider.max_results} 个候选结果` : "未配置"} icon={FileSearch} />
         <InfoTile title="超时" value={provider ? `${provider.timeout_seconds}s` : "未配置"} icon={ShieldCheck} />
       </section>
@@ -2193,68 +3276,6 @@ function SearchProviderPanel() {
           <a className="secondary-button" href="/admin/page-read-provider">打开页面读取提供方</a>
         </section>
       </div>
-      <section className="sub-panel stack">
-        <div className="panel-head">
-          <div>
-            <p className="eyebrow">运行时状态</p>
-            <h3>提供方运行预览</h3>
-          </div>
-          <div className="tab-list" role="tablist" aria-label="搜索提供方运行状态">
-            <Button
-              aria-selected={scenario === "success"}
-              className={scenario === "success" ? "tab-button active" : "tab-button"}
-              role="tab"
-              type="button"
-              onClick={() => setScenario("success")}
-            >
-              成功
-            </Button>
-            <Button
-              aria-selected={scenario === "empty"}
-              className={scenario === "empty" ? "tab-button active" : "tab-button"}
-              role="tab"
-              type="button"
-              onClick={() => setScenario("empty")}
-            >
-              无结果
-            </Button>
-            <Button
-              aria-selected={scenario === "error"}
-              className={scenario === "error" ? "tab-button active" : "tab-button"}
-              role="tab"
-              type="button"
-              onClick={() => setScenario("error")}
-            >
-              提供方错误
-            </Button>
-          </div>
-        </div>
-        {scenario === "success" ? (
-          <div className="state-panel" role="tabpanel" aria-label="成功">
-            <h3>候选摘要可用</h3>
-            <p>智能体运行可以把选中的已知 URL 传给页面读取提供方获取全文。</p>
-            <TableBlock
-              columns={["标题", "URL", "摘要", "下一步"]}
-              rows={[
-                ["Minimalist Agent MVP", "docs/internal/mvp", "会话优先的平台范围。", "允许页面读取"],
-                ["搜索能力", "docs/capability/search", "候选 URL 与摘要提供方。", "允许页面读取"],
-              ]}
-            />
-          </div>
-        ) : null}
-        {scenario === "empty" ? (
-          <div className="state-panel" role="tabpanel" aria-label="无结果">
-            <h3>没有候选 URL</h3>
-            <p>请用户细化查询，或检查提供方限制。</p>
-          </div>
-        ) : null}
-        {scenario === "error" ? (
-          <div className="state-panel danger-state" role="tabpanel" aria-label="提供方错误">
-            <h3>搜索提供方不可用</h3>
-            <p>凭据和内部端点详情仅管理员可见。</p>
-          </div>
-        ) : null}
-      </section>
     </section>
   );
 }
@@ -2263,13 +3284,14 @@ function PageReadProviderPanel() {
   const [provider, setProvider] = useState<ApiPageReadProvider | null>(null);
   const [form, setForm] = useState({
     allowedDomains: "",
+    endpoint: "",
     maxContentLength: "",
+    name: "",
     timeout: "",
   });
   const [loadError, setLoadError] = useState("");
   const [saveStatus, setSaveStatus] = useState("");
   const [isLoading, setIsLoading] = useState(true);
-  const [scenario, setScenario] = useState<PageReadScenario>("success");
 
   useEffect(() => {
     let isCurrent = true;
@@ -2284,7 +3306,9 @@ function PageReadProviderPanel() {
           if (nextProvider) {
             setForm({
               allowedDomains: nextProvider.allowed_domains.join("\n"),
+              endpoint: nextProvider.endpoint,
               maxContentLength: `${nextProvider.max_content_length} 字符`,
+              name: nextProvider.name,
               timeout: `${nextProvider.timeout_seconds}s`,
             });
           }
@@ -2325,8 +3349,10 @@ function PageReadProviderPanel() {
           method: "PATCH",
           body: JSON.stringify({
             allowed_domains: allowedDomains,
+            endpoint: form.endpoint,
             enabled: provider.enabled,
             max_content_length: maxContentLength,
+            name: form.name,
             timeout_seconds: timeoutSeconds,
           }),
         },
@@ -2334,7 +3360,9 @@ function PageReadProviderPanel() {
       setProvider(updated);
       setForm({
         allowedDomains: updated.allowed_domains.join("\n"),
+        endpoint: updated.endpoint,
         maxContentLength: `${updated.max_content_length} 字符`,
+        name: updated.name,
         timeout: `${updated.timeout_seconds}s`,
       });
       setSaveStatus("页面读取提供方配置已保存。");
@@ -2343,24 +3371,27 @@ function PageReadProviderPanel() {
     }
   }
 
+  const allowedDomains = form.allowedDomains
+    .split(/\r?\n/)
+    .map((domain) => domain.trim())
+    .filter(Boolean);
+
   return (
     <section className="route-panel" aria-label="页面读取提供方配置">
-      <CopilotPageReadProviderBridge scenario={scenario} setScenario={setScenario} />
       <div className="panel-head">
         <div>
           <p className="eyebrow">能力配置</p>
           <h2>{provider?.name ?? "页面读取提供方"}</h2>
           <p>页面读取能力读取已知 URL 的全文；搜索能力只查找候选 URL 和摘要。</p>
         </div>
-        <Button className="secondary-button" type="button">健康检查</Button>
       </div>
       {isLoading ? <p className="empty-state">正在加载页面读取提供方...</p> : null}
       {loadError ? <p className="empty-state danger-state" role="alert">{loadError}</p> : null}
       <section className="detail-grid" aria-label="页面读取提供方状态">
         <InfoTile title="提供方" value={provider?.enabled ? "已启用" : "已停用"} tone={provider?.enabled ? "success" : "warning"} icon={FileText} />
-        <InfoTile title="凭据" value={provider?.credential_reference ?? "未配置"} icon={LockKeyhole} />
+        <InfoTile title="凭据" value={credentialStatus(provider?.credential_reference)} icon={LockKeyhole} />
         <InfoTile title="内容上限" value={provider ? `${provider.max_content_length} 字符` : "未配置"} icon={FileSearch} />
-        <InfoTile title="允许域名数" value={provider ? String(provider.allowed_domains.length) : "未配置"} icon={ShieldCheck} />
+        <InfoTile title="允许域名数" value={provider ? String(allowedDomains.length) : "未配置"} icon={ShieldCheck} />
       </section>
       <div className="admin-workbench-grid">
         <section className="sub-panel stack" aria-label="域名策略编辑器">
@@ -2369,11 +3400,19 @@ function PageReadProviderPanel() {
             <h3>已知 URL 访问</h3>
           </div>
           <p>在页面读取抽取可读文本前，对已知 URL 执行允许或拒绝策略。</p>
+          <div className="domain-chip-list" aria-label="当前允许域名">
+            {allowedDomains.length > 0 ? (
+              allowedDomains.map((domain) => <span className="domain-chip" key={domain}>{domain}</span>)
+            ) : (
+              <span className="domain-chip muted-field">未设置允许域名</span>
+            )}
+          </div>
           <label>
             <span>允许域名</span>
             <Textarea
               value={form.allowedDomains}
               onChange={(event) => setForm((current) => ({ ...current, allowedDomains: event.target.value }))}
+              placeholder="每行一个域名，例如 docs.example.com"
             />
           </label>
           <Button className="primary-button" type="button" disabled={!provider} onClick={saveProviderSettings}>保存策略</Button>
@@ -2384,19 +3423,21 @@ function PageReadProviderPanel() {
             <p className="eyebrow">运行设置</p>
             <h3>抽取限制</h3>
           </div>
-          <label>
-            <span>抽取模式</span>
-            <Select defaultValue="可读文本">
-              <SelectTrigger>
-                <SelectValue placeholder="可读文本" />
-              </SelectTrigger>
-              <SelectContent>
-                <SelectItem value="可读文本">可读文本</SelectItem>
-                <SelectItem value="保留结构">保留结构</SelectItem>
-              </SelectContent>
-            </Select>
-          </label>
           <div className="form-grid">
+            <label>
+              <span>提供方名称</span>
+              <Input
+                value={form.name}
+                onChange={(event) => setForm((current) => ({ ...current, name: event.target.value }))}
+              />
+            </label>
+            <label>
+              <span>端点</span>
+              <Input
+                value={form.endpoint}
+                onChange={(event) => setForm((current) => ({ ...current, endpoint: event.target.value }))}
+              />
+            </label>
             <label>
               <span>超时</span>
               <Input
@@ -2416,48 +3457,6 @@ function PageReadProviderPanel() {
           <a className="secondary-button" href="/admin/search-provider">打开搜索提供方</a>
         </section>
       </div>
-      <section className="sub-panel stack" aria-label="页面读取健康检查结果">
-        <div className="panel-head">
-          <div>
-            <p className="eyebrow">健康检查</p>
-            <h3>已知 URL 读取预览</h3>
-          </div>
-          <div className="tab-list" role="tablist" aria-label="页面读取健康检查状态">
-            <Button
-              aria-selected={scenario === "success"}
-              className={scenario === "success" ? "tab-button active" : "tab-button"}
-              role="tab"
-              type="button"
-              onClick={() => setScenario("success")}
-            >
-              成功
-            </Button>
-            <Button
-              aria-selected={scenario === "policy-violation"}
-              className={scenario === "policy-violation" ? "tab-button active" : "tab-button"}
-              role="tab"
-              type="button"
-              onClick={() => setScenario("policy-violation")}
-            >
-              策略违规
-            </Button>
-          </div>
-        </div>
-        {scenario === "success" ? (
-          <div className="state-panel" role="tabpanel" aria-label="成功">
-            <h3>已抽取可读内容</h3>
-            <p>已知 URL 通过域名策略和内容长度限制。</p>
-            <p>页面读取未发起搜索查询。</p>
-          </div>
-        ) : null}
-        {scenario === "policy-violation" ? (
-          <div className="state-panel danger-state" role="tabpanel" aria-label="策略违规">
-            <h3>已知 URL 被域名策略拦截</h3>
-            <p>管理员域名策略在抽取前拒绝了请求 URL。</p>
-            <p>页面读取未发起搜索查询。</p>
-          </div>
-        ) : null}
-      </section>
     </section>
   );
 }
@@ -2467,7 +3466,6 @@ function SandboxStatusPanel() {
   const [artifactCount, setArtifactCount] = useState(0);
   const [loadError, setLoadError] = useState("");
   const [isLoading, setIsLoading] = useState(true);
-  const [scenario, setScenario] = useState<SandboxScenario>("completed");
   const sandboxEnabledCount = agents.filter((agent) =>
     agent.capabilityPolicy.includes("沙箱能力已启用"),
   ).length;
@@ -2509,7 +3507,6 @@ function SandboxStatusPanel() {
 
   return (
     <section className="route-panel" aria-label="沙箱状态">
-      <CopilotSandboxStatusBridge scenario={scenario} setScenario={setScenario} />
       <div className="panel-head">
         <div>
           <p className="eyebrow">沙箱能力</p>
@@ -2580,46 +3577,6 @@ function SandboxStatusPanel() {
           <p className="inline-note">捕获文件以产物引用存储，不以内联消息正文存储。</p>
         </section>
       </div>
-      <section className="sub-panel stack">
-        <div className="panel-head">
-          <div>
-            <p className="eyebrow">策略预览</p>
-            <h3>近期调用结果</h3>
-          </div>
-          <div className="tab-list" role="tablist" aria-label="沙箱近期调用结果">
-            <Button
-              aria-selected={scenario === "completed"}
-              className={scenario === "completed" ? "tab-button active" : "tab-button"}
-              role="tab"
-              type="button"
-              onClick={() => setScenario("completed")}
-            >
-              已完成调用
-            </Button>
-            <Button
-              aria-selected={scenario === "rejected"}
-              className={scenario === "rejected" ? "tab-button active" : "tab-button"}
-              role="tab"
-              type="button"
-              onClick={() => setScenario("rejected")}
-            >
-              已拒绝调用
-            </Button>
-          </div>
-        </div>
-        {scenario === "completed" ? (
-          <div className="state-panel" role="tabpanel" aria-label="已完成调用">
-            <h3>沙箱工具调用已完成</h3>
-            <p>输出已通过后端产物存储策略捕获。</p>
-          </div>
-        ) : null}
-        {scenario === "rejected" ? (
-          <div className="state-panel danger-state" role="tabpanel" aria-label="已拒绝调用">
-            <h3>智能体能力策略拒绝了沙箱能力</h3>
-            <p>前端没有执行代码，也没有绕过后端策略。</p>
-          </div>
-        ) : null}
-      </section>
     </section>
   );
 }
@@ -2688,7 +3645,12 @@ function FullTracePanel() {
       {isLoading ? <p className="empty-state">正在加载完整追踪...</p> : null}
       {loadError ? <p className="empty-state danger-state" role="alert">{loadError}</p> : null}
       {!isLoading && !traceRecord && !loadError ? (
-        <p className="empty-state">暂无可用完整追踪记录。</p>
+        <EmptyStateAction
+          title="请先从运行审计选择一次运行"
+          description="完整追踪是单次运行的诊断详情，不再作为独立一级入口展示。"
+          href="/admin/run-audit"
+          actionLabel="返回运行审计"
+        />
       ) : null}
       {traceRecord ? (
         <>
@@ -2745,15 +3707,30 @@ function RunAuditPanel() {
   const [isLoading, setIsLoading] = useState(true);
   const [statusFilter, setStatusFilter] = useState<RunAuditStatusFilter>("all");
   const [selectedRunId, setSelectedRunId] = useState<string | null>(null);
+  const [query, setQuery] = useState("");
   const filteredRuns = useMemo(
-    () =>
-      statusFilter === "all"
+    () => {
+      const normalizedQuery = query.trim().toLowerCase();
+      const statusMatchedRuns = statusFilter === "all"
         ? runs
-        : runs.filter((run) => run.status === statusFilter),
-    [runs, statusFilter],
+        : runs.filter((run) => run.status === statusFilter);
+      if (!normalizedQuery) {
+        return statusMatchedRuns;
+      }
+      return statusMatchedRuns.filter((run) =>
+        [
+          run.id,
+          run.conversation,
+          run.user,
+          run.agent,
+          run.model,
+        ].some((value) => value.toLowerCase().includes(normalizedQuery)),
+      );
+    },
+    [query, runs, statusFilter],
   );
   const selectedRun =
-    runs.find((run) => run.id === selectedRunId) ?? filteredRuns[0] ?? null;
+    filteredRuns.find((run) => run.id === selectedRunId) ?? filteredRuns[0] ?? null;
 
   useEffect(() => {
     let isCurrent = true;
@@ -2845,64 +3822,86 @@ function RunAuditPanel() {
       {isLoading ? <p className="empty-state">正在加载运行审计...</p> : null}
       {loadError ? <p className="empty-state danger-state" role="alert">{loadError}</p> : null}
       <section className="state-panel" aria-label="运行审计筛选">
-        <label htmlFor="run-audit-status-filter">状态</label>
-        <Select
-          value={statusFilter}
-          onValueChange={(value) => switchStatusFilter(value as RunAuditStatusFilter)}
-        >
-          <SelectTrigger id="run-audit-status-filter">
-            <SelectValue placeholder="全部" />
-          </SelectTrigger>
-          <SelectContent>
-            <SelectItem value="all">全部</SelectItem>
-            <SelectItem value="running">运行中</SelectItem>
-            <SelectItem value="completed">已完成</SelectItem>
-            <SelectItem value="failed">已失败</SelectItem>
-            <SelectItem value="cancelled">已取消</SelectItem>
-          </SelectContent>
-        </Select>
+        <div className="audit-filter-grid">
+          <label htmlFor="run-audit-status-filter">
+            <span>状态</span>
+            <Select
+              value={statusFilter}
+              onValueChange={(value) => switchStatusFilter(value as RunAuditStatusFilter)}
+            >
+              <SelectTrigger id="run-audit-status-filter">
+                <SelectValue placeholder="全部" />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="all">全部</SelectItem>
+                <SelectItem value="running">运行中</SelectItem>
+                <SelectItem value="completed">已完成</SelectItem>
+                <SelectItem value="failed">已失败</SelectItem>
+                <SelectItem value="cancelled">已取消</SelectItem>
+              </SelectContent>
+            </Select>
+          </label>
+          <label htmlFor="run-audit-query">
+            <span>运行 / 用户 / 智能体</span>
+            <Input
+              id="run-audit-query"
+              value={query}
+              onChange={(event) => setQuery(event.target.value)}
+              placeholder="输入运行 ID、用户或智能体"
+            />
+          </label>
+        </div>
       </section>
-      <div className="route-table-wrap">
-        <table className="route-table" aria-label="智能体运行列表">
-          <thead>
-            <tr>
-              <th>运行 ID</th>
-              <th>会话</th>
-              <th>用户</th>
-              <th>智能体</th>
-              <th>模型</th>
-              <th>状态</th>
-              <th>工具数</th>
-              <th>产物数</th>
-              <th>操作</th>
-            </tr>
-          </thead>
-          <tbody>
-            {filteredRuns.map((run) => (
-              <tr className={run.id === selectedRun?.id ? "selected-row" : ""} key={run.id}>
-                <td>{run.id}</td>
-                <td>{run.conversation}</td>
-                <td>{run.user}</td>
-                <td>{run.agent}</td>
-                <td>{run.model}</td>
-                <td>{runStatusLabel(run.status)}</td>
-                <td>{run.toolCount}</td>
-                <td>{run.artifactCount}</td>
-                <td>
-                  <Button className="secondary-button" type="button" onClick={() => setSelectedRunId(run.id)}>
-                    详情
-                  </Button>
-                </td>
+      <div className="admin-master-detail audit-master-detail">
+        <div className="route-table-wrap">
+          <table className="route-table" aria-label="智能体运行列表">
+            <thead>
+              <tr>
+                <th>运行 ID</th>
+                <th>会话</th>
+                <th>用户</th>
+                <th>智能体</th>
+                <th>模型</th>
+                <th>状态</th>
+                <th>工具数</th>
+                <th>产物数</th>
+                <th>操作</th>
               </tr>
-            ))}
-          </tbody>
-        </table>
-        {filteredRuns.length === 0 ? (
-          <p className="empty-state">没有符合筛选条件的智能体运行。</p>
-        ) : null}
-      </div>
-      {selectedRun ? (
-        <section className="state-panel" aria-label="智能体运行详情">
+            </thead>
+            <tbody>
+              {filteredRuns.map((run) => (
+                <tr className={run.id === selectedRun?.id ? "selected-row" : ""} key={run.id}>
+                  <td>{run.id}</td>
+                  <td>{run.conversation}</td>
+                  <td>{run.user}</td>
+                  <td>{run.agent}</td>
+                  <td>{run.model}</td>
+                  <td>{runStatusLabel(run.status)}</td>
+                  <td>{run.toolCount}</td>
+                  <td>{run.artifactCount}</td>
+                  <td>
+                    <Button className="secondary-button" type="button" onClick={() => setSelectedRunId(run.id)}>
+                      详情
+                    </Button>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+          {filteredRuns.length === 0 ? (
+            <EmptyStateAction
+              title="没有符合筛选条件的智能体运行"
+              description="清空检索条件，或完成一次智能体运行后再回来查看审计记录。"
+              onAction={() => {
+                setQuery("");
+                switchStatusFilter("all");
+              }}
+              actionLabel="查看全部"
+            />
+          ) : null}
+        </div>
+        {selectedRun ? (
+        <aside className="context-panel" aria-label="智能体运行详情" role="region">
           <div>
             <p className="eyebrow">智能体运行</p>
             <h2>{selectedRun.id}</h2>
@@ -2947,26 +3946,10 @@ function RunAuditPanel() {
             <p>仅管理员可见的诊断记录按 90 天策略保留。</p>
             <a className="secondary-button" href="/admin/full-trace">打开完整追踪详情</a>
           </section>
-        </section>
-      ) : null}
+        </aside>
+        ) : null}
+      </div>
     </section>
-  );
-}
-
-function TableBlock({ columns, rows }: { columns: string[]; rows: string[][] }) {
-  return (
-    <div className="route-table-wrap">
-      <table className="route-table">
-        <thead>
-          <tr>{columns.map((column) => <th key={column}>{column}</th>)}</tr>
-        </thead>
-        <tbody>
-          {rows.map((row) => (
-            <tr key={row.join(":")}>{row.map((cell) => <td key={cell}>{cell}</td>)}</tr>
-          ))}
-        </tbody>
-      </table>
-    </div>
   );
 }
 
@@ -3037,8 +4020,6 @@ function modelStatusLabel(status: ModelConfigurationStatus) {
       return "已启用";
     case "disabled":
       return "已停用";
-    case "draft":
-      return "草稿";
   }
 }
 
