@@ -11,7 +11,9 @@ import {
 } from "../shared/copilotkit-adapter";
 import {
   authTokenStorageKey,
+  getAuthToken,
   getCurrentUser,
+  handleUnauthorized,
   logout,
   notifyAuthChanged,
   updateCurrentUser,
@@ -406,7 +408,7 @@ type AdminOverviewTask = {
 };
 
 async function adminFetch<T>(path: string, init: RequestInit = {}): Promise<T> {
-  const token = window.localStorage.getItem(authTokenStorageKey);
+  const token = getAuthToken();
   const headers = new Headers(init.headers);
   if (!headers.has("Content-Type") && init.body) {
     headers.set("Content-Type", "application/json");
@@ -420,6 +422,10 @@ async function adminFetch<T>(path: string, init: RequestInit = {}): Promise<T> {
     headers,
   });
   if (!response.ok) {
+    if (response.status === 401) {
+      handleUnauthorized();
+      throw new Error("登录已过期，请重新登录。");
+    }
     throw new Error(`管理员接口请求失败：${response.status}`);
   }
   return await response.json() as T;

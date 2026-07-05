@@ -15,7 +15,7 @@ describe("Administrator MCP Servers surface", () => {
     window.history.pushState({}, "", "/admin/mcp-servers");
     render(<App />);
 
-    expect(screen.getByRole("heading", { level: 1, name: "MCP 服务器" })).toBeInTheDocument();
+    expect(await screen.findByRole("heading", { level: 1, name: "MCP 服务器" })).toBeInTheDocument();
     expect(screen.getByText("仅支持 SSE 或 Streamable HTTP；stdio MCP 服务器不在当前 MVP 范围内。")).toBeInTheDocument();
 
     const serverTable = screen.getByRole("table", { name: "MCP 服务器列表" });

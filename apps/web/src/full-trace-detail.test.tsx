@@ -15,7 +15,7 @@ describe("Administrator Full Trace Detail surface", () => {
     window.history.pushState({}, "", "/admin/full-trace");
     render(<App />);
 
-    const fullTrace = screen.getByRole("region", { name: "完整追踪详情" });
+    const fullTrace = await screen.findByRole("region", { name: "完整追踪详情" });
 
     expect(within(fullTrace).getByRole("heading", { name: "完整追踪详情" })).toBeInTheDocument();
     expect(within(fullTrace).getByText("仅管理员可见的诊断记录")).toBeInTheDocument();

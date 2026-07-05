@@ -14,7 +14,7 @@ describe("Administrator Agent Lifecycle surface", () => {
     window.history.pushState({}, "", "/admin/agents");
     render(<App />);
 
-    expect(screen.getByRole("heading", { level: 1, name: "智能体生命周期" })).toBeInTheDocument();
+    expect(await screen.findByRole("heading", { level: 1, name: "智能体生命周期" })).toBeInTheDocument();
     const lifecycle = screen.getByRole("region", { name: "智能体生命周期" });
     expect(await within(lifecycle).findByRole("row", { name: /Default Agent 已启用 模型配置 #1 2 搜索、沙箱、MCP 过程可见性：标准 详情/ })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "创建智能体" })).toBeInTheDocument();
@@ -29,7 +29,7 @@ describe("Administrator Agent Lifecycle surface", () => {
     window.history.pushState({}, "", "/admin/agents");
     render(<App />);
 
-    const lifecycle = screen.getByRole("region", { name: "智能体生命周期" });
+    const lifecycle = await screen.findByRole("region", { name: "智能体生命周期" });
     const agentList = within(lifecycle).getByRole("table", { name: "智能体列表" });
 
     expect(await within(agentList).findByRole("row", { name: /Research Agent 已启用 模型配置 #2 2 搜索、页面读取 过程可见性：最小 详情/ })).toBeInTheDocument();

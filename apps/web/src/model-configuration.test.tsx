@@ -14,7 +14,7 @@ describe("Administrator Model Configuration surface", () => {
     window.history.pushState({}, "", "/admin/models");
     render(<App />);
 
-    expect(screen.getByRole("heading", { level: 1, name: "模型配置" })).toBeInTheDocument();
+    expect(await screen.findByRole("heading", { level: 1, name: "模型配置" })).toBeInTheDocument();
     const models = screen.getByRole("region", { name: "模型配置" });
     expect(await within(models).findByRole("table", { name: "模型配置列表" })).toBeInTheDocument();
     expect(within(models).queryByRole("region", { name: "模型提供商目录" })).not.toBeInTheDocument();
@@ -26,7 +26,7 @@ describe("Administrator Model Configuration surface", () => {
     window.history.pushState({}, "", "/admin/models");
     render(<App />);
 
-    const models = screen.getByRole("region", { name: "模型配置" });
+    const models = await screen.findByRole("region", { name: "模型配置" });
 
     const configurationList = within(models).getByRole("table", { name: "模型配置列表" });
     expect(await within(configurationList).findByRole("row", { name: /DeepSeek deepseek-reasoner 已配置 已启用 未检查 temperature 0\.2 未记录 详情/ })).toBeInTheDocument();

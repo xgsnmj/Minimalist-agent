@@ -24,11 +24,24 @@ export function notifyAuthChanged() {
   window.dispatchEvent(new Event("minimalist-agent:auth-changed"));
 }
 
+function navigateToLogin() {
+  const currentPath = `${window.location.pathname}${window.location.search}${window.location.hash}`;
+  if (currentPath !== "/login") {
+    window.history.pushState({}, "", "/login");
+  }
+  window.dispatchEvent(new Event("minimalist-agent:navigate"));
+}
+
 export function logout() {
   clearAuthToken();
   notifyAuthChanged();
-  window.history.pushState({}, "", "/login");
-  window.dispatchEvent(new Event("minimalist-agent:navigate"));
+  navigateToLogin();
+}
+
+export function handleUnauthorized() {
+  clearAuthToken();
+  notifyAuthChanged();
+  navigateToLogin();
 }
 
 export async function authFetch<T>(path: string, init: RequestInit = {}): Promise<T> {
@@ -47,6 +60,10 @@ export async function authFetch<T>(path: string, init: RequestInit = {}): Promis
   });
 
   if (!response.ok) {
+    if (response.status === 401) {
+      handleUnauthorized();
+      throw new Error("登录已过期，请重新登录。");
+    }
     let detail = "请求失败。";
     try {
       const body = await response.json() as { detail?: string };

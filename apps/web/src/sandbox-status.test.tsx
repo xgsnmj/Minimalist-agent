@@ -13,7 +13,7 @@ describe("Administrator Sandbox Status surface", () => {
     window.history.pushState({}, "", "/admin/sandbox");
     render(<App />);
 
-    expect(screen.getByRole("heading", { level: 1, name: "沙箱状态" })).toBeInTheDocument();
+    expect(await screen.findByRole("heading", { level: 1, name: "沙箱状态" })).toBeInTheDocument();
     expect(screen.getByText("使用 OpenAI Agents SDK 沙箱支持；此页面不表示生产主机提供 Docker 沙箱。")).toBeInTheDocument();
 
     const runtimeStatus = screen.getByRole("region", { name: "沙箱运行时状态" });

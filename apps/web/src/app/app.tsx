@@ -2,7 +2,7 @@ import { useEffect, useState } from "react";
 
 import { CopilotKitWorkspaceProvider } from "../shared/copilotkit-adapter";
 import { ConversationShell } from "../features/workspace/conversation-shell";
-import { clearAuthToken, getAuthToken, notifyAuthChanged } from "../features/workspace/auth-api";
+import { getAuthToken, handleUnauthorized } from "../features/workspace/auth-api";
 import {
   AccountSettingsPage,
   AdminPage,
@@ -27,14 +27,13 @@ const protectedRoutes = new Set<ReturnType<typeof resolveAppRoute>>([
   "full-trace",
 ]);
 
-type AuthState = "authenticated" | "unauthenticated";
+type AuthState = "checking" | "authenticated" | "unauthenticated";
 
 export function App() {
   const [pathname, setPathname] = useState(window.location.pathname);
   const [authState, setAuthState] = useState<AuthState>(() =>
-    getAuthToken() ? "authenticated" : "unauthenticated",
+    getAuthToken() ? "checking" : "unauthenticated",
   );
-  const [isAuthVerified, setIsAuthVerified] = useState(() => !getAuthToken());
 
   useEffect(() => {
     function syncPathname() {
@@ -43,14 +42,44 @@ export function App() {
     function syncAuthState() {
       const token = getAuthToken();
       setAuthState(token ? "authenticated" : "unauthenticated");
-      setIsAuthVerified(!token);
+    }
+    function navigateWithinApp(event: MouseEvent) {
+      if (event.defaultPrevented || event.button !== 0 || event.metaKey || event.altKey || event.ctrlKey || event.shiftKey) {
+        return;
+      }
+      const target = event.target;
+      if (!(target instanceof Element)) {
+        return;
+      }
+      const anchor = target.closest("a[href]");
+      if (!(anchor instanceof HTMLAnchorElement)) {
+        return;
+      }
+      if (anchor.target || anchor.hasAttribute("download")) {
+        return;
+      }
+      const nextUrl = new URL(anchor.href, window.location.href);
+      if (nextUrl.origin !== window.location.origin || nextUrl.protocol !== window.location.protocol) {
+        return;
+      }
+      const nextPath = `${nextUrl.pathname}${nextUrl.search}${nextUrl.hash}`;
+      const currentPath = `${window.location.pathname}${window.location.search}${window.location.hash}`;
+      if (nextPath === currentPath) {
+        event.preventDefault();
+        return;
+      }
+      event.preventDefault();
+      window.history.pushState({}, "", nextPath);
+      window.dispatchEvent(new Event("minimalist-agent:navigate"));
     }
 
+    document.addEventListener("click", navigateWithinApp);
     window.addEventListener("popstate", syncPathname);
     window.addEventListener("minimalist-agent:navigate", syncPathname);
     window.addEventListener("minimalist-agent:auth-changed", syncAuthState);
 
     return () => {
+      document.removeEventListener("click", navigateWithinApp);
       window.removeEventListener("popstate", syncPathname);
       window.removeEventListener("minimalist-agent:navigate", syncPathname);
       window.removeEventListener("minimalist-agent:auth-changed", syncAuthState);
@@ -61,10 +90,6 @@ export function App() {
     const token = getAuthToken();
     if (!token) {
       setAuthState("unauthenticated");
-      setIsAuthVerified(true);
-      return;
-    }
-    if (authState === "authenticated" && isAuthVerified) {
       return;
     }
 
@@ -81,36 +106,35 @@ export function App() {
         }
         if (response.ok) {
           setAuthState("authenticated");
-          setIsAuthVerified(true);
           return;
         }
-        clearAuthToken();
-        notifyAuthChanged();
-        setAuthState("unauthenticated");
-        setIsAuthVerified(true);
+        if (response.status === 401) {
+          handleUnauthorized();
+          return;
+        }
+        setAuthState("authenticated");
       })
       .catch(() => {
         if (!isCurrent) {
           return;
         }
-        clearAuthToken();
-        notifyAuthChanged();
-        setAuthState("unauthenticated");
-        setIsAuthVerified(true);
+        setAuthState("authenticated");
       });
 
     return () => {
       isCurrent = false;
     };
-  }, [authState, isAuthVerified]);
+  }, []);
 
   const route = resolveAppRoute(pathname);
   const isPublicRoute = route === "login" || route === "register" || route === "approval-pending";
   const isProtectedRoute = !isPublicRoute && protectedRoutes.has(route);
-  const requiresCopilotProvider = route === "conversation";
 
   if (isProtectedRoute) {
-    if (authState !== "authenticated") {
+    if (authState === "checking") {
+      return <AuthVerificationFallback />;
+    }
+    if (authState === "unauthenticated") {
       return <LoginPage />;
     }
   }
@@ -118,12 +142,6 @@ export function App() {
   const content = renderRoute(route);
 
   if (isPublicRoute) {
-    return content;
-  }
-  if (!isAuthVerified && requiresCopilotProvider) {
-    return <AuthVerificationFallback />;
-  }
-  if (!isAuthVerified) {
     return content;
   }
 

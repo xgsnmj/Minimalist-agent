@@ -3,7 +3,13 @@ import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { App } from "./app/app";
-import { authTokenStorageKey } from "./features/workspace/auth-api";
+import { authFetch, authTokenStorageKey } from "./features/workspace/auth-api";
+
+function countCurrentUserRequests(fetchMock: ReturnType<typeof vi.fn>) {
+  return fetchMock.mock.calls.filter(([input, init]) =>
+    String(input) === "/api/auth/me" && (init?.method ?? "GET") === "GET",
+  ).length;
+}
 
 describe("Local Account access flow", () => {
   beforeEach(() => {
@@ -56,6 +62,54 @@ describe("Local Account access flow", () => {
     expect(screen.getByRole("status")).toHaveTextContent("正在验证登录状态");
     expect(screen.queryByTestId("copilotkit-provider")).not.toBeInTheDocument();
     expect(screen.queryByText("对话工作台")).not.toBeInTheDocument();
+  });
+
+  it("keeps the Administrator Console behind auth verification before mounting CopilotKit", () => {
+    window.history.pushState({}, "", "/admin");
+    window.localStorage.setItem(authTokenStorageKey, "pending-token");
+    vi.stubGlobal("fetch", vi.fn(() => new Promise(() => {})));
+
+    render(<App />);
+
+    expect(screen.getByRole("status")).toHaveTextContent("正在验证登录状态");
+    expect(screen.queryByTestId("copilotkit-provider")).not.toBeInTheDocument();
+    expect(screen.queryByRole("heading", { name: "治理总览" })).not.toBeInTheDocument();
+  });
+
+  it("navigates administrator menu links without revalidating the current user", async () => {
+    const user = userEvent.setup();
+    window.history.pushState({}, "", "/admin");
+    window.localStorage.setItem(authTokenStorageKey, "local-test-token");
+    const fetchMock = vi.mocked(fetch);
+
+    render(<App />);
+
+    expect(await screen.findByRole("heading", { name: "治理总览" })).toBeInTheDocument();
+    expect(countCurrentUserRequests(fetchMock)).toBe(1);
+
+    await user.click(screen.getByRole("link", { name: /智能体生命周期/ }));
+
+    expect(window.location.pathname).toBe("/admin/agents");
+    expect(await screen.findByRole("heading", { name: "智能体生命周期" })).toBeInTheDocument();
+    expect(countCurrentUserRequests(fetchMock)).toBe(1);
+  });
+
+  it("clears the local session and redirects to login when an authenticated API returns 401", async () => {
+    window.localStorage.setItem(authTokenStorageKey, "expired-token");
+    window.history.pushState({}, "", "/app/conversations");
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue({
+        ok: false,
+        status: 401,
+        json: async () => ({ detail: "Authentication required." }),
+      }),
+    );
+
+    await expect(authFetch("/workspace/agents")).rejects.toThrow("登录已过期，请重新登录。");
+
+    expect(window.localStorage.getItem(authTokenStorageKey)).toBeNull();
+    expect(window.location.pathname).toBe("/login");
   });
 
   it("enters the conversation workbench after an approved local account signs in", async () => {

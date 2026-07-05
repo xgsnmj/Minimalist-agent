@@ -15,7 +15,7 @@ describe("Administrator Run Audit surface", () => {
     window.history.pushState({}, "", "/admin/run-audit");
     render(<App />);
 
-    const runAudit = screen.getByRole("region", { name: "运行审计" });
+    const runAudit = await screen.findByRole("region", { name: "运行审计" });
 
     expect(within(runAudit).getByRole("heading", { name: "运行审计" })).toBeInTheDocument();
     expect(within(runAudit).getByText("完整追踪保留 90 天")).toBeInTheDocument();

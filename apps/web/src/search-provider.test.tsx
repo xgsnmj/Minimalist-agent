@@ -15,7 +15,7 @@ describe("Administrator Search Provider surface", () => {
     window.history.pushState({}, "", "/admin/search-provider");
     render(<App />);
 
-    expect(screen.getByRole("heading", { level: 1, name: "搜索提供方" })).toBeInTheDocument();
+    expect(await screen.findByRole("heading", { level: 1, name: "搜索提供方" })).toBeInTheDocument();
     expect(screen.getByText("搜索能力负责查找候选 URL 和摘要；页面读取能力只读取已知 URL。")).toBeInTheDocument();
 
     const status = screen.getByRole("region", { name: "搜索提供方状态" });

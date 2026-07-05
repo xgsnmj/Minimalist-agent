@@ -26,20 +26,20 @@ describe("planned page routes", () => {
     expect(screen.getByRole("heading", { name: "待审批" })).toBeInTheDocument();
   });
 
-  it("renders the Administrator Console pages from route paths", () => {
+  it("renders the Administrator Console pages from route paths", async () => {
     window.history.pushState({}, "", "/admin");
     render(<App />);
-    expect(screen.getByRole("heading", { name: "治理总览" })).toBeInTheDocument();
+    expect(await screen.findByRole("heading", { name: "治理总览" })).toBeInTheDocument();
 
     cleanup();
     window.history.pushState({}, "", "/admin/run-audit");
     render(<App />);
-    expect(screen.getByRole("heading", { level: 1, name: "运行审计" })).toBeInTheDocument();
+    expect(await screen.findByRole("heading", { level: 1, name: "运行审计" })).toBeInTheDocument();
 
     cleanup();
     window.history.pushState({}, "", "/admin/full-trace");
     render(<App />);
-    expect(screen.getByRole("heading", { level: 1, name: "完整追踪详情" })).toBeInTheDocument();
+    expect(await screen.findByRole("heading", { level: 1, name: "完整追踪详情" })).toBeInTheDocument();
   });
 
   it("loads and updates authenticated account settings", async () => {

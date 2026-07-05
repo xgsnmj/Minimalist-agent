@@ -15,7 +15,7 @@ describe("Account Approval governance", () => {
     window.history.pushState({}, "", "/admin/account-approval");
     render(<App />);
 
-    const accountApproval = screen.getByRole("region", { name: "账号审批" });
+    const accountApproval = await screen.findByRole("region", { name: "账号审批" });
     expect(screen.getByRole("heading", { name: "账号审批", level: 1 })).toBeInTheDocument();
     expect(await within(accountApproval).findAllByText("lin.request@example.com")).toHaveLength(2);
 
@@ -32,7 +32,7 @@ describe("Account Approval governance", () => {
     window.history.pushState({}, "", "/admin/account-approval");
     render(<App />);
 
-    const accountApproval = screen.getByRole("region", { name: "账号审批" });
+    const accountApproval = await screen.findByRole("region", { name: "账号审批" });
     expect(await within(accountApproval).findAllByText("lin.request@example.com")).toHaveLength(2);
     await user.type(within(accountApproval).getByLabelText("管理员备注"), "已核对部门负责人");
     await user.click(within(accountApproval).getByRole("button", { name: "保存备注" }));

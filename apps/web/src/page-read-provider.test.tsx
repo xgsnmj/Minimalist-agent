@@ -15,7 +15,7 @@ describe("Administrator Page Read Provider surface", () => {
     window.history.pushState({}, "", "/admin/page-read-provider");
     render(<App />);
 
-    expect(screen.getByRole("heading", { level: 1, name: "页面读取提供方" })).toBeInTheDocument();
+    expect(await screen.findByRole("heading", { level: 1, name: "页面读取提供方" })).toBeInTheDocument();
     expect(screen.getByText("页面读取能力读取已知 URL 的全文；搜索能力只查找候选 URL 和摘要。")).toBeInTheDocument();
 
     const status = screen.getByRole("region", { name: "页面读取提供方状态" });

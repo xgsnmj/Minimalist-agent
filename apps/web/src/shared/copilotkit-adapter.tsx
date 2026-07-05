@@ -4,7 +4,7 @@ import type { ReactCustomMessageRenderer } from "@copilotkit/react-core/v2";
 import "@copilotkit/react-core/v2/styles.css";
 import { z } from "zod";
 
-import { getAuthToken } from "../features/workspace/auth-api";
+import { getAuthToken, handleUnauthorized } from "../features/workspace/auth-api";
 import { minimalistRichMessageRenderer } from "./copilotkit-rich-message-rendering";
 
 type ModelOption = {
@@ -198,6 +198,29 @@ type CopilotWorkspaceBridgeProps = {
 
 const copilotRuntimeUrl = "/api/copilotkit";
 
+function hasUnauthorizedStatus(value: unknown, seen = new WeakSet<object>()): boolean {
+  if (typeof value === "string") {
+    return /\b401\b/.test(value);
+  }
+  if (!value || typeof value !== "object") {
+    return false;
+  }
+  if (value instanceof Error && /\b401\b/.test(value.message)) {
+    return true;
+  }
+  if (seen.has(value)) {
+    return false;
+  }
+  seen.add(value);
+
+  const record = value as Record<string, unknown>;
+  if (record.status === 401 || record.statusCode === 401) {
+    return true;
+  }
+
+  return Object.values(record).some((item) => hasUnauthorizedStatus(item, seen));
+}
+
 const conversationIdSchema = z.object({
   conversationId: z.string().min(1),
 });
@@ -290,6 +313,10 @@ export function CopilotKitWorkspaceProvider({ children }: { children: ReactNode 
       showDevConsole={false}
       useSingleEndpoint={false}
       onError={(event) => {
+        if (hasUnauthorizedStatus(event)) {
+          handleUnauthorized();
+          return;
+        }
         console.warn("[copilotkit]", event);
       }}
     >
