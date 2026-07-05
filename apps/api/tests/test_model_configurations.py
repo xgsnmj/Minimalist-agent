@@ -4,6 +4,7 @@ from apps.api.app.admin_audit import admin_audit_store
 from apps.api.app.agents import agent_store
 from apps.api.app.auth import local_account_store
 from apps.api.app.app import app
+from apps.api.app.features.admin import routes as admin_routes
 from apps.api.app.model_configurations import (
     ModelConfigurationMutationRequest,
     ModelConfigurationStore,
@@ -267,6 +268,12 @@ def test_model_configuration_store_persists_configurations_across_store_instance
 
 def test_administrator_can_check_model_configuration_health(monkeypatch):
     monkeypatch.setenv("TEST_MODEL_API_KEY", "sk-test")
+    probe_calls = []
+
+    def fake_model_health_probe(configuration, api_key):
+        probe_calls.append((configuration.id, configuration.model_name, api_key))
+
+    monkeypatch.setattr(admin_routes, "_model_health_probe", fake_model_health_probe)
     client = TestClient(app)
     token = administrator_token(client)
     configuration = client.post(
@@ -294,6 +301,67 @@ def test_administrator_can_check_model_configuration_health(monkeypatch):
     assert result["configuration"]["health_status"] == "healthy"
     assert result["configuration"]["last_checked_at"] == result["checked_at"]
     assert result["configuration"]["last_error"] is None
+    assert probe_calls == [(configuration["id"], "gpt-5", "sk-test")]
+
+
+def test_model_configuration_health_check_records_probe_failure(monkeypatch):
+    monkeypatch.setenv("TEST_MODEL_API_KEY", "sk-test")
+
+    def fake_model_health_probe(configuration, api_key):
+        raise RuntimeError("provider rejected the request")
+
+    monkeypatch.setattr(admin_routes, "_model_health_probe", fake_model_health_probe)
+    client = TestClient(app)
+    token = administrator_token(client)
+    configuration = client.post(
+        "/admin/model-configurations",
+        headers={"Authorization": f"Bearer {token}"},
+        json={
+            "provider_id": "custom-openai-compatible",
+            "name": "Gateway",
+            "model_name": "gpt-5.5",
+            "endpoint": "https://www.packyapi.com/v1",
+            "credential_reference": "env:TEST_MODEL_API_KEY",
+            "enabled": True,
+        },
+    ).json()
+
+    response = client.post(
+        f"/admin/model-configurations/{configuration['id']}/health-check",
+        headers={"Authorization": f"Bearer {token}"},
+    )
+
+    assert response.status_code == 200
+    result = response.json()
+    assert result["status"] == "unhealthy"
+    assert result["configuration"]["health_status"] == "unhealthy"
+    assert result["message"] == "Model health check request failed: provider rejected the request"
+    assert result["configuration"]["last_error"] == result["message"]
+
+
+def test_model_configuration_health_check_request_is_small_and_filters_temperature():
+    configuration = model_configuration_store.create(
+        ModelConfigurationMutationRequest(
+            provider_id="custom-openai-compatible",
+            name="Packy GPT-5.5",
+            model_name="gpt-5.5",
+            endpoint="https://www.packyapi.com/v1",
+            credential_reference="sk-direct",
+            default_parameters={
+                "max_tokens": 8192,
+                "temperature": 0.1,
+                "extra_headers": {"X-Test": "1"},
+            },
+            enabled=True,
+        )
+    )
+
+    request = admin_routes._model_health_check_request(configuration)
+
+    assert request["model"] == "gpt-5.5"
+    assert request["max_tokens"] == 1
+    assert "temperature" not in request
+    assert request["extra_headers"] == {"X-Test": "1"}
 
 
 def test_model_configuration_health_check_records_missing_credential():

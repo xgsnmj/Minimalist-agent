@@ -89,10 +89,15 @@ export function CopilotConversationSurface({
   const { copilotkit } = useCopilotKit();
   const [inputValue, setInputValue] = useState("");
   const [suggestionLoadingIndexes, setSuggestionLoadingIndexes] = useState<ReadonlyArray<number>>([]);
+  const stopSettlementRefreshRef = useRef<(() => void) | null>(null);
   const syncedMessageFingerprintRef = useRef<string | null>(null);
   const copilotMessages = useMemo(
-    () => conversationMessages.map(toCopilotMessage),
+    () => ensureUniqueMessageIds(conversationMessages.map(toCopilotMessage)),
     [conversationMessages],
+  );
+  const renderedAgentMessages = useMemo(
+    () => ensureUniqueMessageIds(agent.messages),
+    [agent.messages],
   );
   const copilotMessageFingerprint = useMemo(
     () => fingerprintCopilotMessages(copilotMessages),
@@ -162,6 +167,10 @@ export function CopilotConversationSurface({
     syncedMessageFingerprintRef.current = copilotMessageFingerprint;
   }, [agent, copilotMessageFingerprint, copilotMessages]);
 
+  useEffect(() => () => {
+    stopSettlementRefreshRef.current?.();
+  }, []);
+
   useEffect(() => {
     if (!isLoadingSuggestions) {
       setSuggestionLoadingIndexes((currentIndexes) =>
@@ -192,6 +201,10 @@ export function CopilotConversationSurface({
       content: buildUserMessageContent(message, readyAttachments),
     });
 
+    let preferredConversationId: string | null = conversationId;
+    stopSettlementRefreshRef.current?.();
+    stopSettlementRefreshRef.current = scheduleRunSettlementRefresh(() => preferredConversationId);
+
     try {
       const runResult = await copilotkit.runAgent({
         agent,
@@ -202,12 +215,38 @@ export function CopilotConversationSurface({
           thread_id: threadId,
         },
       });
-      await onRunSettled(conversationIdFromRunResult(runResult) ?? conversationId);
+      preferredConversationId = conversationIdFromRunResult(runResult) ?? conversationId;
       reloadSuggestions();
     } catch (error) {
       onWorkspaceError(error instanceof Error ? error.message : "发送失败。");
-      await onRunSettled(conversationId);
+    } finally {
+      await onRunSettled(preferredConversationId);
     }
+  }
+
+  function scheduleRunSettlementRefresh(getPreferredConversationId: () => string | null) {
+    let isCancelled = false;
+    let timeoutId: number | null = null;
+    const delays = [750, 1500, 2500, 4000, 6000, 9000];
+
+    const scheduleNext = (index: number) => {
+      if (isCancelled || index >= delays.length) {
+        return;
+      }
+      timeoutId = window.setTimeout(() => {
+        void onRunSettled(getPreferredConversationId()).finally(() => {
+          scheduleNext(index + 1);
+        });
+      }, delays[index]);
+    };
+
+    scheduleNext(0);
+    return () => {
+      isCancelled = true;
+      if (timeoutId != null) {
+        window.clearTimeout(timeoutId);
+      }
+    };
   }
 
   async function stopRun() {
@@ -255,7 +294,7 @@ export function CopilotConversationSurface({
           inputValue={inputValue}
           isConnecting={isLoadingWorkspace}
           isRunning={agent.isRunning || isBackendRunActive}
-          messages={agent.messages}
+          messages={renderedAgentMessages}
           suggestionLoadingIndexes={suggestionLoadingIndexes}
           suggestions={suggestions}
           welcomeScreen={false}
@@ -320,6 +359,21 @@ function toCopilotMessage(message: CopilotConversationMessage): Message {
     role: message.role,
     content: message.content,
   };
+}
+
+function ensureUniqueMessageIds(messages: Message[]): Message[] {
+  const seenCounts = new Map<string, number>();
+  return messages.map((message) => {
+    const seenCount = seenCounts.get(message.id) ?? 0;
+    seenCounts.set(message.id, seenCount + 1);
+    if (seenCount === 0) {
+      return message;
+    }
+    return {
+      ...message,
+      id: `${message.id}:duplicate-${seenCount}`,
+    };
+  });
 }
 
 function fingerprintCopilotMessages(messages: Message[]): string {

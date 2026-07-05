@@ -1,6 +1,7 @@
 from datetime import UTC, datetime
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
+from openai import OpenAI
 
 from apps.api.app.admin_audit import admin_audit_store
 from apps.api.app.agent_readiness import (
@@ -63,7 +64,7 @@ from apps.api.app.search_providers import (
     search_provider_store,
     to_search_provider_response,
 )
-from apps.api.app.runtime import resolve_model_api_key
+from apps.api.app.runtime import resolve_model_api_key, runtime_model_parameters_for_configuration
 
 
 router = APIRouter(prefix="/admin", tags=["admin"])
@@ -467,7 +468,40 @@ def _model_configuration_health_error(configuration: ModelConfiguration) -> str 
     if not configuration.enabled:
         return "Model Configuration is disabled."
     try:
-        resolve_model_api_key(configuration.credential_reference)
+        api_key = resolve_model_api_key(configuration.credential_reference)
     except Exception as exc:
         return str(exc)
+    try:
+        _model_health_probe(configuration, api_key)
+    except Exception as exc:
+        return f"Model health check request failed: {exc}"
     return None
+
+
+def _model_health_probe(configuration: ModelConfiguration, api_key: str) -> None:
+    client = OpenAI(
+        api_key=api_key,
+        base_url=configuration.endpoint,
+        max_retries=0,
+        timeout=15,
+    )
+    client.chat.completions.create(**_model_health_check_request(configuration))
+
+
+def _model_health_check_request(configuration: ModelConfiguration) -> dict[str, object]:
+    parameters = runtime_model_parameters_for_configuration(configuration)
+    request: dict[str, object] = {
+        "model": configuration.model_name,
+        "messages": [
+            {
+                "role": "user",
+                "content": "Reply with ok.",
+            }
+        ],
+        "max_tokens": 1,
+    }
+    for key in ("extra_headers", "extra_query", "extra_body"):
+        value = parameters.get(key)
+        if value is not None:
+            request[key] = value
+    return request

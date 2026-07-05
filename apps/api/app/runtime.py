@@ -19,6 +19,29 @@ from apps.api.app.agents import agent_store
 from apps.api.app.model_configurations import ModelConfiguration, model_configuration_store
 from apps.api.app.secret_vault import secret_vault_store
 
+_MODEL_PARAMETER_KEY_MAP = {
+    "temperature": "temperature",
+    "top_p": "top_p",
+    "frequency_penalty": "frequency_penalty",
+    "presence_penalty": "presence_penalty",
+    "tool_choice": "tool_choice",
+    "parallel_tool_calls": "parallel_tool_calls",
+    "truncation": "truncation",
+    "max_tokens": "max_tokens",
+    "max_output_tokens": "max_tokens",
+    "reasoning": "reasoning",
+    "verbosity": "verbosity",
+    "store": "store",
+    "response_include": "response_include",
+    "top_logprobs": "top_logprobs",
+    "extra_query": "extra_query",
+    "extra_body": "extra_body",
+    "extra_headers": "extra_headers",
+    "extra_args": "extra_args",
+}
+
+_TEMPERATURE_PARAMETER_ALLOWLIST: set[tuple[str, str]] = set()
+
 
 @dataclass
 class RuntimeResult:
@@ -374,37 +397,38 @@ def _credential_environment_candidates(credential_reference: str) -> list[str]:
 
 
 def _model_settings_for_configuration(configuration: ModelConfiguration) -> ModelSettings:
-    parameters = dict(configuration.default_parameters)
+    parameters = runtime_model_parameters_for_configuration(configuration)
     model_settings_kwargs: dict[str, Any] = {
         "include_usage": True,
         "metadata": {"provider_id": configuration.provider_id},
     }
 
-    for source_key, target_key in {
-        "temperature": "temperature",
-        "top_p": "top_p",
-        "frequency_penalty": "frequency_penalty",
-        "presence_penalty": "presence_penalty",
-        "tool_choice": "tool_choice",
-        "parallel_tool_calls": "parallel_tool_calls",
-        "truncation": "truncation",
-        "max_tokens": "max_tokens",
-        "max_output_tokens": "max_tokens",
-        "reasoning": "reasoning",
-        "verbosity": "verbosity",
-        "store": "store",
-        "response_include": "response_include",
-        "top_logprobs": "top_logprobs",
-        "extra_query": "extra_query",
-        "extra_body": "extra_body",
-        "extra_headers": "extra_headers",
-        "extra_args": "extra_args",
-    }.items():
+    for source_key, target_key in _MODEL_PARAMETER_KEY_MAP.items():
         value = parameters.get(source_key)
         if value is not None:
             model_settings_kwargs[target_key] = value
 
     return ModelSettings(**model_settings_kwargs)
+
+
+def runtime_model_parameters_for_configuration(
+    configuration: ModelConfiguration,
+) -> dict[str, Any]:
+    parameters = {
+        key: value
+        for key, value in configuration.default_parameters.items()
+        if key != "temperature" and key in _MODEL_PARAMETER_KEY_MAP and value is not None
+    }
+    temperature = configuration.default_parameters.get("temperature")
+    if temperature is not None and _allows_temperature(configuration):
+        parameters["temperature"] = temperature
+    return parameters
+
+
+def _allows_temperature(configuration: ModelConfiguration) -> bool:
+    provider_id = configuration.provider_id.strip().lower()
+    model_name = configuration.model_name.strip().lower()
+    return (provider_id, model_name) in _TEMPERATURE_PARAMETER_ALLOWLIST
 
 
 runtime_store = RuntimeStore()

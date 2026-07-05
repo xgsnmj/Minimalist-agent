@@ -3,6 +3,7 @@ import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { App } from "./app/app";
+import { authTokenStorageKey } from "./features/workspace/auth-api";
 
 describe("Local Account access flow", () => {
   beforeEach(() => {
@@ -21,6 +22,39 @@ describe("Local Account access flow", () => {
 
     expect(screen.getByRole("heading", { name: "登录" })).toBeInTheDocument();
     expect(screen.getAllByRole("link", { name: "申请" })).toHaveLength(1);
+    expect(screen.queryByText("对话工作台")).not.toBeInTheDocument();
+    expect(screen.queryByTestId("copilotkit-provider")).not.toBeInTheDocument();
+  });
+
+  it("does not mount CopilotKit while a stale token is rejected", async () => {
+    window.localStorage.setItem(authTokenStorageKey, "stale-token");
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: false,
+      status: 401,
+      json: async () => ({ detail: "Authentication required." }),
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    render(<App />);
+
+    expect(screen.queryByTestId("copilotkit-provider")).not.toBeInTheDocument();
+    expect(await screen.findByRole("heading", { name: "登录" })).toBeInTheDocument();
+    expect(screen.queryByTestId("copilotkit-provider")).not.toBeInTheDocument();
+    expect(fetchMock).not.toHaveBeenCalledWith(
+      "/api/copilotkit/info",
+      expect.anything(),
+    );
+  });
+
+  it("keeps protected content behind auth verification before mounting CopilotKit", () => {
+    window.history.pushState({}, "", "/app/conversations");
+    window.localStorage.setItem(authTokenStorageKey, "pending-token");
+    vi.stubGlobal("fetch", vi.fn(() => new Promise(() => {})));
+
+    render(<App />);
+
+    expect(screen.getByRole("status")).toHaveTextContent("正在验证登录状态");
+    expect(screen.queryByTestId("copilotkit-provider")).not.toBeInTheDocument();
     expect(screen.queryByText("对话工作台")).not.toBeInTheDocument();
   });
 

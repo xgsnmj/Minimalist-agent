@@ -34,13 +34,16 @@ export function App() {
   const [authState, setAuthState] = useState<AuthState>(() =>
     getAuthToken() ? "authenticated" : "unauthenticated",
   );
+  const [isAuthVerified, setIsAuthVerified] = useState(() => !getAuthToken());
 
   useEffect(() => {
     function syncPathname() {
       setPathname(window.location.pathname);
     }
     function syncAuthState() {
-      setAuthState(getAuthToken() ? "authenticated" : "unauthenticated");
+      const token = getAuthToken();
+      setAuthState(token ? "authenticated" : "unauthenticated");
+      setIsAuthVerified(!token);
     }
 
     window.addEventListener("popstate", syncPathname);
@@ -58,6 +61,10 @@ export function App() {
     const token = getAuthToken();
     if (!token) {
       setAuthState("unauthenticated");
+      setIsAuthVerified(true);
+      return;
+    }
+    if (authState === "authenticated" && isAuthVerified) {
       return;
     }
 
@@ -74,11 +81,13 @@ export function App() {
         }
         if (response.ok) {
           setAuthState("authenticated");
+          setIsAuthVerified(true);
           return;
         }
         clearAuthToken();
         notifyAuthChanged();
         setAuthState("unauthenticated");
+        setIsAuthVerified(true);
       })
       .catch(() => {
         if (!isCurrent) {
@@ -87,17 +96,20 @@ export function App() {
         clearAuthToken();
         notifyAuthChanged();
         setAuthState("unauthenticated");
+        setIsAuthVerified(true);
       });
 
     return () => {
       isCurrent = false;
     };
-  }, []);
+  }, [authState, isAuthVerified]);
 
   const route = resolveAppRoute(pathname);
   const isPublicRoute = route === "login" || route === "register" || route === "approval-pending";
+  const isProtectedRoute = !isPublicRoute && protectedRoutes.has(route);
+  const requiresCopilotProvider = route === "conversation";
 
-  if (!isPublicRoute && protectedRoutes.has(route)) {
+  if (isProtectedRoute) {
     if (authState !== "authenticated") {
       return <LoginPage />;
     }
@@ -108,11 +120,25 @@ export function App() {
   if (isPublicRoute) {
     return content;
   }
+  if (!isAuthVerified && requiresCopilotProvider) {
+    return <AuthVerificationFallback />;
+  }
+  if (!isAuthVerified) {
+    return content;
+  }
 
   return (
     <CopilotKitWorkspaceProvider>
       {content}
     </CopilotKitWorkspaceProvider>
+  );
+}
+
+function AuthVerificationFallback() {
+  return (
+    <main className="app-shell" aria-label="认证校验">
+      <p className="empty-state" role="status">正在验证登录状态...</p>
+    </main>
   );
 }
 

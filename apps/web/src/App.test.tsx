@@ -1,4 +1,4 @@
-import { cleanup, render, screen, within } from "@testing-library/react";
+import { cleanup, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach } from "vitest";
 import { describe, expect, it } from "vitest";
@@ -28,11 +28,13 @@ describe("App", () => {
     window.history.pushState({}, "", "/");
   });
 
-  it("renders the Agent Platform shell", () => {
+  it("renders the Agent Platform shell", async () => {
     window.history.pushState({}, "", "/app/conversations");
     render(<App />);
 
-    expect(screen.getByRole("heading", { name: "Minimalist Agent" })).toBeInTheDocument();
+    await waitFor(() => {
+      expect(screen.getByRole("heading", { name: "Minimalist Agent" })).toBeInTheDocument();
+    });
     expect(screen.getByText("对话工作台")).toBeInTheDocument();
   });
 
@@ -60,13 +62,16 @@ describe("App", () => {
     expect(within(messageStream).getByPlaceholderText("询问当前工作台")).toBeInTheDocument();
   });
 
-  it("keeps model selection in the composer and tool authority out of user controls", () => {
+  it("keeps model selection in the composer and tool authority out of user controls", async () => {
     window.history.pushState({}, "", "/app/conversations");
     render(<App />);
-    const composer = screen.getByLabelText("对话输入区");
 
-    expect(within(composer).getByRole("combobox", { name: "模型选择" })).toBeInTheDocument();
-    expect(within(composer).getByText("能力边界由管理员策略决定")).toBeInTheDocument();
+    await waitFor(() => {
+      const composer = screen.getByLabelText("对话输入区");
+      expect(within(composer).getByText("模型选择")).toBeInTheDocument();
+      expect(within(composer).getByRole("combobox")).toBeInTheDocument();
+      expect(within(composer).getByText("能力边界由管理员策略决定")).toBeInTheDocument();
+    });
     expect(screen.queryByLabelText("运行配置")).not.toBeInTheDocument();
     expect(screen.queryByRole("combobox", { name: "智能体选择" })).not.toBeInTheDocument();
     expect(screen.queryByLabelText("Enable Search Capability")).not.toBeInTheDocument();

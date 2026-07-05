@@ -5,9 +5,10 @@ from apps.api.app.agents import agent_store
 from apps.api.app.auth import local_account_store
 from apps.api.app.conversations import conversation_store
 from apps.api.app.app import app
+from apps.api.app.model_configurations import ModelConfigurationMutationRequest
 from apps.api.app.model_configurations import model_configuration_store
 from apps.api.app.run_event_log import run_event_log_store
-from apps.api.app.runtime import runtime_store
+from apps.api.app.runtime import runtime_model_parameters_for_configuration, runtime_store
 from apps.api.tests.support import use_fake_agent_runtime
 
 
@@ -181,3 +182,28 @@ def test_runtime_missing_model_secret_fails_run_without_mock_fallback(monkeypatc
         "Model credential is not configured. Set one of: TEST_MODEL_API_KEY"
     )
     assert conversation_response["status"] == "idle"
+
+
+def test_runtime_model_parameters_filter_temperature_by_provider_model_allowlist():
+    configuration = model_configuration_store.create(
+        ModelConfigurationMutationRequest(
+            provider_id="custom-openai-compatible",
+            name="Packy GPT-5.5",
+            model_name="gpt-5.5",
+            endpoint="https://www.packyapi.com/v1",
+            credential_reference="sk-direct",
+            default_parameters={
+                "max_tokens": 8192,
+                "temperature": 0.1,
+                "top_p": 0.9,
+            },
+            enabled=True,
+        )
+    )
+
+    parameters = runtime_model_parameters_for_configuration(configuration)
+
+    assert parameters == {
+        "max_tokens": 8192,
+        "top_p": 0.9,
+    }

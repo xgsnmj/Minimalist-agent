@@ -125,6 +125,7 @@ export function ConversationShell() {
   );
   const activeRunId = selectedConversation?.latestRunId ?? null;
   const { lastSeenSequence, status: streamStatus } = useAgentRunStream(activeRunId);
+  const refreshedRunEventRef = useRef<string | null>(null);
   const activeAgent = getAgent(workspaceAgents, selectedConversation?.agentId ?? draftAgentId);
   const allowedModels = activeAgent.allowedModels;
   const selectedModelId = selectedConversation?.selectedModelId ?? draftModelId;
@@ -181,6 +182,18 @@ export function ConversationShell() {
   useEffect(() => {
     void refreshWorkspace();
   }, []);
+
+  useEffect(() => {
+    if (activeRunId == null || lastSeenSequence === 0) {
+      return;
+    }
+    const refreshKey = `${activeRunId}:${lastSeenSequence}`;
+    if (refreshedRunEventRef.current === refreshKey) {
+      return;
+    }
+    refreshedRunEventRef.current = refreshKey;
+    void refreshWorkspace(selectedConversationId);
+  }, [activeRunId, lastSeenSequence, selectedConversationId]);
 
   useEffect(() => {
     let isCurrent = true;
@@ -570,7 +583,13 @@ export function ConversationShell() {
             <span>{formatRunActivity(lastSeenSequence)}</span>
           </Card>
           <CopilotConversationSurface
-            key={`${activeAgent.copilotAgentId}:${selectedConversation?.id ?? "draft"}:${selectedModelId}`}
+            key={[
+              activeAgent.copilotAgentId,
+              selectedConversation?.id ?? "draft",
+              selectedModelId,
+              selectedConversation?.latestRunId ?? "no-run",
+              selectedConversation?.status ?? "draft",
+            ].join(":")}
             activeAgent={{
               backendId: activeAgent.backendId,
               copilotAgentId: activeAgent.copilotAgentId,

@@ -1,4 +1,4 @@
-import { cleanup, fireEvent, render, screen, within } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
@@ -78,6 +78,24 @@ describe("Agent Conversation workspace", () => {
 
     expect(await screen.findByRole("heading", { name: "验证默认模型。" })).toBeInTheDocument();
     expect(within(screen.getByLabelText("对话输入区")).getByRole("combobox", { name: "模型选择" })).toHaveTextContent("gpt-5.5 / gpt-5.5");
+    expect(screen.getByText("运行：已完成")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "停止运行" })).toBeDisabled();
+  });
+
+  it("keeps refreshing when CopilotKit settles before the backend run is visible", async () => {
+    const user = userEvent.setup();
+    await renderLoadedWorkspace();
+
+    const inputForm = screen.getByRole("form", { name: "CopilotKit 对话输入" });
+    await user.type(within(inputForm).getByLabelText("消息"), "延迟完成态刷新");
+    await user.click(within(inputForm).getByRole("button", { name: "发送" }));
+
+    await waitFor(() => {
+      expect(screen.getByText("Run 6")).toBeInTheDocument();
+      expect(screen.getByText("运行：已完成")).toBeInTheDocument();
+      expect(screen.getByText("openai:gpt-5 handled 延迟完成态刷新")).toBeInTheDocument();
+      expect(screen.getByRole("button", { name: "停止运行" })).toBeDisabled();
+    }, { timeout: 4000 });
   });
 
   it("shows the authenticated account and groups account actions in the avatar menu", async () => {
@@ -170,7 +188,8 @@ describe("Agent Conversation workspace", () => {
     render(<App />);
 
     const user = userEvent.setup();
-    const accountCenter = await screen.findByLabelText("账号中心");
+    expect(await screen.findByText("product.user")).toBeInTheDocument();
+    const accountCenter = screen.getByLabelText("账号中心");
     await user.click(within(accountCenter).getByRole("button", { name: "打开账号菜单" }));
     const accountMenu = within(accountCenter).getByRole("dialog", { name: "账号菜单" });
 

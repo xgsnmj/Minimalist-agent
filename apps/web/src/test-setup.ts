@@ -868,51 +868,59 @@ beforeEach(() => {
         const agentId = typeof forwardedProps.agent_id === "number" ? forwardedProps.agent_id : 1;
         const agent = agents.find((item) => item.id === agentId) ?? agents[0];
 
-        if (forwardedConversationId) {
-          workspaceConversations = workspaceConversations.map((conversation) =>
-            conversation.id === forwardedConversationId
-              ? {
-                  ...conversation,
-                  status: "idle",
-                  updated_at: "刚刚",
-                  messages: [
-                    ...conversation.messages,
-                    { role: "user", content: text },
-                    { role: "assistant", content: assistantMessage },
-                  ],
-                }
-              : conversation,
-          );
+        const persistRunResult = () => {
+          if (forwardedConversationId) {
+            workspaceConversations = workspaceConversations.map((conversation) =>
+              conversation.id === forwardedConversationId
+                ? {
+                    ...conversation,
+                    status: "idle",
+                    updated_at: "刚刚",
+                    messages: [
+                      ...conversation.messages,
+                      { role: "user", content: text },
+                      { role: "assistant", content: assistantMessage },
+                    ],
+                  }
+                : conversation,
+            );
+          } else {
+            workspaceConversations = [
+              {
+                id: conversationId,
+                title: text.slice(0, 48) || "新对话",
+                agent,
+                selected_model_configuration_id: selectedModelConfigurationId,
+                status: "idle",
+                updated_at: "刚刚",
+                deleted: false,
+                messages: [
+                  { role: "user", content: text },
+                  { role: "assistant", content: assistantMessage },
+                ],
+              },
+              ...workspaceConversations,
+            ];
+          }
+          workspaceRuns.unshift({
+            id: Math.max(...workspaceRuns.map((run) => run.id), 0) + 1,
+            conversation_id: conversationId,
+            owner_user_id: 1,
+            status: "completed",
+            user_message: text,
+            assistant_message: assistantMessage,
+            process_summaries: [],
+            error: null,
+            worker_enqueued: true,
+            status_events: ["completed"],
+          });
+        };
+
+        if (text.includes("延迟完成态刷新")) {
+          window.setTimeout(persistRunResult, 1000);
         } else {
-          workspaceConversations = [
-            ...workspaceConversations,
-            {
-              id: conversationId,
-              title: text.slice(0, 48) || "新对话",
-              agent,
-              selected_model_configuration_id: selectedModelConfigurationId,
-              status: "idle",
-              updated_at: "刚刚",
-              deleted: false,
-              messages: [
-                { role: "user", content: text },
-                { role: "assistant", content: assistantMessage },
-              ],
-            },
-          ];
+          persistRunResult();
         }
-        workspaceRuns.unshift({
-          id: conversationId + 20,
-          conversation_id: conversationId,
-          owner_user_id: 1,
-          status: "completed",
-          user_message: text,
-          assistant_message: assistantMessage,
-          process_summaries: [],
-          error: null,
-          worker_enqueued: true,
-          status_events: ["completed"],
-        });
         return jsonResponse({ conversationId, status: "completed" }, { status: 200 });
       }
       if (url === "/api/runs/2/cancel" && method === "POST") {
