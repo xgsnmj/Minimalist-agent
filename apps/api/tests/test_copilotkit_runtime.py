@@ -164,6 +164,15 @@ def test_copilotkit_run_executes_openai_agents_sdk_runtime_and_streams_ag_ui_eve
     assert "".join(event["delta"] for event in content_events) == (
         "openai:gpt-5 handled Find recent market signals."
     )
+    delta_events = [
+        event
+        for event in run_event_log_store.list_after(run_id=completed_run.id, after_sequence=0)
+        if event.event_type == "message.delta"
+    ]
+    assert delta_events
+    assert "".join(event.data["delta"] for event in delta_events) == (
+        "openai:gpt-5 handled Find recent market signals."
+    )
     assert '"type":"RUN_FINISHED"' in response.text
     assert completed_run.status == AgentRunStatus.COMPLETED
     assert completed_run.full_trace["workflow_name"] == "Agent workflow"

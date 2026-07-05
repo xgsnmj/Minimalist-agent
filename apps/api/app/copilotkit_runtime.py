@@ -3,7 +3,8 @@ from __future__ import annotations
 import json
 import os
 import time
-from typing import Any, Iterable
+from collections.abc import AsyncIterator, Iterable
+from typing import Any
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Query, Response, status
 from fastapi.responses import StreamingResponse
@@ -156,11 +157,47 @@ def run_copilotkit_agent(
     )
     agent_run_lifecycle.mark_worker_enqueued(run.id)
 
-    def stream_events() -> Iterable[str]:
+    async def stream_events() -> AsyncIterator[str]:
         yield _sse_data(_run_started_event(request))
-        runtime_store.execute(run.id)
+        message_id = f"agent-run-{run.id}-assistant"
+        message_started = False
+        async for runtime_event in runtime_store.stream_execute(run.id):
+            if runtime_event["event_type"] != "message.delta":
+                continue
+            data = runtime_event["data"]
+            delta = data.get("delta") if isinstance(data, dict) else None
+            if not isinstance(delta, str):
+                continue
+            if not message_started:
+                yield _sse_data(
+                    {
+                        "type": "TEXT_MESSAGE_START",
+                        "messageId": message_id,
+                        "role": "assistant",
+                    }
+                )
+                message_started = True
+            yield _sse_data(
+                {
+                    "type": "TEXT_MESSAGE_CONTENT",
+                    "messageId": message_id,
+                    "delta": delta,
+                }
+            )
         completed_run = agent_run_store.get(run.id)
-        yield from _events_for_completed_run(request=request, run_id=completed_run.id)
+        if message_started:
+            yield _sse_data(
+                {
+                    "type": "TEXT_MESSAGE_END",
+                    "messageId": message_id,
+                }
+            )
+        for event in _events_for_completed_run(
+            request=request,
+            run_id=completed_run.id,
+            include_message=not message_started,
+        ):
+            yield event
 
     return StreamingResponse(
         content=stream_events(),
@@ -235,10 +272,11 @@ def _events_for_completed_run(
     *,
     request: CopilotKitRunRequest,
     run_id: int,
+    include_message: bool = True,
 ) -> Iterable[str]:
     run = agent_run_store.get(run_id)
     if run.status == AgentRunStatus.COMPLETED:
-        if run.assistant_message:
+        if include_message and run.assistant_message:
             yield from _text_message_events(
                 message_id=f"agent-run-{run.id}-assistant",
                 text=run.assistant_message,

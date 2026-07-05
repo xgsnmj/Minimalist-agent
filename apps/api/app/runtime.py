@@ -1,8 +1,10 @@
 from __future__ import annotations
 
+from collections.abc import AsyncIterator
 from dataclasses import dataclass, field
 import os
 import re
+import time
 from typing import Any
 
 from agents import Agent, Model, ModelProvider, ModelSettings, ModelTracing, OpenAIProvider, Runner, RunConfig
@@ -11,7 +13,14 @@ from agents.tracing import flush_traces, set_trace_processors
 from agents.tracing.processor_interface import TracingProcessor as TracingProcessorProtocol
 from agents.tracing.traces import Trace
 from agents.usage import Usage
-from openai.types.responses import ResponseOutputMessage, ResponseOutputText
+from openai.types.responses import (
+    Response,
+    ResponseCompletedEvent,
+    ResponseOutputMessage,
+    ResponseOutputText,
+    ResponseTextDeltaEvent,
+    ResponseTextDoneEvent,
+)
 
 from apps.api.app.agent_run_lifecycle import agent_run_lifecycle
 from apps.api.app.agent_runs import AgentRunStatus, agent_run_store
@@ -115,7 +124,7 @@ class _LocalModel(Model):
             response_id=f"response-{self.model_name}",
         )
 
-    def stream_response(
+    async def stream_response(
         self,
         system_instructions: str | None,
         input: str | list[Any],
@@ -128,8 +137,60 @@ class _LocalModel(Model):
         previous_response_id: str | None,
         conversation_id: str | None,
         prompt: Any,
-    ):
-        raise NotImplementedError
+    ) -> AsyncIterator[Any]:
+        user_message = _last_user_text(input)
+        assistant_text = f"{self.provider_id}:{self.model_name} handled {user_message}"
+        chunks = _stream_text_chunks(assistant_text)
+        output = ResponseOutputMessage(
+            id=f"response-{self.model_name}",
+            content=[
+                ResponseOutputText(
+                    annotations=[],
+                    text=assistant_text,
+                    type="output_text",
+                )
+            ],
+            role="assistant",
+            status="completed",
+            type="message",
+        )
+        sequence_number = 1
+        for chunk in chunks:
+            yield ResponseTextDeltaEvent(
+                content_index=0,
+                delta=chunk,
+                item_id=output.id,
+                output_index=0,
+                sequence_number=sequence_number,
+                type="response.output_text.delta",
+                logprobs=[],
+            )
+            sequence_number += 1
+        yield ResponseTextDoneEvent(
+            content_index=0,
+            item_id=output.id,
+            output_index=0,
+            sequence_number=sequence_number,
+            text=assistant_text,
+            type="response.output_text.done",
+            logprobs=[],
+        )
+        sequence_number += 1
+        yield ResponseCompletedEvent(
+            response=Response(
+                id=f"response-{self.model_name}",
+                created_at=time.time(),
+                model=self.model_name,
+                object="response",
+                output=[output],
+                parallel_tool_calls=False,
+                tool_choice="auto",
+                tools=[],
+                status="completed",
+            ),
+            sequence_number=sequence_number,
+            type="response.completed",
+        )
 
 
 class _LocalModelProvider(ModelProvider):
@@ -259,6 +320,166 @@ class RuntimeStore:
         completed_run = agent_run_store.get(run.id)
         return self._runtime_result_from_run(completed_run, model_name=model_name, full_trace=trace)
 
+    async def stream_execute(self, run_id: int) -> AsyncIterator[dict[str, object]]:
+        run = agent_run_store.get(run_id)
+        if run.status in {AgentRunStatus.CANCELLED, AgentRunStatus.COMPLETED, AgentRunStatus.FAILED}:
+            return
+
+        if "failure" in run.user_message.lower():
+            failed_run = agent_run_lifecycle.apply_runtime_failure(
+                run_id=run.id,
+                message="Mock Agent Runtime failed.",
+            )
+            yield {
+                "event_type": "run.error",
+                "data": {
+                    "status": failed_run.status.value,
+                    "message": failed_run.error or "Agent Run failed.",
+                },
+            }
+            return
+
+        try:
+            model_configuration = _resolve_model_configuration(
+                run.capability_snapshot.selected_model_configuration_id
+            )
+        except Exception as exc:
+            failed_run = agent_run_lifecycle.apply_runtime_failure(
+                run_id=run.id,
+                message=_error_message(exc),
+            )
+            yield {
+                "event_type": "run.error",
+                "data": {
+                    "status": failed_run.status.value,
+                    "message": failed_run.error or "Agent Run failed.",
+                },
+            }
+            return
+
+        agent = agent_store.get(run.capability_snapshot.agent_id)
+        provider_id = model_configuration.provider_id
+        model_name = model_configuration.model_name
+        try:
+            model_provider = self._model_provider(model_configuration)
+            model_settings = _model_settings_for_configuration(model_configuration)
+        except Exception as exc:
+            failed_run = agent_run_lifecycle.apply_runtime_failure(
+                run_id=run.id,
+                message=_error_message(exc),
+            )
+            yield {
+                "event_type": "run.error",
+                "data": {
+                    "status": failed_run.status.value,
+                    "message": failed_run.error or "Agent Run failed.",
+                },
+            }
+            return
+
+        trace_processor = _CapturedTraceProcessor()
+        set_trace_processors([trace_processor])
+        running_run = agent_run_lifecycle.begin_runtime_execution(run.id)
+        yield {
+            "event_type": "run.status",
+            "data": {"status": running_run.status.value},
+        }
+
+        runtime_agent = Agent(
+            name=agent.name,
+            instructions=agent.instruction,
+            model=model_name,
+        )
+        run_config = RunConfig(
+            model_provider=model_provider,
+            model_settings=model_settings,
+            workflow_name="Agent workflow",
+            trace_include_sensitive_data=False,
+            trace_metadata={
+                "agent_id": str(agent.id),
+                "run_id": str(run.id),
+                "conversation_id": str(run.conversation_id),
+                "model_configuration_id": str(model_configuration.id),
+                "provider_id": provider_id,
+                "model_name": model_name,
+                "endpoint": model_configuration.endpoint,
+            },
+        )
+
+        assistant_chunks: list[str] = []
+        try:
+            result = Runner.run_streamed(runtime_agent, run.user_message, run_config=run_config)
+            async for event in result.stream_events():
+                if event.type != "raw_response_event":
+                    continue
+                if event.data.type != "response.output_text.delta":
+                    continue
+                delta = event.data.delta
+                if not delta:
+                    continue
+                assistant_chunks.append(delta)
+                agent_run_lifecycle.record_message_delta(running_run, delta=delta)
+                yield {
+                    "event_type": "message.delta",
+                    "data": {"role": "assistant", "delta": delta},
+                }
+        except Exception as exc:
+            failed_run = agent_run_lifecycle.apply_runtime_failure(
+                run_id=run.id,
+                message=_error_message(exc),
+            )
+            yield {
+                "event_type": "run.error",
+                "data": {
+                    "status": failed_run.status.value,
+                    "message": failed_run.error or "Agent Run failed.",
+                },
+            }
+            return
+        finally:
+            set_trace_processors([])
+            flush_traces()
+
+        assistant_message = (
+            _extract_final_output(result.final_output)
+            if result.final_output is not None
+            else ""
+        ) or "".join(assistant_chunks)
+        process_summaries = [
+            f"Reviewed the Agent Instruction snapshot for conversation {run.conversation_id}.",
+            f"Used model {model_name} from {provider_id}.",
+        ]
+        trace = trace_processor.trace or _trace_fallback(run)
+        trace.setdefault("workflow_name", "Agent workflow")
+        trace.setdefault("metadata", {})
+        trace["run_id"] = run.id
+        trace["agent_id"] = agent.id
+        trace["model_configuration_id"] = model_configuration.id
+        trace["model_configuration_snapshot"] = _model_configuration_snapshot(model_configuration)
+        trace["provider_id"] = provider_id
+        trace["model_name"] = model_name
+        trace["endpoint"] = model_configuration.endpoint
+        agent_run_lifecycle.apply_runtime_success(
+            run_id=run.id,
+            assistant_message=assistant_message,
+            process_summaries=process_summaries,
+            full_trace=trace,
+        )
+        for summary in process_summaries:
+            yield {
+                "event_type": "process.summary",
+                "data": {"summary": summary},
+            }
+        if assistant_message:
+            yield {
+                "event_type": "message.completed",
+                "data": {"role": "assistant", "content": assistant_message},
+            }
+        yield {
+            "event_type": "run.status",
+            "data": {"status": AgentRunStatus.COMPLETED.value},
+        }
+
     def _runtime_result_from_run(
         self,
         run,
@@ -346,6 +567,11 @@ def _last_user_text(input_value: str | list[Any]) -> str:
             if isinstance(content, str):
                 return content
     return ""
+
+
+def _stream_text_chunks(text: str) -> list[str]:
+    chunk_size = 16
+    return [text[index:index + chunk_size] for index in range(0, len(text), chunk_size)] or [""]
 
 
 def _extract_final_output(final_output: object) -> str:

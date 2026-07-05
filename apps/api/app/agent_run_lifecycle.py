@@ -153,6 +153,14 @@ class AgentRunLifecycle:
         agent_run_store.save(run)
         return event
 
+    def record_message_delta(self, run: AgentRun, *, delta: str) -> RunEvent:
+        current_run = agent_run_store.get(run.id)
+        return self._append_event(
+            current_run,
+            event_type="message.delta",
+            data={"role": "assistant", "delta": delta},
+        )
+
     def append_card_event_for_user(
         self,
         *,
