@@ -1,3 +1,5 @@
+import json
+
 from fastapi.testclient import TestClient
 
 from apps.api.app.agent_runs import AgentRunStatus, agent_run_store
@@ -80,6 +82,17 @@ def copilot_run_payload(*, thread_id: str, content: str = "Find recent market si
     }
 
 
+def text_message_content_events(response_text: str) -> list[dict]:
+    events = []
+    for line in response_text.splitlines():
+        if not line.startswith("data: "):
+            continue
+        event = json.loads(line.removeprefix("data: "))
+        if event.get("type") == "TEXT_MESSAGE_CONTENT":
+            events.append(event)
+    return events
+
+
 def test_copilotkit_runtime_info_exposes_enabled_backend_agents():
     client = TestClient(app)
     token = approved_user_token(client)
@@ -146,7 +159,11 @@ def test_copilotkit_run_executes_openai_agents_sdk_runtime_and_streams_ag_ui_eve
     assert '"type":"RUN_STARTED"' in response.text
     assert '"type":"TEXT_MESSAGE_START"' in response.text
     assert '"type":"TEXT_MESSAGE_CONTENT"' in response.text
-    assert "openai:gpt-5 handled Find recent market signals." in response.text
+    content_events = text_message_content_events(response.text)
+    assert len(content_events) > 1
+    assert "".join(event["delta"] for event in content_events) == (
+        "openai:gpt-5 handled Find recent market signals."
+    )
     assert '"type":"RUN_FINISHED"' in response.text
     assert completed_run.status == AgentRunStatus.COMPLETED
     assert completed_run.full_trace["workflow_name"] == "Agent workflow"
@@ -293,7 +310,10 @@ def test_copilotkit_run_prefers_forwarded_conversation_id_over_thread_id():
     assert response.status_code == 200
     assert len(conversations) == 1
     assert f'"conversationId":{conversation_id}' in response.text
-    assert conversation["messages"][-2:] == [
+    persisted_messages = [
+        message for message in conversation["messages"] if message.get("event_type") is None
+    ]
+    assert persisted_messages[-2:] == [
         {"role": "user", "content": "继续已有对话。"},
         {"role": "assistant", "content": "openai:gpt-5 handled 继续已有对话。"},
     ]

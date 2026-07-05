@@ -49,11 +49,31 @@ export type ApiConversationCard = {
   payload: Record<string, unknown>;
 };
 
+export type ApiToolCall = {
+  id: number;
+  run_id: number;
+  conversation_id: number;
+  tool_name: string;
+  capability: string;
+  status: "completed" | "failed" | "rejected" | "running";
+  started_at?: string | null;
+  ended_at?: string | null;
+  safe_input: Record<string, unknown>;
+  safe_output?: Record<string, unknown> | null;
+  provenance: Record<string, string>;
+  error_summary?: string | null;
+};
+
 export type ApiConversationMessage = {
   role: "user" | "assistant";
   content: string;
   artifact_reference?: ApiArtifactReference | null;
   card?: ApiConversationCard | null;
+  run_id?: number | null;
+  event_sequence?: number | null;
+  event_type?: string | null;
+  process_summary?: string | null;
+  tool_call?: ApiToolCall | null;
 };
 
 export type ApiConversation = {

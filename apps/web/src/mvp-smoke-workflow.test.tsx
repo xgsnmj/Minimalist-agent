@@ -20,11 +20,11 @@ describe("MVP smoke workflow surface", () => {
     expect(screen.queryByRole("combobox", { name: "智能体选择" })).not.toBeInTheDocument();
     expect(within(screen.getByLabelText("对话输入区")).getByRole("combobox", { name: "模型选择" })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "发送" })).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "删除" })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "删除" })).not.toBeInTheDocument();
     expect(screen.getByRole("button", { name: "停止运行" })).toBeDisabled();
 
-    expect(within(messageStream).getByText("AG-UI：空闲")).toBeInTheDocument();
-    expect(within(messageStream).getByText("运行进度：暂无新活动")).toBeInTheDocument();
+    expect(within(messageStream).queryByText("AG-UI：空闲")).not.toBeInTheDocument();
+    expect(within(messageStream).queryByText("运行进度：暂无新活动")).not.toBeInTheDocument();
     expect(within(messageStream).queryByText("事件 0")).not.toBeInTheDocument();
     expect(within(messageStream).getAllByLabelText("CopilotKit 对话面板").length).toBeGreaterThan(0);
     expect(within(messageStream).getByRole("form", { name: "CopilotKit 对话输入" })).toBeInTheDocument();

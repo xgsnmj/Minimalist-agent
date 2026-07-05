@@ -4,7 +4,9 @@ import type { ReactCustomMessageRenderer } from "@copilotkit/react-core/v2";
 
 import {
   ConversationCardView,
+  ProcessSummaryView,
   ToolCallView,
+  type ConversationProcessSummary,
   type ConversationToolCall,
 } from "./conversation-message-rendering";
 import type { ConversationCard } from "./card-schema-contract";
@@ -20,6 +22,7 @@ export type CopilotRichMessage = {
     filename: string;
     previewType: string;
   };
+  processSummary?: ConversationProcessSummary;
   card?: ConversationCard;
 };
 
@@ -102,6 +105,9 @@ function MinimalistRichMessageRenderer({
           onOpen={context.onArtifactOpen}
         />
       ) : null}
+      {richMessage.processSummary ? (
+        <ProcessSummaryView processSummary={richMessage.processSummary} />
+      ) : null}
       {richMessage.toolCall ? <ToolCallView toolCall={richMessage.toolCall} /> : null}
       {richMessage.card ? (
         <ConversationCardView
@@ -114,7 +120,7 @@ function MinimalistRichMessageRenderer({
 }
 
 function hasRichContent(message: CopilotRichMessage): boolean {
-  return Boolean(message.artifactReference || message.toolCall || message.card);
+  return Boolean(message.artifactReference || message.processSummary || message.toolCall || message.card);
 }
 
 function ArtifactReferenceCard({

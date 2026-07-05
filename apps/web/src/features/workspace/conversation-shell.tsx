@@ -1,8 +1,11 @@
 import { FormEvent, useEffect, useMemo, useRef, useState } from "react";
 import { Activity, Bell, Copy, Download, ExternalLink, LogOut, Shield, UserRound } from "lucide-react";
 
-import { useAgentRunStream } from "../../shared/ag-ui-stream";
-import { type ConversationToolCall } from "../../shared/conversation-message-rendering";
+import { type AgentRunStreamEvent, useAgentRunStream } from "../../shared/ag-ui-stream";
+import {
+  type ConversationProcessSummary,
+  type ConversationToolCall,
+} from "../../shared/conversation-message-rendering";
 import { CopilotWorkspaceBridge } from "../../shared/copilotkit-adapter";
 import { CARD_SCHEMAS, type CardSchema, type ConversationCard } from "../../shared/card-schema-contract";
 import { Badge } from "@/components/ui/badge";
@@ -19,7 +22,6 @@ import {
 import { CopilotConversationSurface } from "./copilot-conversation-surface";
 import {
   cancelAgentRun,
-  deleteConversation as deleteConversationRequest,
   getArtifactPreview,
   listConversations,
   listRuns,
@@ -29,9 +31,10 @@ import {
   type ApiConversation,
   type ApiConversationCard,
   type ApiRun,
+  type ApiToolCall,
   type ApiWorkspaceAgent,
 } from "./workspace-api";
-import { getCurrentUser, logout, type CurrentUser } from "./auth-api";
+import { logout, type CurrentUser } from "./auth-api";
 
 type ModelOption = {
   id: string;
@@ -63,6 +66,7 @@ type ConversationMessage = {
     filename: string;
     previewType: string;
   };
+  processSummary?: ConversationProcessSummary;
   card?: ConversationCard;
 };
 
@@ -98,7 +102,13 @@ type CommandRun = {
 
 type ArtifactPanelView = "preview" | "metadata";
 
-export function ConversationShell() {
+const CONVERSATION_LIST_PAGE_SIZE = 5;
+
+type ConversationShellProps = {
+  currentUser: CurrentUser | null;
+};
+
+export function ConversationShell({ currentUser }: ConversationShellProps) {
   const [workspaceAgents, setWorkspaceAgents] = useState<WorkspaceAgent[]>([]);
   const [conversations, setConversations] = useState<Conversation[]>([]);
   const [runs, setRuns] = useState<ApiRun[]>([]);
@@ -114,11 +124,11 @@ export function ConversationShell() {
   const [artifactPreviews, setArtifactPreviews] = useState<Record<number, ApiArtifactPreview>>({});
   const [artifactPanelView, setArtifactPanelView] = useState<ArtifactPanelView>("preview");
   const [isSidebarCollapsed, setIsSidebarCollapsed] = useState(false);
+  const [visibleConversationCount, setVisibleConversationCount] = useState(CONVERSATION_LIST_PAGE_SIZE);
   const [latestAttachmentPreviewName, setLatestAttachmentPreviewName] = useState<string | null>(null);
   const [copiedArtifactId, setCopiedArtifactId] = useState<number | null>(null);
   const [isLoadingWorkspace, setIsLoadingWorkspace] = useState(true);
   const [workspaceError, setWorkspaceError] = useState<string | null>(null);
-  const [currentUser, setCurrentUser] = useState<CurrentUser | null>(null);
 
   const selectedConversation = conversations.find(
     (conversation) => conversation.id === selectedConversationId,
@@ -127,7 +137,7 @@ export function ConversationShell() {
   const streamRunId = selectedConversation && isActiveConversationRun(selectedConversation)
     ? activeRunId
     : null;
-  const { lastSeenSequence, status: streamStatus } = useAgentRunStream(streamRunId);
+  const { events: streamEvents, lastSeenSequence, status: streamStatus } = useAgentRunStream(streamRunId);
   const refreshedRunEventRef = useRef<string | null>(null);
   const activeAgent = getAgent(workspaceAgents, selectedConversation?.agentId ?? draftAgentId);
   const allowedModels = activeAgent.allowedModels;
@@ -141,6 +151,17 @@ export function ConversationShell() {
         .filter((artifact): artifact is ArtifactReference => Boolean(artifact)) ?? [],
     [selectedConversation],
   );
+  const selectedConversationMessages = useMemo(
+    () => mergeConversationMessages([
+      ...(selectedConversation?.messages ?? []),
+      ...mapStreamEventsToMessages({
+        conversationId: selectedConversation?.id ?? null,
+        events: streamEvents,
+        runId: activeRunId,
+      }),
+    ]),
+    [activeRunId, selectedConversation?.id, selectedConversation?.messages, streamEvents],
+  );
   const selectedArtifactReference =
     previewArtifactId != null
       ? selectedArtifactReferences.find((artifact) => artifact.artifactId === previewArtifactId) ?? null
@@ -150,11 +171,15 @@ export function ConversationShell() {
     : null;
   const visibleConversations = useMemo(
     () =>
-      conversations.filter((conversation) =>
-        conversation.title.toLowerCase().includes(conversationSearch.toLowerCase()),
-      ),
+      conversations
+        .filter((conversation) =>
+          conversation.title.toLowerCase().includes(conversationSearch.toLowerCase()),
+        )
+        .sort(compareConversationsByLatestInteraction),
     [conversationSearch, conversations],
   );
+  const displayedConversations = visibleConversations.slice(0, visibleConversationCount);
+  const hiddenConversationCount = Math.max(visibleConversations.length - displayedConversations.length, 0);
   const commandArtifacts = useMemo(() => collectCommandArtifacts(conversations), [conversations]);
   const commandRuns = useMemo(() => collectCommandRuns(conversations, runs), [conversations, runs]);
   const visibleCommandConversations = useMemo(
@@ -187,6 +212,10 @@ export function ConversationShell() {
   }, []);
 
   useEffect(() => {
+    setVisibleConversationCount(CONVERSATION_LIST_PAGE_SIZE);
+  }, [conversationSearch]);
+
+  useEffect(() => {
     if (activeRunId == null || lastSeenSequence === 0) {
       return;
     }
@@ -197,26 +226,6 @@ export function ConversationShell() {
     refreshedRunEventRef.current = refreshKey;
     void refreshWorkspace(selectedConversationId);
   }, [activeRunId, lastSeenSequence, selectedConversationId]);
-
-  useEffect(() => {
-    let isCurrent = true;
-
-    getCurrentUser()
-      .then((user) => {
-        if (isCurrent) {
-          setCurrentUser(user);
-        }
-      })
-      .catch(() => {
-        if (isCurrent) {
-          setCurrentUser(null);
-        }
-      });
-
-    return () => {
-      isCurrent = false;
-    };
-  }, []);
 
   useEffect(() => {
     function openCommandPaletteFromKeyboard(event: KeyboardEvent) {
@@ -367,27 +376,6 @@ export function ConversationShell() {
     }
   }
 
-  async function deleteConversation() {
-    if (!selectedConversation) {
-      return;
-    }
-
-    try {
-      await deleteConversationRequest(selectedConversation.id);
-      const remainingConversations = conversations.filter(
-        (conversation) => conversation.id !== selectedConversation.id,
-      );
-      setConversations(remainingConversations);
-      setSelectedConversationId(remainingConversations[0]?.id ?? null);
-      setRenameValue(remainingConversations[0]?.title ?? "未命名对话");
-      setIsRenaming(false);
-      setPreviewArtifactId(null);
-      setWorkspaceError(null);
-    } catch (error) {
-      setWorkspaceError(error instanceof Error ? error.message : "删除对话失败。");
-    }
-  }
-
   async function stopActiveRun() {
     if (!selectedConversation?.latestRunId) {
       return;
@@ -471,33 +459,35 @@ export function ConversationShell() {
             />
           </label>
           <nav className="conversation-list" aria-label="最近对话">
-            {visibleConversations.map((conversation) => {
-              const conversationAgent = getAgent(workspaceAgents, conversation.agentId);
-
-              return (
-                <Button
-                  className={
-                    conversation.id === selectedConversationId
-                      ? "conversation-item selected"
-                      : "conversation-item"
-                  }
-                  key={conversation.id}
-                  type="button"
-                  onClick={() => selectConversation(conversation.id)}
-                >
-                  <span className="conversation-title">{conversation.title}</span>
-                  <span className="conversation-meta">
-                    <span>{conversationAgent.name}</span>
-                    <span className={`status-dot ${conversation.status}`}>
-                      {formatConversationStatus(conversation.status)}
-                    </span>
-                    <span>{conversation.updatedAt}</span>
-                  </span>
-                </Button>
-              );
-            })}
+            {displayedConversations.map((conversation) => (
+              <Button
+                className={
+                  conversation.id === selectedConversationId
+                    ? "conversation-item selected"
+                    : "conversation-item"
+                }
+                key={conversation.id}
+                type="button"
+                onClick={() => selectConversation(conversation.id)}
+              >
+                <span className="conversation-title">{conversation.title}</span>
+              </Button>
+            ))}
             {visibleConversations.length === 0 ? (
               <p className="empty-state">没有匹配的对话。</p>
+            ) : null}
+            {hiddenConversationCount > 0 ? (
+              <Button
+                className="conversation-list-more"
+                type="button"
+                onClick={() =>
+                  setVisibleConversationCount((currentCount) =>
+                    Math.min(currentCount + CONVERSATION_LIST_PAGE_SIZE, visibleConversations.length),
+                  )
+                }
+              >
+                展开更多 {Math.min(hiddenConversationCount, CONVERSATION_LIST_PAGE_SIZE)} 条
+              </Button>
             ) : null}
           </nav>
         </section>
@@ -511,23 +501,6 @@ export function ConversationShell() {
             <h2 id="conversation-title">
               {selectedConversation ? selectedConversation.title : "新对话"}
             </h2>
-            <div className="context-strip" aria-label="当前对话上下文">
-              {selectedConversation
-                ? (
-                    <>
-                      <span>{activeAgent.name}</span>
-                      <span>{selectedModelLabel}</span>
-                      <span>运行：{formatConversationStatus(selectedConversation.status)}</span>
-                    </>
-                  )
-                : (
-                    <>
-                      <span>{activeAgent.name}</span>
-                      <span>{selectedModelLabel}</span>
-                      <span>发送后创建对话</span>
-                    </>
-                  )}
-            </div>
           </div>
           <div className="conversation-actions">
             <span className={`run-status ${streamStatus}`}>
@@ -540,22 +513,6 @@ export function ConversationShell() {
               onClick={stopActiveRun}
             >
               停止运行
-            </Button>
-            <Button
-              className="secondary-button"
-              disabled={!selectedConversation}
-              type="button"
-              onClick={() => setIsRenaming(true)}
-            >
-              重命名
-            </Button>
-            <Button
-              className="danger-button"
-              disabled={!selectedConversation}
-              type="button"
-              onClick={deleteConversation}
-            >
-              删除
             </Button>
           </div>
         </header>
@@ -580,18 +537,11 @@ export function ConversationShell() {
         ) : null}
 
         <section className="copilot-chat-panel" aria-label="对话消息">
-          <Card className="stream-banner" role="status" aria-live="polite">
-            <span>AG-UI：{streamStatus === "connected" ? "已连接" : "空闲"}</span>
-            <span>{selectedConversation ? `Run ${activeRunId ?? 0}` : "无运行"}</span>
-            <span>{formatRunActivity(lastSeenSequence)}</span>
-          </Card>
           <CopilotConversationSurface
             key={[
               activeAgent.copilotAgentId,
               selectedConversation?.id ?? "draft",
               selectedModelId,
-              selectedConversation?.latestRunId ?? "no-run",
-              selectedConversation?.status ?? "draft",
             ].join(":")}
             activeAgent={{
               backendId: activeAgent.backendId,
@@ -599,7 +549,7 @@ export function ConversationShell() {
               name: activeAgent.name,
             }}
             conversationId={selectedConversation?.id ?? null}
-            conversationMessages={selectedConversation?.messages ?? []}
+            conversationMessages={selectedConversationMessages}
             currentUserName={currentUser?.username ?? null}
             isBackendRunActive={Boolean(selectedConversation && isActiveConversationRun(selectedConversation))}
             isLoadingWorkspace={isLoadingWorkspace}
@@ -624,7 +574,6 @@ export function ConversationShell() {
                     </SelectContent>
                   </Select>
                 </label>
-                <Badge variant="secondary">能力边界由管理员策略决定</Badge>
               </>
             )}
             previewArtifactId={previewArtifactId}
@@ -789,8 +738,9 @@ function mapConversationMessage(
   conversationId: number,
   index: number,
 ): ConversationMessage {
+  const processSummary = message.process_summary ?? extractLegacyProcessSummary(message.content);
   return {
-    id: `conversation-${conversationId}-message-${index + 1}`,
+    id: conversationMessageId(message, conversationId, index),
     role: message.role,
     content: message.content,
     artifactReference: message.artifact_reference
@@ -800,8 +750,187 @@ function mapConversationMessage(
           previewType: message.artifact_reference.preview_type,
         }
       : undefined,
+    processSummary: processSummary
+      ? {
+          runId: message.run_id ?? null,
+          sequence: message.event_sequence ?? null,
+          summary: processSummary,
+        }
+      : undefined,
+    toolCall: message.tool_call ? mapApiToolCall(message.tool_call) : undefined,
     card: message.card ? mapConversationCard(message.card) : undefined,
   };
+}
+
+function extractLegacyProcessSummary(content: string): string | null {
+  const prefix = "运行过程：";
+  if (!content.startsWith(prefix)) {
+    return null;
+  }
+  const summary = content.slice(prefix.length).trim();
+  return summary || null;
+}
+
+function conversationMessageId(
+  message: ApiConversation["messages"][number],
+  conversationId: number,
+  index: number,
+) {
+  if (typeof message.run_id === "number" && typeof message.event_sequence === "number") {
+    return `run-${message.run_id}-event-${message.event_sequence}`;
+  }
+  if (message.tool_call) {
+    return `run-${message.tool_call.run_id}-tool-${message.tool_call.id}`;
+  }
+  return `conversation-${conversationId}-message-${index + 1}`;
+}
+
+function mapApiToolCall(toolCall: ApiToolCall): ConversationToolCall {
+  return {
+    capability: toolCall.capability,
+    endedAt: toolCall.ended_at ?? null,
+    errorSummary: toolCall.error_summary ?? undefined,
+    id: toolCall.id,
+    provenance: toolCall.provenance ?? {},
+    runId: toolCall.run_id,
+    safeInput: toolCall.safe_input ?? {},
+    safeOutput: toolCall.safe_output ?? undefined,
+    startedAt: toolCall.started_at ?? null,
+    status: toolCall.status,
+    toolName: toolCall.tool_name,
+  };
+}
+
+function mapStreamEventsToMessages({
+  conversationId,
+  events,
+  runId,
+}: {
+  conversationId: string | null;
+  events: AgentRunStreamEvent[];
+  runId: number | null;
+}): ConversationMessage[] {
+  if (!conversationId || runId == null || events.length === 0) {
+    return [];
+  }
+
+  const messages: ConversationMessage[] = [];
+  let assistantContent = "";
+
+  for (const event of events) {
+    if (event.eventType === "process.summary") {
+      const summary = typeof event.data.summary === "string" ? event.data.summary.trim() : "";
+      if (!summary) {
+        continue;
+      }
+      messages.push({
+        content: `运行过程：${summary}`,
+        id: `run-${runId}-event-${event.sequence}`,
+        processSummary: {
+          runId,
+          sequence: event.sequence,
+          summary,
+        },
+        role: "assistant" as const,
+      });
+      continue;
+    }
+
+    if (event.eventType === "tool.call") {
+      const toolCall = normalizeStreamToolCall(event.data.tool_call, runId);
+      if (!toolCall) {
+        continue;
+      }
+      messages.push({
+        content: `工具调用：${toolCall.toolName}（${toolCall.status}）`,
+        id: `run-${runId}-event-${event.sequence}`,
+        role: "assistant" as const,
+        toolCall,
+      });
+      continue;
+    }
+
+    if (event.eventType === "message.delta") {
+      const delta = typeof event.data.delta === "string" ? event.data.delta : "";
+      if (!delta) {
+        continue;
+      }
+      assistantContent += delta;
+      continue;
+    }
+
+    if (event.eventType === "message.completed") {
+      const content = typeof event.data.content === "string" ? event.data.content : assistantContent;
+      if (!content.trim()) {
+        continue;
+      }
+      assistantContent = content;
+    }
+  }
+
+  if (assistantContent.trim()) {
+    messages.push({
+      content: assistantContent,
+      id: `run-${runId}-assistant-stream`,
+      role: "assistant" as const,
+    });
+  }
+
+  return messages;
+}
+
+function normalizeStreamToolCall(
+  value: unknown,
+  runId: number,
+): ConversationToolCall | null {
+  if (!isPlainRecord(value)) {
+    return null;
+  }
+
+  const toolName = value.tool_name;
+  if (typeof toolName !== "string" || !toolName.trim()) {
+    return null;
+  }
+
+  const status = normalizeToolCallStatus(value.status);
+  return {
+    capability: typeof value.capability === "string" ? value.capability : undefined,
+    endedAt: typeof value.ended_at === "string" ? value.ended_at : null,
+    errorSummary: typeof value.error_summary === "string" ? value.error_summary : undefined,
+    id: typeof value.id === "number" ? value.id : undefined,
+    provenance: isStringRecord(value.provenance) ? value.provenance : {},
+    runId: typeof value.run_id === "number" ? value.run_id : runId,
+    safeInput: isPlainRecord(value.safe_input) ? value.safe_input : {},
+    safeOutput: isPlainRecord(value.safe_output) ? value.safe_output : undefined,
+    startedAt: typeof value.started_at === "string" ? value.started_at : null,
+    status,
+    toolName,
+  };
+}
+
+function normalizeToolCallStatus(value: unknown): ConversationToolCall["status"] {
+  return value === "completed" || value === "failed" || value === "rejected" || value === "running"
+    ? value
+    : "completed";
+}
+
+function mergeConversationMessages(messages: ConversationMessage[]): ConversationMessage[] {
+  const seen = new Set<string>();
+  return messages.filter((message) => {
+    if (seen.has(message.id)) {
+      return false;
+    }
+    seen.add(message.id);
+    return true;
+  });
+}
+
+function isPlainRecord(value: unknown): value is Record<string, unknown> {
+  return Boolean(value) && typeof value === "object" && !Array.isArray(value);
+}
+
+function isStringRecord(value: unknown): value is Record<string, string> {
+  return isPlainRecord(value) && Object.values(value).every((item) => typeof item === "string");
 }
 
 function mapConversationCard(card: ApiConversationCard): ConversationCard {
@@ -810,6 +939,49 @@ function mapConversationCard(card: ApiConversationCard): ConversationCard {
     schema: isCardSchema(schema) ? schema : "status_card",
     payload: card.payload,
   };
+}
+
+function compareConversationsByLatestInteraction(first: Conversation, second: Conversation) {
+  const now = Date.now();
+  const firstTime = conversationUpdatedAtRank(first.updatedAt, now);
+  const secondTime = conversationUpdatedAtRank(second.updatedAt, now);
+
+  if (firstTime !== secondTime) {
+    return secondTime - firstTime;
+  }
+
+  return Number(second.id) - Number(first.id);
+}
+
+function conversationUpdatedAtRank(updatedAt: string, now: number) {
+  const trimmed = updatedAt.trim();
+  const parsedTime = Date.parse(trimmed);
+
+  if (!Number.isNaN(parsedTime)) {
+    return parsedTime;
+  }
+
+  if (trimmed === "刚刚" || trimmed.toLowerCase() === "just now") {
+    return Number.MAX_SAFE_INTEGER;
+  }
+
+  const relativeMatch = trimmed.match(/^(\d+)\s*(分钟|小时|天|周|月|年)前$/);
+  if (!relativeMatch) {
+    return 0;
+  }
+
+  const amount = Number(relativeMatch[1]);
+  const unit = relativeMatch[2];
+  const unitMs: Record<string, number> = {
+    分钟: 60 * 1000,
+    小时: 60 * 60 * 1000,
+    天: 24 * 60 * 60 * 1000,
+    周: 7 * 24 * 60 * 60 * 1000,
+    月: 30 * 24 * 60 * 60 * 1000,
+    年: 365 * 24 * 60 * 60 * 1000,
+  };
+
+  return now - amount * unitMs[unit];
 }
 
 function isCardSchema(schema: string): schema is CardSchema {
@@ -1375,12 +1547,6 @@ function formatToolCallStatus(status: ConversationToolCall["status"]) {
 
 function formatCapabilitySnapshot(name: string, isEnabled: boolean) {
   return `${name}：${isEnabled ? "已授权" : "未授权"}`;
-}
-
-function formatRunActivity(lastSeenSequence: number) {
-  return lastSeenSequence > 0
-    ? `运行进度：已同步 ${lastSeenSequence} 条运行更新`
-    : "运行进度：暂无新活动";
 }
 
 function formatRecentRunActivity(lastSeenSequence: number) {

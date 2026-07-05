@@ -10,15 +10,33 @@ class MockEventSource {
   close = vi.fn();
   onerror: (() => void) | null = null;
   onopen: (() => void) | null = null;
+  private listeners = new Map<string, Array<(event: MessageEvent<string>) => void>>();
 
   constructor(url: string) {
     this.url = url;
     MockEventSource.instances.push(this);
   }
 
-  addEventListener() {}
+  addEventListener(eventName: string, listener: (event: MessageEvent<string>) => void) {
+    this.listeners.set(eventName, [...(this.listeners.get(eventName) ?? []), listener]);
+  }
 
-  removeEventListener() {}
+  removeEventListener(eventName: string, listener: (event: MessageEvent<string>) => void) {
+    this.listeners.set(
+      eventName,
+      (this.listeners.get(eventName) ?? []).filter((currentListener) => currentListener !== listener),
+    );
+  }
+
+  emit(eventName: string, data: Record<string, unknown>, lastEventId: string) {
+    const event = {
+      data: JSON.stringify(data),
+      lastEventId,
+    } as MessageEvent<string>;
+    for (const listener of this.listeners.get(eventName) ?? []) {
+      listener(event);
+    }
+  }
 }
 
 async function renderLoadedWorkspace() {
@@ -52,7 +70,7 @@ describe("Agent Conversation workspace", () => {
     expect(screen.getByRole("searchbox", { name: "搜索对话" })).toBeInTheDocument();
     expect(screen.getByRole("heading", { name: "市场调研" })).toBeInTheDocument();
     expect(
-      within(screen.getByLabelText("最近对话")).getByRole("button", { name: /市场调研.*Default Agent.*空闲/ }),
+      within(screen.getByLabelText("最近对话")).getByRole("button", { name: "市场调研" }),
     ).toBeInTheDocument();
     expect(screen.queryByText("新任务")).not.toBeInTheDocument();
     expect(screen.queryByText("新办公任务")).not.toBeInTheDocument();
@@ -64,8 +82,10 @@ describe("Agent Conversation workspace", () => {
     expect(screen.getAllByLabelText("CopilotKit 对话面板").length).toBeGreaterThan(0);
     expect(screen.getByRole("form", { name: "CopilotKit 对话输入" })).toBeInTheDocument();
     expect(screen.getByPlaceholderText("询问当前工作台")).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "重命名" })).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "删除" })).toBeInTheDocument();
+    expect(screen.queryByLabelText("当前对话上下文")).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "重命名" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "删除" })).not.toBeInTheDocument();
+    expect(screen.queryByText("AG-UI：空闲")).not.toBeInTheDocument();
     expect(screen.queryByLabelText("文件预览")).not.toBeInTheDocument();
   });
 
@@ -85,18 +105,97 @@ describe("Agent Conversation workspace", () => {
     expect(screen.queryByLabelText("文件预览")).not.toBeInTheDocument();
   });
 
+  it("orders recent conversations by latest interaction and expands the history list in batches", async () => {
+    const user = userEvent.setup();
+    await renderLoadedWorkspace();
+
+    const recentConversationList = within(screen.getByLabelText("最近对话"));
+
+    expect(recentConversationList.queryByRole("button", { name: "归档研究" })).not.toBeInTheDocument();
+    expect(recentConversationList.getAllByRole("button").map((button) => button.textContent)).toEqual([
+      "市场调研",
+      "竞品分析",
+      "行业报告",
+      "资料整理",
+      "品牌简报",
+      "展开更多 1 条",
+    ]);
+
+    await user.click(recentConversationList.getByRole("button", { name: "展开更多 1 条" }));
+
+    expect(recentConversationList.getByRole("button", { name: "归档研究" })).toBeInTheDocument();
+  });
+
   it("subscribes to run events only for active conversations", async () => {
     vi.stubGlobal("EventSource", MockEventSource);
     const user = userEvent.setup();
     await renderLoadedWorkspace();
 
-    await user.click(within(screen.getByLabelText("最近对话")).getByRole("button", { name: /行业报告.*失败/ }));
+    await user.click(within(screen.getByLabelText("最近对话")).getByRole("button", { name: "行业报告" }));
     expect(MockEventSource.instances).toHaveLength(0);
-    expect(screen.getByText("AG-UI：空闲")).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "行业报告" })).toBeInTheDocument();
 
-    await user.click(within(screen.getByLabelText("最近对话")).getByRole("button", { name: /竞品分析.*运行中/ }));
+    await user.click(within(screen.getByLabelText("最近对话")).getByRole("button", { name: "竞品分析" }));
     expect(MockEventSource.instances).toHaveLength(1);
     expect(MockEventSource.instances[0].url).toBe("/api/runs/2/events?access_token=local-test-token");
+  });
+
+  it("renders visible process summaries and tool call details in the conversation stream", async () => {
+    await renderLoadedWorkspace();
+
+    const messageStream = within(screen.getByLabelText("对话消息"));
+    const agentTurn = within(messageStream.getByLabelText("Default Agent 回复"));
+    expect(agentTurn.getByText("深度思考")).toBeInTheDocument();
+    expect(agentTurn.getByText("工具调用")).toBeInTheDocument();
+    expect(messageStream.getByText("运行过程")).toBeInTheDocument();
+    expect(messageStream.getByText("拆解会话、运行、工具调用和制品预览的关系。")).toBeInTheDocument();
+    expect(messageStream.getByText("search.web")).toBeInTheDocument();
+    expect(messageStream.getByText("找到 3 条候选资料。")).toBeInTheDocument();
+
+    await userEvent.click(messageStream.getByText("查看调用明细"));
+
+    expect(messageStream.getByText(/AI workspace conversation artifacts/)).toBeInTheDocument();
+    expect(messageStream.getByText(/agent_tool_gateway/)).toBeInTheDocument();
+  });
+
+  it("appends live tool call events to the active conversation stream", async () => {
+    vi.stubGlobal("EventSource", MockEventSource);
+    const user = userEvent.setup();
+    await renderLoadedWorkspace();
+
+    await user.click(within(screen.getByLabelText("最近对话")).getByRole("button", { name: "竞品分析" }));
+    MockEventSource.instances[0].emit("tool.call", {
+      tool_call: {
+        id: 99,
+        run_id: 2,
+        conversation_id: 2,
+        tool_name: "page.read",
+        capability: "page_read",
+        status: "completed",
+        started_at: "10:11",
+        ended_at: "10:12",
+        safe_input: { url: "https://example.com/research" },
+        safe_output: { summary: "读取页面摘要。" },
+        provenance: { gateway: "agent_tool_gateway", provider: "jina_reader" },
+      },
+    }, "9");
+
+    const messageStream = within(screen.getByLabelText("对话消息"));
+    expect(await messageStream.findByText("page.read")).toBeInTheDocument();
+    expect(messageStream.getByText("读取页面摘要。")).toBeInTheDocument();
+  });
+
+  it("assembles live assistant deltas into the active conversation stream", async () => {
+    vi.stubGlobal("EventSource", MockEventSource);
+    const user = userEvent.setup();
+    await renderLoadedWorkspace();
+
+    await user.click(within(screen.getByLabelText("最近对话")).getByRole("button", { name: "竞品分析" }));
+    MockEventSource.instances[0].emit("message.delta", { delta: "已经完成" }, "9");
+    MockEventSource.instances[0].emit("message.delta", { delta: "结构化分析。" }, "10");
+    MockEventSource.instances[0].emit("message.completed", { content: "已经完成结构化分析。" }, "11");
+
+    expect(await within(screen.getByLabelText("对话消息")).findByText("已经完成结构化分析。")).toBeInTheDocument();
   });
 
   it("shows the bootstrapped gpt-5.5 model and uses it for new conversations", async () => {
@@ -112,7 +211,6 @@ describe("Agent Conversation workspace", () => {
 
     expect(await screen.findByRole("heading", { name: "验证默认模型。" })).toBeInTheDocument();
     expect(within(screen.getByLabelText("对话输入区")).getByRole("combobox", { name: "模型选择" })).toHaveTextContent("gpt-5.5 / gpt-5.5");
-    expect(screen.getByText("运行：已完成")).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "停止运行" })).toBeDisabled();
   });
 
@@ -125,8 +223,6 @@ describe("Agent Conversation workspace", () => {
     await user.click(within(inputForm).getByRole("button", { name: "发送" }));
 
     await waitFor(() => {
-      expect(screen.getByText("Run 6")).toBeInTheDocument();
-      expect(screen.getByText("运行：已完成")).toBeInTheDocument();
       expect(screen.getByText("openai:gpt-5 handled 延迟完成态刷新")).toBeInTheDocument();
       expect(screen.getByRole("button", { name: "停止运行" })).toBeDisabled();
     }, { timeout: 4000 });
@@ -465,11 +561,12 @@ describe("Agent Conversation workspace", () => {
     const user = userEvent.setup();
     await renderLoadedWorkspace();
 
-    await user.click(within(screen.getByLabelText("最近对话")).getByRole("button", { name: /竞品分析.*运行中/ }));
+    await user.click(within(screen.getByLabelText("最近对话")).getByRole("button", { name: "竞品分析" }));
     await user.click(within(screen.getByRole("form", { name: "CopilotKit 对话输入" })).getByRole("button", { name: "停止" }));
 
-    expect(await screen.findByText("运行：已停止")).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "停止运行" })).toBeDisabled();
+    await waitFor(() => {
+      expect(screen.getByRole("button", { name: "停止运行" })).toBeDisabled();
+    });
   });
 
   it("opens a command palette for quick creation and recent artifacts", async () => {
@@ -514,11 +611,10 @@ describe("Agent Conversation workspace", () => {
     const user = userEvent.setup();
     await renderLoadedWorkspace();
 
-    await user.click(within(screen.getByLabelText("最近对话")).getByRole("button", { name: /竞品分析.*运行中/ }));
+    await user.click(within(screen.getByLabelText("最近对话")).getByRole("button", { name: "竞品分析" }));
 
     expect(screen.getByRole("heading", { name: "竞品分析" })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "停止运行" })).toBeEnabled();
-    expect(within(screen.getByLabelText("最近对话")).getByText("运行中")).toBeInTheDocument();
 
     expect(screen.queryByLabelText("文件预览")).not.toBeInTheDocument();
   });
@@ -527,11 +623,10 @@ describe("Agent Conversation workspace", () => {
     const user = userEvent.setup();
     await renderLoadedWorkspace();
 
-    await user.click(within(screen.getByLabelText("最近对话")).getByRole("button", { name: /行业报告.*失败/ }));
+    await user.click(within(screen.getByLabelText("最近对话")).getByRole("button", { name: "行业报告" }));
 
     expect(screen.getByRole("heading", { name: "行业报告" })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "停止运行" })).toBeDisabled();
-    expect(screen.getByText("运行：失败")).toBeInTheDocument();
 
     expect(screen.getByText("模型网关超时，运行未完成。可重新运行或调整输入。")).toBeInTheDocument();
   });
@@ -540,11 +635,10 @@ describe("Agent Conversation workspace", () => {
     const user = userEvent.setup();
     await renderLoadedWorkspace();
 
-    await user.click(within(screen.getByLabelText("最近对话")).getByRole("button", { name: /品牌简报.*已完成/ }));
+    await user.click(within(screen.getByLabelText("最近对话")).getByRole("button", { name: "品牌简报" }));
 
     expect(screen.getByRole("heading", { name: "品牌简报", level: 2 })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "停止运行" })).toBeDisabled();
-    expect(screen.getByText("运行：已完成")).toBeInTheDocument();
 
     await user.click(within(screen.getByLabelText("对话消息")).getByRole("button", { name: "打开制品 brand-brief.md" }));
 
@@ -556,11 +650,10 @@ describe("Agent Conversation workspace", () => {
     const user = userEvent.setup();
     await renderLoadedWorkspace();
 
-    await user.click(within(screen.getByLabelText("最近对话")).getByRole("button", { name: /资料整理.*已停止/ }));
+    await user.click(within(screen.getByLabelText("最近对话")).getByRole("button", { name: "资料整理" }));
 
     expect(screen.getByRole("heading", { name: "资料整理" })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "停止运行" })).toBeDisabled();
-    expect(screen.getByText("运行：已停止")).toBeInTheDocument();
     expect(within(screen.getByLabelText("对话消息")).getByRole("button", { name: "打开制品 partial-notes.md" })).toBeInTheDocument();
 
     await user.click(within(screen.getByLabelText("对话消息")).getByRole("button", { name: "打开制品 partial-notes.md" }));

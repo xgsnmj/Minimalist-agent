@@ -70,7 +70,7 @@ describe("App", () => {
       const composer = screen.getByLabelText("对话输入区");
       expect(within(composer).getByText("模型选择")).toBeInTheDocument();
       expect(within(composer).getByRole("combobox")).toBeInTheDocument();
-      expect(within(composer).getByText("能力边界由管理员策略决定")).toBeInTheDocument();
+      expect(within(composer).queryByText("能力边界由管理员策略决定")).not.toBeInTheDocument();
     });
     expect(screen.queryByLabelText("运行配置")).not.toBeInTheDocument();
     expect(screen.queryByRole("combobox", { name: "智能体选择" })).not.toBeInTheDocument();

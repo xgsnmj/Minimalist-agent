@@ -6,28 +6,86 @@ import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 
 export type ConversationToolCall = {
+  id?: number;
+  runId?: number;
+  capability?: string;
   toolName: string;
-  status: "completed" | "failed" | "rejected";
+  status: "completed" | "failed" | "rejected" | "running";
+  startedAt?: string | null;
+  endedAt?: string | null;
   safeInput: Record<string, unknown>;
   safeOutput?: Record<string, unknown>;
   provenance: Record<string, string>;
   errorSummary?: string;
 };
 
+export type ConversationProcessSummary = {
+  runId?: number | null;
+  sequence?: number | null;
+  summary: string;
+};
+
+export function ProcessSummaryView({
+  processSummary,
+}: {
+  processSummary: ConversationProcessSummary;
+}) {
+  return (
+    <Card className="process-summary-row">
+      <CardHeader>
+        <CardTitle>运行过程</CardTitle>
+        <Badge variant="secondary">可见摘要</Badge>
+      </CardHeader>
+      <CardContent>
+        <p className="preview-text">{processSummary.summary}</p>
+      </CardContent>
+    </Card>
+  );
+}
+
 export function ToolCallView({ toolCall }: { toolCall: ConversationToolCall }) {
   return (
     <Card className="tool-call-row">
       <CardHeader>
-        <CardTitle>{toolCall.toolName}</CardTitle>
+        <div>
+          <CardTitle>{toolCall.toolName}</CardTitle>
+          <p className="tool-call-meta">
+            {formatToolCapability(toolCall.capability)}
+            {toolCall.startedAt ? ` · ${toolCall.startedAt}` : ""}
+            {toolCall.endedAt ? ` → ${toolCall.endedAt}` : ""}
+          </p>
+        </div>
         <Badge variant={toolCallBadgeVariant(toolCall.status)}>{formatToolCallStatus(toolCall.status)}</Badge>
       </CardHeader>
       <CardContent className="flex flex-col gap-2">
         <p className="preview-text">{formatToolCallSummary(toolCall)}</p>
         <p className="tool-call-meta">
-          网关：{toolCall.provenance.gateway} · 提供方：{toolCall.provenance.provider}
+          网关：{toolCall.provenance.gateway ?? "agent_tool_gateway"} · 提供方：{toolCall.provenance.provider ?? "default"}
         </p>
+        <details className="tool-call-details">
+          <summary>查看调用明细</summary>
+          <div className="tool-call-payload-grid">
+            <ToolCallPayload title="安全输入" value={toolCall.safeInput} />
+            <ToolCallPayload title="安全输出" value={toolCall.safeOutput ?? null} />
+          </div>
+        </details>
       </CardContent>
     </Card>
+  );
+}
+
+function ToolCallPayload({
+  title,
+  value,
+}: {
+  title: string;
+  value: Record<string, unknown> | null;
+}) {
+  return (
+    <div className="tool-call-payload">
+      <strong>{title}</strong>
+      <pre>{formatToolPayload(value)}</pre>
+    </div>
   );
 }
 
@@ -180,6 +238,8 @@ function formatToolCallSummary(toolCall: ConversationToolCall) {
 
 function formatToolCallStatus(status: ConversationToolCall["status"]) {
   switch (status) {
+    case "running":
+      return "运行中";
     case "completed":
       return "已完成";
     case "failed":
@@ -201,4 +261,26 @@ function toolCallBadgeVariant(status: ConversationToolCall["status"]) {
     default:
       return "secondary";
   }
+}
+
+function formatToolCapability(capability?: string) {
+  if (!capability) {
+    return "工具调用";
+  }
+  const labels: Record<string, string> = {
+    artifact: "制品工具",
+    file_access: "文件工具",
+    mcp: "MCP 工具",
+    page_read: "页面读取",
+    sandbox: "沙箱工具",
+    search: "搜索工具",
+  };
+  return labels[capability] ?? capability;
+}
+
+function formatToolPayload(value: Record<string, unknown> | null) {
+  if (value == null) {
+    return "无";
+  }
+  return JSON.stringify(value, null, 2);
 }

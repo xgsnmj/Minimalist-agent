@@ -1,7 +1,7 @@
 from fastapi.testclient import TestClient
 
 from apps.api.app.agent_runs import agent_run_store
-from apps.api.app.agents import agent_store
+from apps.api.app.agents import AgentCapabilityPolicyResponse, AgentUpdateRequest, agent_store
 from apps.api.app.auth import local_account_store
 from apps.api.app.conversations import conversation_store
 from apps.api.app.run_event_log import run_event_log_store
@@ -126,3 +126,63 @@ def test_run_event_stream_resume_does_not_duplicate_completed_visible_events():
     assert ["id: 4", "id: 5", "id: 6", "id: 7"] == [
         line for line in resume_response.text.splitlines() if line.startswith("id:")
     ]
+
+
+def test_conversation_response_includes_visible_process_and_tool_events():
+    client = TestClient(app)
+    token = approved_user_token(client)
+    agent_store.update(
+        1,
+        AgentUpdateRequest(
+            capability_policy=AgentCapabilityPolicyResponse(
+                mcp_server_ids=[],
+                sandbox_enabled=False,
+                search_enabled=True,
+                page_read_enabled=False,
+            ),
+        ),
+    )
+    conversation = client.post(
+        "/conversations",
+        headers={"Authorization": f"Bearer {token}"},
+        json={
+            "title": "Visible process",
+            "agent_id": 1,
+            "initial_message": "Start this conversation.",
+        },
+    ).json()
+    run = client.post(
+        f"/conversations/{conversation['id']}/runs",
+        headers={"Authorization": f"Bearer {token}"},
+        json={"message": "Find source material."},
+    ).json()
+
+    process_agent_run.run(run["id"])
+    client.post(
+        f"/runs/{run['id']}/tool-calls",
+        headers={"Authorization": f"Bearer {token}"},
+        json={
+            "tool_name": "search.web",
+            "input": {"query": "agent workspace traceability"},
+        },
+    )
+
+    response = client.get(
+        "/conversations",
+        headers={"Authorization": f"Bearer {token}"},
+    )
+
+    assert response.status_code == 200
+    messages = response.json()[0]["messages"]
+    process_messages = [
+        message for message in messages if message.get("event_type") == "process.summary"
+    ]
+    tool_messages = [
+        message for message in messages if message.get("event_type") == "tool.call"
+    ]
+    assert process_messages
+    assert process_messages[0]["process_summary"]
+    assert tool_messages[0]["tool_call"]["tool_name"] == "search.web"
+    assert tool_messages[0]["tool_call"]["safe_input"] == {
+        "query": "agent workspace traceability",
+    }

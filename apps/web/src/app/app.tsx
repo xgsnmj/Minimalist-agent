@@ -2,7 +2,7 @@ import { useEffect, useState } from "react";
 
 import { CopilotKitWorkspaceProvider } from "../shared/copilotkit-adapter";
 import { ConversationShell } from "../features/workspace/conversation-shell";
-import { getAuthToken, handleUnauthorized } from "../features/workspace/auth-api";
+import { getAuthToken, getCurrentUser, type CurrentUser } from "../features/workspace/auth-api";
 import {
   AccountSettingsPage,
   AdminPage,
@@ -34,6 +34,7 @@ export function App() {
   const [authState, setAuthState] = useState<AuthState>(() =>
     getAuthToken() ? "checking" : "unauthenticated",
   );
+  const [currentUser, setCurrentUser] = useState<CurrentUser | null>(null);
 
   useEffect(() => {
     function syncPathname() {
@@ -89,36 +90,27 @@ export function App() {
   useEffect(() => {
     const token = getAuthToken();
     if (!token) {
+      setCurrentUser(null);
       setAuthState("unauthenticated");
       return;
     }
 
     let isCurrent = true;
 
-    fetch("/api/auth/me", {
-      headers: {
-        Authorization: `Bearer ${token}`,
-      },
-    })
-      .then((response) => {
+    getCurrentUser()
+      .then((user) => {
         if (!isCurrent) {
           return;
         }
-        if (response.ok) {
-          setAuthState("authenticated");
-          return;
-        }
-        if (response.status === 401) {
-          handleUnauthorized();
-          return;
-        }
+        setCurrentUser(user);
         setAuthState("authenticated");
       })
       .catch(() => {
         if (!isCurrent) {
           return;
         }
-        setAuthState("authenticated");
+        setCurrentUser(null);
+        setAuthState(getAuthToken() ? "authenticated" : "unauthenticated");
       });
 
     return () => {
@@ -139,7 +131,7 @@ export function App() {
     }
   }
 
-  const content = renderRoute(route);
+  const content = renderRoute(route, currentUser);
 
   if (isPublicRoute) {
     return content;
@@ -160,7 +152,7 @@ function AuthVerificationFallback() {
   );
 }
 
-function renderRoute(route: ReturnType<typeof resolveAppRoute>) {
+function renderRoute(route: ReturnType<typeof resolveAppRoute>, currentUser: CurrentUser | null) {
   switch (route) {
     case "login":
       return <LoginPage />;
@@ -171,7 +163,7 @@ function renderRoute(route: ReturnType<typeof resolveAppRoute>) {
     case "account-settings":
       return <AccountSettingsPage />;
     case "conversation":
-      return <ConversationShell />;
+      return <ConversationShell currentUser={currentUser} />;
     default:
       return <AdminPage route={route} />;
   }

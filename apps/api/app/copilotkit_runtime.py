@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import json
+import os
+import time
 from typing import Any, Iterable
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Query, Response, status
@@ -237,26 +239,9 @@ def _events_for_completed_run(
     run = agent_run_store.get(run_id)
     if run.status == AgentRunStatus.COMPLETED:
         if run.assistant_message:
-            message_id = f"agent-run-{run.id}-assistant"
-            yield _sse_data(
-                {
-                    "type": "TEXT_MESSAGE_START",
-                    "messageId": message_id,
-                    "role": "assistant",
-                }
-            )
-            yield _sse_data(
-                {
-                    "type": "TEXT_MESSAGE_CONTENT",
-                    "messageId": message_id,
-                    "delta": run.assistant_message,
-                }
-            )
-            yield _sse_data(
-                {
-                    "type": "TEXT_MESSAGE_END",
-                    "messageId": message_id,
-                }
+            yield from _text_message_events(
+                message_id=f"agent-run-{run.id}-assistant",
+                text=run.assistant_message,
             )
         yield _sse_data(
             _run_finished_event(
@@ -290,6 +275,47 @@ def _events_for_completed_run(
             "code": "AGENT_RUN_FAILED",
         }
     )
+
+
+def _text_message_events(*, message_id: str, text: str) -> Iterable[str]:
+    yield _sse_data(
+        {
+            "type": "TEXT_MESSAGE_START",
+            "messageId": message_id,
+            "role": "assistant",
+        }
+    )
+    chunks = _chunk_text(text)
+    delay_seconds = _stream_chunk_delay_seconds()
+    for index, chunk in enumerate(chunks):
+        yield _sse_data(
+            {
+                "type": "TEXT_MESSAGE_CONTENT",
+                "messageId": message_id,
+                "delta": chunk,
+            }
+        )
+        if delay_seconds > 0 and index < len(chunks) - 1:
+            time.sleep(delay_seconds)
+    yield _sse_data(
+        {
+            "type": "TEXT_MESSAGE_END",
+            "messageId": message_id,
+        }
+    )
+
+
+def _chunk_text(text: str) -> list[str]:
+    chunk_size = 24
+    return [text[index:index + chunk_size] for index in range(0, len(text), chunk_size)] or [""]
+
+
+def _stream_chunk_delay_seconds() -> float:
+    raw_value = os.getenv("COPILOTKIT_STREAM_CHUNK_DELAY_SECONDS", "0.012")
+    try:
+        return max(float(raw_value), 0)
+    except ValueError:
+        return 0.012
 
 
 def _conversation_snapshot_events(

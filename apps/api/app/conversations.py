@@ -1,5 +1,6 @@
 from dataclasses import dataclass, field
 from enum import StrEnum
+from typing import Any
 
 from fastapi import HTTPException, status
 from pydantic import BaseModel, Field
@@ -22,6 +23,11 @@ class ConversationMessageResponse(BaseModel):
     content: str
     artifact_reference: ArtifactMessageReference | None = None
     card: CardResponse | None = None
+    run_id: int | None = None
+    event_sequence: int | None = None
+    event_type: str | None = None
+    process_summary: str | None = None
+    tool_call: dict[str, Any] | None = None
 
 
 class ConversationCreateRequest(BaseModel):
@@ -52,6 +58,11 @@ class ConversationMessage:
     content: str
     artifact_reference: ArtifactMessageReference | None = None
     card: CardResponse | None = None
+    run_id: int | None = None
+    event_sequence: int | None = None
+    event_type: str | None = None
+    process_summary: str | None = None
+    tool_call: dict[str, Any] | None = None
 
 
 @dataclass
@@ -342,6 +353,21 @@ def _message_from_record(record: ConversationMessageRecord) -> ConversationMessa
 
 
 def to_conversation_response(conversation: AgentConversation) -> ConversationResponse:
+    messages = [
+        ConversationMessageResponse(
+            role=message.role,
+            content=message.content,
+            artifact_reference=message.artifact_reference,
+            card=message.card,
+            run_id=message.run_id,
+            event_sequence=message.event_sequence,
+            event_type=message.event_type,
+            process_summary=message.process_summary,
+            tool_call=message.tool_call,
+        )
+        for message in conversation.messages
+    ]
+
     return ConversationResponse(
         id=conversation.id,
         title=conversation.title,
@@ -350,13 +376,94 @@ def to_conversation_response(conversation: AgentConversation) -> ConversationRes
         status=conversation.status,
         updated_at=conversation.updated_at,
         deleted=conversation.deleted,
-        messages=[
-            ConversationMessageResponse(
-                role=message.role,
-                content=message.content,
-                artifact_reference=message.artifact_reference,
-                card=message.card,
-            )
-            for message in conversation.messages
-        ],
+        messages=_merge_run_event_messages(conversation=conversation, messages=messages),
     )
+
+
+def _merge_run_event_messages(
+    *,
+    conversation: AgentConversation,
+    messages: list[ConversationMessageResponse],
+) -> list[ConversationMessageResponse]:
+    from apps.api.app.agent_runs import agent_run_store
+    from apps.api.app.run_event_log import run_event_log_store
+
+    runs = [
+        run
+        for run in sorted(agent_run_store.list_all(), key=lambda item: item.id)
+        if run.conversation_id == conversation.id
+    ]
+    if not runs:
+        return messages
+
+    remaining_runs = list(runs)
+    merged_messages: list[ConversationMessageResponse] = []
+    for message in messages:
+        merged_messages.append(message)
+        if message.role != "user":
+            continue
+        matched_run = next(
+            (run for run in remaining_runs if run.user_message == message.content),
+            None,
+        )
+        if matched_run is None:
+            continue
+        remaining_runs.remove(matched_run)
+        merged_messages.extend(
+            _visible_event_messages(
+                run_id=matched_run.id,
+                events=run_event_log_store.list_after(
+                    run_id=matched_run.id,
+                    after_sequence=0,
+                ),
+            )
+        )
+
+    for run in remaining_runs:
+        merged_messages.extend(
+            _visible_event_messages(
+                run_id=run.id,
+                events=run_event_log_store.list_after(
+                    run_id=run.id,
+                    after_sequence=0,
+                ),
+            )
+        )
+
+    return merged_messages
+
+
+def _visible_event_messages(*, run_id: int, events) -> list[ConversationMessageResponse]:
+    messages: list[ConversationMessageResponse] = []
+    for event in events:
+        if event.event_type == "process.summary":
+            summary = str(event.data.get("summary", "")).strip()
+            if not summary:
+                continue
+            messages.append(
+                ConversationMessageResponse(
+                    role="assistant",
+                    content=f"运行过程：{summary}",
+                    run_id=run_id,
+                    event_sequence=event.sequence,
+                    event_type=event.event_type,
+                    process_summary=summary,
+                )
+            )
+        if event.event_type == "tool.call":
+            tool_call = event.data.get("tool_call")
+            if not isinstance(tool_call, dict):
+                continue
+            tool_name = str(tool_call.get("tool_name", "工具"))
+            status = str(tool_call.get("status", "completed"))
+            messages.append(
+                ConversationMessageResponse(
+                    role="assistant",
+                    content=f"工具调用：{tool_name}（{status}）",
+                    run_id=run_id,
+                    event_sequence=event.sequence,
+                    event_type=event.event_type,
+                    tool_call=tool_call,
+                )
+            )
+    return messages

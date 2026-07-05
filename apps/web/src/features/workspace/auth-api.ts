@@ -1,4 +1,7 @@
 export const authTokenStorageKey = "minimalist-agent:auth-token";
+export const authRequestTimeoutMs = 10_000;
+
+const inFlightGetRequests = new Map<string, Promise<unknown>>();
 
 export type CurrentUser = {
   id: number;
@@ -44,7 +47,35 @@ export function handleUnauthorized() {
   navigateToLogin();
 }
 
-export async function authFetch<T>(path: string, init: RequestInit = {}): Promise<T> {
+export async function fetchWithAuthTimeout(
+  input: RequestInfo | URL,
+  init: RequestInit = {},
+  timeoutMs = authRequestTimeoutMs,
+) {
+  const controller = new AbortController();
+  const timeoutId = window.setTimeout(() => controller.abort(), timeoutMs);
+  init.signal?.addEventListener("abort", () => controller.abort(), { once: true });
+
+  try {
+    return await fetch(input, {
+      ...init,
+      signal: controller.signal,
+    });
+  } catch (error) {
+    if (error instanceof DOMException && error.name === "AbortError") {
+      throw new Error("请求超时，请稍后重试。");
+    }
+    throw error;
+  } finally {
+    window.clearTimeout(timeoutId);
+  }
+}
+
+export async function authFetch<T>(
+  path: string,
+  init: RequestInit = {},
+  timeoutMs?: number,
+): Promise<T> {
   const token = getAuthToken();
   const headers = new Headers(init.headers);
   if (token) {
@@ -54,36 +85,78 @@ export async function authFetch<T>(path: string, init: RequestInit = {}): Promis
     headers.set("Content-Type", "application/json");
   }
 
-  const response = await fetch(`/api${path}`, {
+  const requestInit = {
     ...init,
     headers,
-  });
+  };
 
-  if (!response.ok) {
-    if (response.status === 401) {
-      handleUnauthorized();
-      throw new Error("登录已过期，请重新登录。");
+  const request = async () => {
+    const response = timeoutMs == null
+      ? await fetch(`/api${path}`, requestInit)
+      : await fetchWithAuthTimeout(`/api${path}`, requestInit, timeoutMs);
+
+    if (!response.ok) {
+      if (response.status === 401) {
+        handleUnauthorized();
+        throw new Error("登录已过期，请重新登录。");
+      }
+      let detail = "请求失败。";
+      try {
+        const body = await response.json() as { detail?: string };
+        detail = body.detail ?? detail;
+      } catch {
+        detail = response.statusText || detail;
+      }
+      throw new Error(detail);
     }
-    let detail = "请求失败。";
-    try {
-      const body = await response.json() as { detail?: string };
-      detail = body.detail ?? detail;
-    } catch {
-      detail = response.statusText || detail;
+
+    return response.json() as Promise<T>;
+  };
+
+  const requestKey = getInFlightRequestKey(path, init, headers, timeoutMs);
+  if (requestKey) {
+    const inFlightRequest = inFlightGetRequests.get(requestKey) as Promise<T> | undefined;
+    if (inFlightRequest) {
+      return inFlightRequest;
     }
-    throw new Error(detail);
+    const nextRequest = request().finally(() => {
+      inFlightGetRequests.delete(requestKey);
+    });
+    inFlightGetRequests.set(requestKey, nextRequest);
+    return nextRequest;
   }
 
-  return response.json() as Promise<T>;
+  return request();
 }
 
 export function getCurrentUser() {
-  return authFetch<CurrentUser>("/auth/me");
+  return authFetch<CurrentUser>("/auth/me", {}, authRequestTimeoutMs);
 }
 
 export function updateCurrentUser(request: { username: string; email: string | null }) {
   return authFetch<CurrentUser>("/auth/me", {
     method: "PATCH",
     body: JSON.stringify(request),
+  });
+}
+
+function getInFlightRequestKey(
+  path: string,
+  init: RequestInit,
+  headers: Headers,
+  timeoutMs: number | undefined,
+) {
+  const method = (init.method ?? "GET").toUpperCase();
+  if (method !== "GET" || init.body || init.signal) {
+    return null;
+  }
+  const headerEntries = Array.from(headers.entries()).sort(([left], [right]) =>
+    left.localeCompare(right),
+  );
+  return JSON.stringify({
+    method,
+    path,
+    headers: headerEntries,
+    timeoutMs: timeoutMs ?? null,
   });
 }
