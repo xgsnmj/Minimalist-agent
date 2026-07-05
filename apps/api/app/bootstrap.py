@@ -4,8 +4,10 @@ from apps.api.app.agents import AgentUpdateRequest, agent_store
 from apps.api.app.model_configurations import (
     ModelConfiguration,
     ModelConfigurationMutationRequest,
+    ModelHealthStatus,
     model_configuration_store,
 )
+from apps.api.app.runtime import resolve_model_api_key
 
 
 def bootstrap_default_model_configuration() -> ModelConfiguration | None:
@@ -30,7 +32,7 @@ def bootstrap_default_model_configuration() -> ModelConfiguration | None:
         endpoint=endpoint,
         credential_reference=credential_reference,
     )
-    if configuration is None:
+    if configuration is None and _has_configured_credential(credential_reference):
         configuration = model_configuration_store.create(
             ModelConfigurationMutationRequest(
                 provider_id=provider_id,
@@ -42,11 +44,21 @@ def bootstrap_default_model_configuration() -> ModelConfiguration | None:
                 enabled=True,
             )
         )
+    if configuration is not None and not _has_configured_credential(configuration.credential_reference):
+        configuration = None
+    if configuration is None:
+        configuration = _find_usable_model_configuration(model_name=model_name)
+    if configuration is None:
+        return None
 
     default_agent = agent_store.get(1)
     allowed_model_ids = list(dict.fromkeys([
         configuration.id,
-        *default_agent.allowed_model_configuration_ids,
+        *[
+            configuration_id
+            for configuration_id in default_agent.allowed_model_configuration_ids
+            if _is_usable_model_configuration_id(configuration_id)
+        ],
     ]))
     if (
         default_agent.default_model_configuration_id != configuration.id
@@ -78,6 +90,42 @@ def _find_model_configuration(
         ):
             return configuration
     return None
+
+
+def _find_usable_model_configuration(*, model_name: str) -> ModelConfiguration | None:
+    candidates = [
+        configuration
+        for configuration in model_configuration_store.list_configurations()
+        if configuration.model_name == model_name
+        and configuration.enabled
+        and _has_configured_credential(configuration.credential_reference)
+    ]
+    if not candidates:
+        return None
+
+    return sorted(
+        candidates,
+        key=lambda configuration: (
+            configuration.health_status != ModelHealthStatus.HEALTHY,
+            configuration.id,
+        ),
+    )[0]
+
+
+def _has_configured_credential(credential_reference: str) -> bool:
+    try:
+        resolve_model_api_key(credential_reference)
+    except Exception:
+        return False
+    return True
+
+
+def _is_usable_model_configuration_id(configuration_id: int) -> bool:
+    try:
+        configuration = model_configuration_store.get(configuration_id)
+    except Exception:
+        return False
+    return configuration.enabled and _has_configured_credential(configuration.credential_reference)
 
 
 def _env_flag(name: str) -> bool:

@@ -4,6 +4,23 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { App } from "./app/app";
 
+class MockEventSource {
+  static instances: MockEventSource[] = [];
+  url: string;
+  close = vi.fn();
+  onerror: (() => void) | null = null;
+  onopen: (() => void) | null = null;
+
+  constructor(url: string) {
+    this.url = url;
+    MockEventSource.instances.push(this);
+  }
+
+  addEventListener() {}
+
+  removeEventListener() {}
+}
+
 async function renderLoadedWorkspace() {
   render(<App />);
   await screen.findByRole("heading", { name: "市场调研" });
@@ -21,6 +38,7 @@ function getContextFileInput(): HTMLInputElement {
 
 describe("Agent Conversation workspace", () => {
   afterEach(() => {
+    MockEventSource.instances = [];
     cleanup();
     vi.unstubAllGlobals();
     window.history.pushState({}, "", "/");
@@ -61,8 +79,24 @@ describe("Agent Conversation workspace", () => {
     expect(screen.getByRole("button", { name: "打开账号菜单" })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: /消息通知/ })).toBeInTheDocument();
     expect(screen.getByLabelText("搜索对话")).toBeInTheDocument();
-    expect(within(screen.getByLabelText("对话输入区")).getByLabelText("添加上下文")).toBeInTheDocument();
+    expect(
+      within(screen.getByLabelText("对话输入区")).getByRole("button", { name: "添加上下文" }),
+    ).toBeInTheDocument();
     expect(screen.queryByLabelText("文件预览")).not.toBeInTheDocument();
+  });
+
+  it("subscribes to run events only for active conversations", async () => {
+    vi.stubGlobal("EventSource", MockEventSource);
+    const user = userEvent.setup();
+    await renderLoadedWorkspace();
+
+    await user.click(within(screen.getByLabelText("最近对话")).getByRole("button", { name: /行业报告.*失败/ }));
+    expect(MockEventSource.instances).toHaveLength(0);
+    expect(screen.getByText("AG-UI：空闲")).toBeInTheDocument();
+
+    await user.click(within(screen.getByLabelText("最近对话")).getByRole("button", { name: /竞品分析.*运行中/ }));
+    expect(MockEventSource.instances).toHaveLength(1);
+    expect(MockEventSource.instances[0].url).toBe("/api/runs/2/events?access_token=local-test-token");
   });
 
   it("shows the bootstrapped gpt-5.5 model and uses it for new conversations", async () => {
@@ -380,15 +414,11 @@ describe("Agent Conversation workspace", () => {
     expect(screen.queryByLabelText("文件预览")).not.toBeInTheDocument();
   });
 
-  it("fills the composer when a CopilotKit suggestion is selected", async () => {
-    const user = userEvent.setup();
+  it("does not render recommended questions inside the composer", async () => {
     await renderLoadedWorkspace();
 
-    await user.click(within(screen.getByLabelText("CopilotKit 建议")).getByRole("button", { name: "继续推进" }));
-
-    expect(within(screen.getByRole("form", { name: "CopilotKit 对话输入" })).getByLabelText("消息")).toHaveValue(
-      "基于当前上下文继续推进下一步。",
-    );
+    expect(within(screen.getByLabelText("对话输入区")).queryByLabelText("CopilotKit 建议")).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "继续推进" })).not.toBeInTheDocument();
   });
 
   it("surfaces upload failure when draft conversations do not yet have backend storage", async () => {

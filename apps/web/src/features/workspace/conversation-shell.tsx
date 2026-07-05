@@ -124,7 +124,10 @@ export function ConversationShell() {
     (conversation) => conversation.id === selectedConversationId,
   );
   const activeRunId = selectedConversation?.latestRunId ?? null;
-  const { lastSeenSequence, status: streamStatus } = useAgentRunStream(activeRunId);
+  const streamRunId = selectedConversation && isActiveConversationRun(selectedConversation)
+    ? activeRunId
+    : null;
+  const { lastSeenSequence, status: streamStatus } = useAgentRunStream(streamRunId);
   const refreshedRunEventRef = useRef<string | null>(null);
   const activeAgent = getAgent(workspaceAgents, selectedConversation?.agentId ?? draftAgentId);
   const allowedModels = activeAgent.allowedModels;
@@ -597,6 +600,7 @@ export function ConversationShell() {
             }}
             conversationId={selectedConversation?.id ?? null}
             conversationMessages={selectedConversation?.messages ?? []}
+            currentUserName={currentUser?.username ?? null}
             isBackendRunActive={Boolean(selectedConversation && isActiveConversationRun(selectedConversation))}
             isLoadingWorkspace={isLoadingWorkspace}
             modelControls={(

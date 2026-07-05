@@ -430,6 +430,76 @@ def test_enabled_agent_reference_blocks_model_configuration_disable():
     }
 
 
+def test_administrator_can_delete_unused_model_configuration():
+    client = TestClient(app)
+    token = administrator_token(client)
+    model = client.post(
+        "/admin/model-configurations",
+        headers={"Authorization": f"Bearer {token}"},
+        json={
+            "provider_id": "openai",
+            "name": "Unused",
+            "model_name": "gpt-5-mini",
+            "endpoint": "https://api.openai.com/v1",
+            "credential_reference": "sk-unused",
+            "enabled": False,
+        },
+    ).json()
+
+    response = client.delete(
+        f"/admin/model-configurations/{model['id']}",
+        headers={"Authorization": f"Bearer {token}"},
+    )
+    list_response = client.get(
+        "/admin/model-configurations",
+        headers={"Authorization": f"Bearer {token}"},
+    )
+
+    assert response.status_code == 200
+    assert response.json()["id"] == model["id"]
+    assert list_response.json() == []
+    audit_events = admin_audit_store.list_events()
+    assert [event.action for event in audit_events] == ["created", "deleted"]
+    assert audit_events[1].before["name"] == "Unused"
+    assert audit_events[1].after is None
+
+
+def test_agent_reference_blocks_model_configuration_delete():
+    client = TestClient(app)
+    token = administrator_token(client)
+    model = client.post(
+        "/admin/model-configurations",
+        headers={"Authorization": f"Bearer {token}"},
+        json={
+            "provider_id": "openai",
+            "name": "Primary",
+            "model_name": "gpt-5",
+            "endpoint": "https://api.openai.com/v1",
+            "credential_reference": "sk-primary",
+            "enabled": True,
+        },
+    ).json()
+    client.patch(
+        "/admin/agents/1",
+        headers={"Authorization": f"Bearer {token}"},
+        json={
+            "default_model_configuration_id": model["id"],
+            "allowed_model_configuration_ids": [model["id"]],
+        },
+    )
+
+    response = client.delete(
+        f"/admin/model-configurations/{model['id']}",
+        headers={"Authorization": f"Bearer {token}"},
+    )
+
+    assert response.status_code == 409
+    assert response.json()["detail"] == {
+        "message": "Model Configuration is used by Agents.",
+        "agents": ["Default Agent"],
+    }
+
+
 def test_administrator_can_assign_allowed_model_selection_to_agent():
     client = TestClient(app)
     token = administrator_token(client)

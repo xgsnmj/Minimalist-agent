@@ -1,12 +1,15 @@
 import { cleanup, render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { App } from "./app/app";
 
 describe("Administrator Model Configuration surface", () => {
+  const originalConfirm = window.confirm;
+
   afterEach(() => {
     cleanup();
+    window.confirm = originalConfirm;
     window.history.pushState({}, "", "/");
   });
 
@@ -66,5 +69,21 @@ describe("Administrator Model Configuration surface", () => {
 
     expect(await within(configurationList).findByRole("row", { name: /OpenAI gpt-5-mini 已配置 已启用 未检查 temperature 0\.3 未记录 详情/ })).toBeInTheDocument();
     expect(within(models).getByText("模型配置已创建。")).toBeInTheDocument();
+  });
+
+  it("deletes an unused Model Configuration through the backend", async () => {
+    const user = userEvent.setup();
+    window.confirm = vi.fn(() => true);
+    window.history.pushState({}, "", "/admin/models");
+    render(<App />);
+
+    const models = await screen.findByRole("region", { name: "模型配置" });
+    const configurationList = within(models).getByRole("table", { name: "模型配置列表" });
+    expect(await within(configurationList).findByRole("row", { name: /Custom OpenAI-compatible endpoint gateway-default/ })).toBeInTheDocument();
+
+    await user.click(within(configurationList).getByRole("button", { name: "删除 gateway-default" }));
+
+    expect(within(configurationList).queryByRole("row", { name: /Custom OpenAI-compatible endpoint gateway-default/ })).not.toBeInTheDocument();
+    expect(within(models).getByText("模型配置已删除。")).toBeInTheDocument();
   });
 });

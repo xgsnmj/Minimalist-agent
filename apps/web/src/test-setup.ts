@@ -702,6 +702,27 @@ beforeEach(() => {
         } as TestModelConfiguration;
         return jsonResponse(modelConfigurations[index]);
       }
+      if (url.startsWith("/api/admin/model-configurations/") && method === "DELETE") {
+        const configurationId = Number(url.split("/")[4]);
+        const index = modelConfigurations.findIndex((configuration) => configuration.id === configurationId);
+        if (index === -1) {
+          return jsonResponse({}, { status: 404 });
+        }
+        const referencingAgents = agents.filter((agent) =>
+          agent.default_model_configuration_id === configurationId ||
+          agent.allowed_model_configuration_ids.includes(configurationId),
+        );
+        if (referencingAgents.length > 0) {
+          return jsonResponse({
+            detail: {
+              message: "Model Configuration is used by Agents.",
+              agents: referencingAgents.map((agent) => agent.name),
+            },
+          }, { status: 409 });
+        }
+        const [deletedConfiguration] = modelConfigurations.splice(index, 1);
+        return jsonResponse(deletedConfiguration);
+      }
       if (url.startsWith("/api/admin/model-configurations/") && url.endsWith("/health-check") && method === "POST") {
         const configurationId = Number(url.split("/")[4]);
         const index = modelConfigurations.findIndex((configuration) => configuration.id === configurationId);

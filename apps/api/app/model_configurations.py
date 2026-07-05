@@ -294,6 +294,17 @@ class ModelConfigurationStore:
             session.refresh(record)
             return self._configuration_from_record(record)
 
+    def delete(self, configuration_id: int) -> ModelConfiguration:
+        with SessionLocal() as session:
+            record = self._configuration_record_or_404(session, configuration_id)
+            configuration = self._configuration_from_record(record)
+            session.query(ModelHealthCheckRecord).filter(
+                ModelHealthCheckRecord.model_configuration_id == configuration_id
+            ).delete()
+            session.delete(record)
+            session.commit()
+            return configuration
+
     def _credential_reference_for_create(
         self,
         request: ModelConfigurationMutationRequest,

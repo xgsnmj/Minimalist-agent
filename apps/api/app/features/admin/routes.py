@@ -262,6 +262,29 @@ def update_model_configuration(
     return to_model_configuration_response(updated_configuration)
 
 
+@router.delete(
+    "/model-configurations/{configuration_id}",
+    response_model=ModelConfigurationResponse,
+)
+def delete_model_configuration(
+    configuration_id: int,
+    administrator: LocalAccount = Depends(current_administrator),
+) -> ModelConfigurationResponse:
+    _raise_if_model_configuration_is_referenced_by_agent(configuration_id)
+    existing_configuration = model_configuration_store.get(configuration_id)
+    before = to_model_configuration_response(existing_configuration).model_dump(mode="json")
+    deleted_configuration = model_configuration_store.delete(configuration_id)
+    admin_audit_store.record(
+        actor_id=administrator.id,
+        target_type="model_configuration",
+        target_id=configuration_id,
+        action="deleted",
+        before=before,
+        after=None,
+    )
+    return to_model_configuration_response(deleted_configuration)
+
+
 @router.post(
     "/model-configurations/{configuration_id}/health-check",
     response_model=ModelConfigurationHealthCheckResponse,
@@ -436,6 +459,23 @@ def _raise_if_model_configuration_is_required_by_enabled_agent(configuration_id:
             status_code=status.HTTP_409_CONFLICT,
             detail={
                 "message": "Model Configuration is used by enabled Agents.",
+                "agents": referencing_agents,
+            },
+        )
+
+
+def _raise_if_model_configuration_is_referenced_by_agent(configuration_id: int) -> None:
+    referencing_agents = [
+        agent.name
+        for agent in agent_store.list_agents()
+        if agent.default_model_configuration_id == configuration_id
+        or configuration_id in agent.allowed_model_configuration_ids
+    ]
+    if referencing_agents:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail={
+                "message": "Model Configuration is used by Agents.",
                 "agents": referencing_agents,
             },
         )

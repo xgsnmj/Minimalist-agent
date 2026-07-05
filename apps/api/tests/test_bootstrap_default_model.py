@@ -5,7 +5,11 @@ from apps.api.app.agents import agent_store
 from apps.api.app.app import app
 from apps.api.app.auth import local_account_store
 from apps.api.app.bootstrap import bootstrap_default_model_configuration
-from apps.api.app.model_configurations import model_configuration_store
+from apps.api.app.model_configurations import (
+    ModelConfigurationMutationRequest,
+    ModelHealthStatus,
+    model_configuration_store,
+)
 
 
 @pytest.fixture(autouse=True)
@@ -22,6 +26,8 @@ def reset_stores_and_environment(monkeypatch):
         "DEFAULT_MODEL_NAME",
         "DEFAULT_MODEL_ENDPOINT",
         "DEFAULT_MODEL_CREDENTIAL_REFERENCE",
+        "OPENAI_API_KEY",
+        "NEWCLI_API_KEY",
     ]:
         monkeypatch.delenv(variable, raising=False)
 
@@ -45,9 +51,21 @@ def approved_user_token(client: TestClient) -> str:
     ).json()["access_token"]
 
 
-def test_bootstrap_default_model_configuration_binds_gpt55_to_default_agent(monkeypatch):
+def test_bootstrap_default_model_configuration_skips_unconfigured_default_credential(monkeypatch):
     monkeypatch.delenv("DEFAULT_MODEL_BOOTSTRAP_DISABLED", raising=False)
     monkeypatch.delenv("DEFAULT_MODEL_NAME", raising=False)
+
+    configuration = bootstrap_default_model_configuration()
+    agent = agent_store.get(1)
+
+    assert configuration is None
+    assert model_configuration_store.list_configurations() == []
+    assert agent.default_model_configuration_id is None
+    assert agent.allowed_model_configuration_ids == []
+
+
+def test_bootstrap_default_model_configuration_binds_gpt55_to_default_agent(monkeypatch):
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-test")
 
     configuration = bootstrap_default_model_configuration()
     agent = agent_store.get(1)
@@ -61,6 +79,7 @@ def test_bootstrap_default_model_configuration_binds_gpt55_to_default_agent(monk
 
 def test_bootstrap_default_model_configuration_is_idempotent(monkeypatch):
     monkeypatch.setenv("DEFAULT_MODEL_NAME", "gpt-5.5")
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-test")
 
     first_configuration = bootstrap_default_model_configuration()
     second_configuration = bootstrap_default_model_configuration()
@@ -77,6 +96,7 @@ def test_bootstrap_default_model_configuration_respects_environment(monkeypatch)
     monkeypatch.setenv("DEFAULT_MODEL_NAME", "gpt-5.5")
     monkeypatch.setenv("DEFAULT_MODEL_ENDPOINT", "https://code.newcli.com/codex/v1")
     monkeypatch.setenv("DEFAULT_MODEL_CREDENTIAL_REFERENCE", "env:NEWCLI_API_KEY")
+    monkeypatch.setenv("NEWCLI_API_KEY", "sk-test")
 
     configuration = bootstrap_default_model_configuration()
 
@@ -87,12 +107,41 @@ def test_bootstrap_default_model_configuration_respects_environment(monkeypatch)
     assert configuration.credential_reference == "env:NEWCLI_API_KEY"
 
 
+def test_bootstrap_default_model_configuration_falls_back_to_existing_usable_model(monkeypatch):
+    fallback_configuration = model_configuration_store.create(
+        ModelConfigurationMutationRequest(
+            provider_id="custom-openai-compatible",
+            name="Packy GPT-5.5",
+            model_name="gpt-5.5",
+            endpoint="https://www.packyapi.com/v1",
+            credential_reference="sk-direct",
+            enabled=True,
+        )
+    )
+    model_configuration_store.record_health_check(
+        configuration_id=fallback_configuration.id,
+        health_status=ModelHealthStatus.HEALTHY,
+        checked_at="2026-07-05T00:00:00+00:00",
+        last_error=None,
+    )
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+
+    configuration = bootstrap_default_model_configuration()
+    agent = agent_store.get(1)
+
+    assert configuration is not None
+    assert configuration.id == fallback_configuration.id
+    assert agent.default_model_configuration_id == fallback_configuration.id
+    assert agent.allowed_model_configuration_ids == [fallback_configuration.id]
+
+
 def test_workspace_agents_exposes_bootstrapped_gpt55_model(monkeypatch):
     monkeypatch.setenv("ADMIN_BOOTSTRAP_USERNAME", "admin")
     monkeypatch.setenv("ADMIN_BOOTSTRAP_PASSWORD", "correct horse battery staple")
     monkeypatch.setenv("DEFAULT_MODEL_NAME", "gpt-5.5")
     monkeypatch.setenv("DEFAULT_MODEL_ENDPOINT", "https://code.newcli.com/codex/v1")
     monkeypatch.setenv("DEFAULT_MODEL_CREDENTIAL_REFERENCE", "env:NEWCLI_API_KEY")
+    monkeypatch.setenv("NEWCLI_API_KEY", "sk-test")
 
     with TestClient(app) as client:
         token = approved_user_token(client)

@@ -4,19 +4,15 @@ import {
   UseAgentUpdate,
   useAgent,
   useAttachments,
-  useConfigureSuggestions,
   useCopilotKit,
   useDefaultRenderTool,
-  useSuggestions,
 } from "@copilotkit/react-core/v2";
 import type { Attachment } from "@copilotkit/react-core/v2";
 import type { InputContent, Message } from "@ag-ui/core";
-import { Paperclip } from "lucide-react";
 
 import { type ConversationToolCall } from "../../shared/conversation-message-rendering";
 import type { ConversationCard } from "../../shared/card-schema-contract";
 import { CopilotRichMessageRenderingProvider } from "../../shared/copilotkit-rich-message-rendering";
-import { Button } from "@/components/ui/button";
 import { uploadRunAttachment } from "./workspace-api";
 
 export type CopilotConversationMessage = {
@@ -42,6 +38,7 @@ type CopilotConversationSurfaceProps = {
   activeAgent: CopilotConversationAgent;
   conversationId: string | null;
   conversationMessages: CopilotConversationMessage[];
+  currentUserName?: string | null;
   isBackendRunActive: boolean;
   isLoadingWorkspace: boolean;
   modelControls: ReactNode;
@@ -60,6 +57,7 @@ export function CopilotConversationSurface({
   activeAgent,
   conversationId,
   conversationMessages,
+  currentUserName,
   isBackendRunActive,
   isLoadingWorkspace,
   modelControls,
@@ -88,7 +86,6 @@ export function CopilotConversationSurface({
   });
   const { copilotkit } = useCopilotKit();
   const [inputValue, setInputValue] = useState("");
-  const [suggestionLoadingIndexes, setSuggestionLoadingIndexes] = useState<ReadonlyArray<number>>([]);
   const stopSettlementRefreshRef = useRef<(() => void) | null>(null);
   const syncedMessageFingerprintRef = useRef<string | null>(null);
   const copilotMessages = useMemo(
@@ -99,26 +96,13 @@ export function CopilotConversationSurface({
     () => ensureUniqueMessageIds(agent.messages),
     [agent.messages],
   );
+  const showEmptyHero = !isLoadingWorkspace && renderedAgentMessages.length === 0;
   const copilotMessageFingerprint = useMemo(
     () => fingerprintCopilotMessages(copilotMessages),
     [copilotMessages],
   );
 
   useDefaultRenderTool();
-  useConfigureSuggestions(
-    {
-      available: "always",
-      consumerAgentId: activeAgent.copilotAgentId,
-      suggestions: buildStaticSuggestions(conversationId),
-    },
-    [activeAgent.copilotAgentId, conversationId],
-  );
-  const {
-    clearSuggestions,
-    isLoading: isLoadingSuggestions,
-    reloadSuggestions,
-    suggestions,
-  } = useSuggestions({ agentId: activeAgent.copilotAgentId });
   const {
     attachments,
     consumeAttachments,
@@ -171,19 +155,6 @@ export function CopilotConversationSurface({
     stopSettlementRefreshRef.current?.();
   }, []);
 
-  useEffect(() => {
-    if (!isLoadingSuggestions) {
-      setSuggestionLoadingIndexes((currentIndexes) =>
-        currentIndexes.length === 0 ? currentIndexes : [],
-      );
-      return;
-    }
-    const nextIndexes = suggestions.map((_suggestion, index) => index);
-    setSuggestionLoadingIndexes((currentIndexes) =>
-      areNumberArraysEqual(currentIndexes, nextIndexes) ? currentIndexes : nextIndexes,
-    );
-  }, [isLoadingSuggestions, suggestions]);
-
   async function submitMessage(value: string) {
     const message = value.trim();
     if (!message || agent.isRunning || !activeAgent.backendId) {
@@ -193,7 +164,6 @@ export function CopilotConversationSurface({
     const readyAttachments = consumeAttachments();
     onWorkspaceError(null);
     setInputValue("");
-    clearSuggestions();
 
     agent.addMessage({
       id: crypto.randomUUID(),
@@ -216,7 +186,6 @@ export function CopilotConversationSurface({
         },
       });
       preferredConversationId = conversationIdFromRunResult(runResult) ?? conversationId;
-      reloadSuggestions();
     } catch (error) {
       onWorkspaceError(error instanceof Error ? error.message : "发送失败。");
     } finally {
@@ -295,8 +264,6 @@ export function CopilotConversationSurface({
           isConnecting={isLoadingWorkspace}
           isRunning={agent.isRunning || isBackendRunActive}
           messages={renderedAgentMessages}
-          suggestionLoadingIndexes={suggestionLoadingIndexes}
-          suggestions={suggestions}
           welcomeScreen={false}
           onAddFile={() => fileInputRef.current?.click()}
           onDragLeave={handleDragLeave}
@@ -306,9 +273,6 @@ export function CopilotConversationSurface({
           }}
           onInputChange={setInputValue}
           onRemoveAttachment={removeAttachment}
-          onSelectSuggestion={(suggestion) => {
-            setInputValue(suggestion.message);
-          }}
           onStop={() => {
             void stopRun();
           }}
@@ -316,7 +280,7 @@ export function CopilotConversationSurface({
             void submitMessage(value);
           }}
         >
-          {({ input, messageView, suggestionView }) => (
+          {({ input, messageView }) => (
             <>
               <section className="conversation-transcript" aria-label="消息记录">
                 {isLoadingWorkspace ? (
@@ -325,24 +289,21 @@ export function CopilotConversationSurface({
                     <p>正在从后端读取 Agent Conversation、运行状态和制品引用。</p>
                   </div>
                 ) : null}
+                {showEmptyHero ? (
+                  <div className="conversation-empty-hero">
+                    <span className="conversation-hero-mark" aria-hidden="true">
+                      {activeAgent.name.slice(0, 2).toUpperCase()}
+                    </span>
+                    <h3>Hi {currentUserName || activeAgent.name}</h3>
+                    <p>今天想推进什么？</p>
+                  </div>
+                ) : null}
                 {messageView}
               </section>
               <section className="conversation-composer copilot-native-composer" aria-label="对话输入区">
                 <div className="composer-model-row">
                   {modelControls}
-                  <div className="composer-context-actions">
-                    <Button
-                      aria-label="添加上下文"
-                      className="context-upload-control"
-                      type="button"
-                      onClick={() => fileInputRef.current?.click()}
-                    >
-                      <Paperclip aria-hidden="true" />
-                      <span>添加上下文</span>
-                    </Button>
-                  </div>
                 </div>
-                {suggestionView}
                 {input}
               </section>
             </>
@@ -386,10 +347,6 @@ function fingerprintCopilotMessages(messages: Message[]): string {
   );
 }
 
-function areNumberArraysEqual(left: ReadonlyArray<number>, right: ReadonlyArray<number>): boolean {
-  return left.length === right.length && left.every((value, index) => value === right[index]);
-}
-
 function buildUserMessageContent(message: string, attachments: Attachment[]): string | InputContent[] {
   if (attachments.length === 0) {
     return message;
@@ -405,21 +362,6 @@ function buildUserMessageContent(message: string, attachments: Attachment[]): st
       },
     })),
   ] satisfies InputContent[];
-}
-
-function buildStaticSuggestions(conversationId: string | null) {
-  if (!conversationId) {
-    return [
-      { title: "规划任务", message: "帮我把这个目标拆成可执行步骤。" },
-      { title: "生成简报", message: "基于我的输入生成一份简明工作简报。" },
-      { title: "列出风险", message: "先列出这个任务的主要风险和需要确认的问题。" },
-    ];
-  }
-  return [
-    { title: "总结当前对话", message: "总结当前对话的结论和下一步。" },
-    { title: "继续推进", message: "基于当前上下文继续推进下一步。" },
-    { title: "生成制品", message: "把当前结论整理成可预览的 Markdown 制品。" },
-  ];
 }
 
 function conversationIdFromRunResult(result: unknown): string | null {

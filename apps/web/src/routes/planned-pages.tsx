@@ -2597,6 +2597,32 @@ function ModelConfigurationsPanel() {
     }
   }
 
+  async function deleteModelConfiguration(configuration: ModelConfigurationRecord) {
+    if (!window.confirm(`确定删除模型配置“${configuration.model}”吗？`)) {
+      return;
+    }
+    setLoadError("");
+    setSaveStatus("");
+    try {
+      await adminFetch<ApiModelConfiguration>(
+        `/api/admin/model-configurations/${configuration.id}`,
+        { method: "DELETE" },
+      );
+      const remainingConfigurations = configurations.filter((currentConfiguration) =>
+        currentConfiguration.id !== configuration.id,
+      );
+      setConfigurations(remainingConfigurations);
+      setSelectedConfigurationId((currentConfigurationId) =>
+        currentConfigurationId === configuration.id
+          ? remainingConfigurations[0]?.id ?? ""
+          : currentConfigurationId,
+      );
+      setSaveStatus("模型配置已删除。");
+    } catch {
+      setSaveStatus("模型配置删除失败，请先从智能体策略中移除引用。");
+    }
+  }
+
   return (
     <section className="route-panel" aria-label="模型配置">
       <CopilotModelConfigurationsBridge
@@ -2650,6 +2676,9 @@ function ModelConfigurationsPanel() {
                       </Button>
                       <Button className="secondary-button" type="button" onClick={() => checkModelConfigurationHealth(configuration)}>
                         健康检查
+                      </Button>
+                      <Button aria-label={`删除 ${configuration.model}`} className="danger-button" type="button" onClick={() => deleteModelConfiguration(configuration)}>
+                        删除
                       </Button>
                     </div>
                   </td>
@@ -2717,6 +2746,9 @@ function ModelConfigurationsPanel() {
                 </Button>
                 <Button className="secondary-button" type="button" onClick={() => checkModelConfigurationHealth(selectedConfiguration)}>
                   健康检查
+                </Button>
+                <Button className="danger-button" type="button" onClick={() => deleteModelConfiguration(selectedConfiguration)}>
+                  删除
                 </Button>
               </div>
             </form>
