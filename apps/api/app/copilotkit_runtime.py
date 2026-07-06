@@ -10,7 +10,7 @@ from fastapi import APIRouter, Depends, Header, HTTPException, Query, Response, 
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
-from apps.api.app.agent_run_lifecycle import agent_run_lifecycle
+from apps.api.app.agent_run_execution import agent_run_execution
 from apps.api.app.agent_runs import (
     ACTIVE_RUN_STATUSES,
     AgentRunCreateRequest,
@@ -151,11 +151,11 @@ def run_copilotkit_agent(
             detail="CopilotKit Agent does not match the Agent Conversation.",
         )
 
-    run = agent_run_lifecycle.queue_for_conversation(
+    run = agent_run_execution.queue_for_conversation(
         conversation=conversation,
         request=AgentRunCreateRequest(message=user_message),
     )
-    agent_run_lifecycle.mark_worker_enqueued(run.id)
+    agent_run_execution.mark_worker_enqueued(run.id)
 
     async def stream_events() -> AsyncIterator[str]:
         yield _sse_data(_run_started_event(request))
@@ -249,7 +249,7 @@ def stop_copilotkit_agent(
         conversation_id=conversation.id,
     )
     if active_run is not None:
-        agent_run_lifecycle.cancel_for_user(
+        agent_run_execution.cancel_for_user(
             owner_user_id=account.id,
             run_id=active_run.id,
         )

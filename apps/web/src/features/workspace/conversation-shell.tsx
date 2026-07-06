@@ -1,12 +1,11 @@
 import { FormEvent, useEffect, useMemo, useRef, useState } from "react";
 import { Activity, Bell, Copy, Download, ExternalLink, LogOut, Shield, UserRound } from "lucide-react";
 
-import { type AgentRunStreamEvent, useAgentRunStream } from "../../shared/ag-ui-stream";
+import { useAgentRunStream } from "../../shared/ag-ui-stream";
 import {
   type ConversationToolCall,
 } from "../../shared/conversation-message-rendering";
 import { CopilotWorkspaceBridge } from "../../shared/copilotkit-adapter";
-import { CARD_SCHEMAS, type CardSchema, type ConversationCard } from "../../shared/card-schema-contract";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader } from "@/components/ui/card";
@@ -22,11 +21,6 @@ import { notify } from "../../shared/notifications";
 import { CopilotConversationSurface } from "./copilot-conversation-surface";
 import {
   type ApiArtifactPreview,
-  type ApiConversation,
-  type ApiConversationCard,
-  type ApiRun,
-  type ApiToolCall,
-  type ApiWorkspaceAgent,
 } from "./workspace-api";
 import { logout, type CurrentUser } from "./auth-api";
 import {
@@ -37,69 +31,23 @@ import {
   useWorkspaceData,
 } from "./workspace-queries";
 import { conversationListPageSize, useWorkspaceUiStore } from "./workspace-ui-store";
-
-type ModelOption = {
-  id: string;
-  label: string;
-};
-
-type WorkspaceAgent = {
-  id: string;
-  backendId: number;
-  copilotAgentId: string;
-  name: string;
-  status: "enabled";
-  allowedModels: ModelOption[];
-  defaultModelId: string | null;
-  capabilitySnapshot: {
-    mcpServerCount: number;
-    sandbox: boolean;
-    search: boolean;
-  };
-};
-
-type ConversationMessage = {
-  id: string;
-  role: "user" | "assistant";
-  content: string;
-  toolCall?: ConversationToolCall;
-  artifactReference?: {
-    artifactId: number;
-    filename: string;
-    previewType: string;
-  };
-  card?: ConversationCard;
-};
-
-type ArtifactReference = NonNullable<ConversationMessage["artifactReference"]>;
-
-type Conversation = {
-  id: string;
-  title: string;
-  agentId: string;
-  status: "idle" | "queued" | "running" | "completed" | "failed" | "cancelled";
-  updatedAt: string;
-  selectedModelId: string;
-  latestRunId: number | null;
-  completedAt?: string;
-  cancelledAt?: string;
-  runError?: string;
-  messages: ConversationMessage[];
-};
-
-type CommandArtifact = {
-  conversationId: string;
-  conversationTitle: string;
-  reference: ArtifactReference;
-};
-
-type CommandRun = {
-  conversationId: string;
-  conversationTitle: string;
-  runId: number;
-  status: Conversation["status"];
-  updatedAt: string;
-};
+import {
+  collectCommandArtifacts,
+  collectCommandRuns,
+  compareConversationsByLatestInteraction,
+  formatConversationStatus,
+  getAgent,
+  getMessageArtifactReference,
+  isActiveConversationRun,
+  mapConversation,
+  mapStreamEventsToMessages,
+  mapWorkspaceAgent,
+  mergeConversationMessages,
+  type ArtifactReference,
+  type CommandArtifact,
+  type CommandRun,
+  type Conversation,
+} from "./workspace-session-model";
 
 type ConversationShellProps = {
   currentUser: CurrentUser | null;
@@ -741,344 +689,6 @@ export function ConversationShell({ currentUser }: ConversationShellProps) {
   );
 }
 
-const emptyWorkspaceAgent: WorkspaceAgent = {
-  id: "",
-  backendId: 0,
-  copilotAgentId: "default",
-  name: "未配置智能体",
-  status: "enabled",
-  allowedModels: [],
-  defaultModelId: null,
-  capabilitySnapshot: {
-    mcpServerCount: 0,
-    sandbox: false,
-    search: false,
-  },
-};
-
-function getAgent(agents: WorkspaceAgent[], agentId: string): WorkspaceAgent {
-  return agents.find((agent) => agent.id === agentId) ?? agents[0] ?? emptyWorkspaceAgent;
-}
-
-function mapWorkspaceAgent(response: ApiWorkspaceAgent): WorkspaceAgent {
-  const allowedModels = response.allowed_model_configurations.map((configuration) => ({
-    id: String(configuration.id),
-    label: `${configuration.name} / ${configuration.model_name}`,
-  }));
-  return {
-    id: String(response.agent.id),
-    backendId: response.agent.id,
-    copilotAgentId: response.agent.is_default ? "default" : `agent-${response.agent.id}`,
-    name: response.agent.name,
-    status: "enabled",
-    allowedModels,
-    defaultModelId: response.agent.default_model_configuration_id != null
-      ? String(response.agent.default_model_configuration_id)
-      : allowedModels[0]?.id ?? null,
-    capabilitySnapshot: {
-      mcpServerCount: response.agent.capability_policy.mcp_server_ids.length,
-      sandbox: response.agent.capability_policy.sandbox_enabled,
-      search: response.agent.capability_policy.search_enabled,
-    },
-  };
-}
-
-function mapConversation(conversation: ApiConversation, runs: ApiRun[]): Conversation {
-  const latestRun = runs
-    .filter((run) => run.conversation_id === conversation.id)
-    .sort((first, second) => second.id - first.id)[0];
-  const status = latestRun?.status ?? conversation.status;
-
-  return {
-    id: String(conversation.id),
-    title: conversation.title,
-    agentId: String(conversation.agent.id),
-    status,
-    updatedAt: conversation.updated_at,
-    selectedModelId: conversation.selected_model_configuration_id != null
-      ? String(conversation.selected_model_configuration_id)
-      : conversation.agent.default_model_configuration_id != null
-        ? String(conversation.agent.default_model_configuration_id)
-        : "",
-    latestRunId: latestRun?.id ?? null,
-    completedAt: status === "completed" ? conversation.updated_at : undefined,
-    cancelledAt: status === "cancelled" ? conversation.updated_at : undefined,
-    runError: latestRun?.error ?? undefined,
-    messages: conversation.messages
-      .filter(isVisibleConversationMessage)
-      .map((message, index) => mapConversationMessage(message, conversation.id, index)),
-  };
-}
-
-function isVisibleConversationMessage(message: ApiConversation["messages"][number]) {
-  return !isProcessSummaryMessage(message);
-}
-
-function isProcessSummaryMessage(message: ApiConversation["messages"][number]) {
-  return message.event_type === "process.summary" ||
-    typeof message.process_summary === "string" ||
-    message.content.trim().startsWith("运行过程：");
-}
-
-function mapConversationMessage(
-  message: ApiConversation["messages"][number],
-  conversationId: number,
-  index: number,
-): ConversationMessage {
-  return {
-    id: conversationMessageId(message, conversationId, index),
-    role: message.role,
-    content: message.content,
-    artifactReference: message.artifact_reference
-      ? {
-          artifactId: message.artifact_reference.artifact_id,
-          filename: message.artifact_reference.filename,
-          previewType: message.artifact_reference.preview_type,
-        }
-      : undefined,
-    toolCall: message.tool_call ? mapApiToolCall(message.tool_call) : undefined,
-    card: message.card ? mapConversationCard(message.card) : undefined,
-  };
-}
-
-function conversationMessageId(
-  message: ApiConversation["messages"][number],
-  conversationId: number,
-  index: number,
-) {
-  if (typeof message.run_id === "number" && typeof message.event_sequence === "number") {
-    return `run-${message.run_id}-event-${message.event_sequence}`;
-  }
-  if (message.tool_call) {
-    return `run-${message.tool_call.run_id}-tool-${message.tool_call.id}`;
-  }
-  return `conversation-${conversationId}-message-${index + 1}`;
-}
-
-function mapApiToolCall(toolCall: ApiToolCall): ConversationToolCall {
-  return {
-    capability: toolCall.capability,
-    endedAt: toolCall.ended_at ?? null,
-    errorSummary: toolCall.error_summary ?? undefined,
-    id: toolCall.id,
-    provenance: toolCall.provenance ?? {},
-    runId: toolCall.run_id,
-    safeInput: toolCall.safe_input ?? {},
-    safeOutput: toolCall.safe_output ?? undefined,
-    startedAt: toolCall.started_at ?? null,
-    status: toolCall.status,
-    toolName: toolCall.tool_name,
-  };
-}
-
-function mapStreamEventsToMessages({
-  conversationId,
-  events,
-  runId,
-}: {
-  conversationId: string | null;
-  events: AgentRunStreamEvent[];
-  runId: number | null;
-}): ConversationMessage[] {
-  if (!conversationId || runId == null || events.length === 0) {
-    return [];
-  }
-
-  const messages: ConversationMessage[] = [];
-
-  for (const event of events) {
-    if (event.eventType === "tool.call") {
-      const toolCall = normalizeStreamToolCall(event.data.tool_call, runId);
-      if (!toolCall) {
-        continue;
-      }
-      messages.push({
-        content: `工具调用：${toolCall.toolName}（${toolCall.status}）`,
-        id: `run-${runId}-event-${event.sequence}`,
-        role: "assistant" as const,
-        toolCall,
-      });
-      continue;
-    }
-  }
-
-  return messages;
-}
-
-function normalizeStreamToolCall(
-  value: unknown,
-  runId: number,
-): ConversationToolCall | null {
-  if (!isPlainRecord(value)) {
-    return null;
-  }
-
-  const toolName = value.tool_name;
-  if (typeof toolName !== "string" || !toolName.trim()) {
-    return null;
-  }
-
-  const status = normalizeToolCallStatus(value.status);
-  return {
-    capability: typeof value.capability === "string" ? value.capability : undefined,
-    endedAt: typeof value.ended_at === "string" ? value.ended_at : null,
-    errorSummary: typeof value.error_summary === "string" ? value.error_summary : undefined,
-    id: typeof value.id === "number" || typeof value.id === "string" ? value.id : undefined,
-    provenance: isStringRecord(value.provenance) ? value.provenance : {},
-    runId: typeof value.run_id === "number" ? value.run_id : runId,
-    safeInput: isPlainRecord(value.safe_input) ? value.safe_input : {},
-    safeOutput: isPlainRecord(value.safe_output) ? value.safe_output : undefined,
-    startedAt: typeof value.started_at === "string" ? value.started_at : null,
-    status,
-    toolName,
-  };
-}
-
-function normalizeToolCallStatus(value: unknown): ConversationToolCall["status"] {
-  return value === "completed" || value === "failed" || value === "rejected" || value === "running"
-    ? value
-    : "completed";
-}
-
-function mergeConversationMessages(messages: ConversationMessage[]): ConversationMessage[] {
-  const seen = new Set<string>();
-  return messages.filter((message) => {
-    if (seen.has(message.id)) {
-      return false;
-    }
-    seen.add(message.id);
-    return true;
-  });
-}
-
-function isPlainRecord(value: unknown): value is Record<string, unknown> {
-  return Boolean(value) && typeof value === "object" && !Array.isArray(value);
-}
-
-function isStringRecord(value: unknown): value is Record<string, string> {
-  return isPlainRecord(value) && Object.values(value).every((item) => typeof item === "string");
-}
-
-function mapConversationCard(card: ApiConversationCard): ConversationCard {
-  const schema = String(card.schema ?? card.card_schema ?? "");
-  return {
-    schema: isCardSchema(schema) ? schema : "status_card",
-    payload: card.payload,
-  };
-}
-
-function compareConversationsByLatestInteraction(first: Conversation, second: Conversation) {
-  const now = Date.now();
-  const firstTime = conversationUpdatedAtRank(first.updatedAt, now);
-  const secondTime = conversationUpdatedAtRank(second.updatedAt, now);
-
-  if (firstTime !== secondTime) {
-    return secondTime - firstTime;
-  }
-
-  return Number(second.id) - Number(first.id);
-}
-
-function conversationUpdatedAtRank(updatedAt: string, now: number) {
-  const trimmed = updatedAt.trim();
-  const parsedTime = Date.parse(trimmed);
-
-  if (!Number.isNaN(parsedTime)) {
-    return parsedTime;
-  }
-
-  if (trimmed === "刚刚" || trimmed.toLowerCase() === "just now") {
-    return Number.MAX_SAFE_INTEGER;
-  }
-
-  const relativeMatch = trimmed.match(/^(\d+)\s*(分钟|小时|天|周|月|年)前$/);
-  if (!relativeMatch) {
-    return 0;
-  }
-
-  const amount = Number(relativeMatch[1]);
-  const unit = relativeMatch[2];
-  const unitMs: Record<string, number> = {
-    分钟: 60 * 1000,
-    小时: 60 * 60 * 1000,
-    天: 24 * 60 * 60 * 1000,
-    周: 7 * 24 * 60 * 60 * 1000,
-    月: 30 * 24 * 60 * 60 * 1000,
-    年: 365 * 24 * 60 * 60 * 1000,
-  };
-
-  return now - amount * unitMs[unit];
-}
-
-function isCardSchema(schema: string): schema is CardSchema {
-  return (CARD_SCHEMAS as readonly string[]).includes(schema);
-}
-
-function getMessageArtifactReference(message: ConversationMessage): ArtifactReference | null {
-  if (message.artifactReference) {
-    return message.artifactReference;
-  }
-
-  if (message.card?.schema !== "artifact_card") {
-    return null;
-  }
-
-  const artifactId = Number(message.card.payload.artifact_id);
-  if (!Number.isFinite(artifactId)) {
-    return null;
-  }
-
-  return {
-    artifactId,
-    filename: String(message.card.payload.filename ?? "未命名制品"),
-    previewType: String(message.card.payload.preview_type ?? "download"),
-  };
-}
-
-function collectCommandArtifacts(conversations: Conversation[]): CommandArtifact[] {
-  const seenArtifactIds = new Set<number>();
-  const artifacts: CommandArtifact[] = [];
-
-  for (const conversation of conversations) {
-    for (const message of conversation.messages) {
-      const reference = getMessageArtifactReference(message);
-      if (!reference || seenArtifactIds.has(reference.artifactId)) {
-        continue;
-      }
-
-      seenArtifactIds.add(reference.artifactId);
-      artifacts.push({
-        conversationId: conversation.id,
-        conversationTitle: conversation.title,
-        reference,
-      });
-    }
-  }
-
-  return artifacts;
-}
-
-function collectCommandRuns(conversations: Conversation[], runs: ApiRun[]): CommandRun[] {
-  const conversationById = new Map(
-    conversations.map((conversation) => [conversation.id, conversation]),
-  );
-  const commandRuns: CommandRun[] = [];
-  for (const run of runs) {
-      const conversation = conversationById.get(String(run.conversation_id));
-      if (!conversation) {
-        continue;
-      }
-      commandRuns.push({
-        conversationId: conversation.id,
-        conversationTitle: conversation.title,
-        runId: run.id,
-        status: run.status,
-        updatedAt: conversation.updatedAt,
-      });
-  }
-  return commandRuns;
-}
-
 function AccountCenter({ currentUser }: { currentUser: CurrentUser | null }) {
   const [isAccountMenuOpen, setIsAccountMenuOpen] = useState(false);
   const accountCenterRef = useRef<HTMLElement | null>(null);
@@ -1207,10 +817,6 @@ function formatSidebarUserRole(role: CurrentUser["role"] | undefined) {
     return "成员";
   }
   return "加载中";
-}
-
-function isActiveConversationRun(conversation: Conversation) {
-  return conversation.status === "queued" || conversation.status === "running";
 }
 
 function CommandPalette({
@@ -1579,23 +1185,6 @@ function formatRecentRunActivity(lastSeenSequence: number) {
   return lastSeenSequence > 0
     ? `已同步 ${lastSeenSequence} 条运行更新`
     : "暂无新活动";
-}
-
-function formatConversationStatus(status: Conversation["status"]) {
-  switch (status) {
-    case "running":
-      return "运行中";
-    case "completed":
-      return "已完成";
-    case "failed":
-      return "失败";
-    case "cancelled":
-      return "已停止";
-    case "idle":
-      return "空闲";
-    default:
-      return status;
-  }
 }
 
 function formatStreamStatus(status: "idle" | "connected" | "unavailable") {

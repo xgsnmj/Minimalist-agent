@@ -23,7 +23,7 @@ from openai.types.responses import (
     ResponseTextDoneEvent,
 )
 
-from apps.api.app.agent_run_lifecycle import agent_run_lifecycle
+from apps.api.app.agent_run_execution import agent_run_execution
 from apps.api.app.agent_runs import AgentRunStatus, agent_run_store
 from apps.api.app.agents import agent_store
 from apps.api.app.model_configurations import ModelConfiguration, model_configuration_store
@@ -232,7 +232,7 @@ class RuntimeStore:
             return self._runtime_result_from_run(run, full_trace=_trace_fallback(run))
 
         if "failure" in run.user_message.lower():
-            agent_run_lifecycle.apply_runtime_failure(
+            agent_run_execution.apply_runtime_failure(
                 run_id=run.id,
                 message="Mock Agent Runtime failed.",
             )
@@ -244,7 +244,7 @@ class RuntimeStore:
                 run.capability_snapshot.selected_model_configuration_id
             )
         except Exception as exc:
-            agent_run_lifecycle.apply_runtime_failure(
+            agent_run_execution.apply_runtime_failure(
                 run_id=run.id,
                 message=_error_message(exc),
             )
@@ -261,7 +261,7 @@ class RuntimeStore:
             )
             model_settings = _model_settings_for_configuration(model_configuration)
         except Exception as exc:
-            agent_run_lifecycle.apply_runtime_failure(
+            agent_run_execution.apply_runtime_failure(
                 run_id=run.id,
                 message=_error_message(exc),
             )
@@ -271,7 +271,7 @@ class RuntimeStore:
         trace_processor = _CapturedTraceProcessor()
         set_trace_processors([trace_processor])
 
-        agent_run_lifecycle.begin_runtime_execution(run.id)
+        agent_run_execution.begin_runtime_execution(run.id)
 
         runtime_agent = Agent(
             name=agent.name,
@@ -298,7 +298,7 @@ class RuntimeStore:
         try:
             result = Runner.run_sync(runtime_agent, run.user_message, run_config=run_config)
         except Exception as exc:
-            agent_run_lifecycle.apply_runtime_failure(
+            agent_run_execution.apply_runtime_failure(
                 run_id=run.id,
                 message=_error_message(exc),
             )
@@ -322,7 +322,7 @@ class RuntimeStore:
         trace["provider_id"] = provider_id
         trace["model_name"] = model_name
         trace["endpoint"] = model_configuration.endpoint
-        agent_run_lifecycle.apply_runtime_success(
+        agent_run_execution.apply_runtime_success(
             run_id=run.id,
             assistant_message=assistant_message,
             process_summaries=process_summaries,
@@ -339,7 +339,7 @@ class RuntimeStore:
             return
 
         if "failure" in run.user_message.lower():
-            failed_run = agent_run_lifecycle.apply_runtime_failure(
+            failed_run = agent_run_execution.apply_runtime_failure(
                 run_id=run.id,
                 message="Mock Agent Runtime failed.",
             )
@@ -357,7 +357,7 @@ class RuntimeStore:
                 run.capability_snapshot.selected_model_configuration_id
             )
         except Exception as exc:
-            failed_run = agent_run_lifecycle.apply_runtime_failure(
+            failed_run = agent_run_execution.apply_runtime_failure(
                 run_id=run.id,
                 message=_error_message(exc),
             )
@@ -381,7 +381,7 @@ class RuntimeStore:
             )
             model_settings = _model_settings_for_configuration(model_configuration)
         except Exception as exc:
-            failed_run = agent_run_lifecycle.apply_runtime_failure(
+            failed_run = agent_run_execution.apply_runtime_failure(
                 run_id=run.id,
                 message=_error_message(exc),
             )
@@ -396,7 +396,7 @@ class RuntimeStore:
 
         trace_processor = _CapturedTraceProcessor()
         set_trace_processors([trace_processor])
-        running_run = agent_run_lifecycle.begin_runtime_execution(run.id)
+        running_run = agent_run_execution.begin_runtime_execution(run.id)
         yield {
             "event_type": "run.status",
             "data": {"status": running_run.status.value},
@@ -448,13 +448,13 @@ class RuntimeStore:
                 if not delta:
                     continue
                 assistant_chunks.append(delta)
-                agent_run_lifecycle.record_message_delta(running_run, delta=delta)
+                agent_run_execution.record_message_delta(running_run, delta=delta)
                 yield {
                     "event_type": "message.delta",
                     "data": {"role": "assistant", "delta": delta},
                 }
         except Exception as exc:
-            failed_run = agent_run_lifecycle.apply_runtime_failure(
+            failed_run = agent_run_execution.apply_runtime_failure(
                 run_id=run.id,
                 message=_error_message(exc),
             )
@@ -489,7 +489,7 @@ class RuntimeStore:
         trace["provider_id"] = provider_id
         trace["model_name"] = model_name
         trace["endpoint"] = model_configuration.endpoint
-        agent_run_lifecycle.apply_runtime_success(
+        agent_run_execution.apply_runtime_success(
             run_id=run.id,
             assistant_message=assistant_message,
             process_summaries=process_summaries,
@@ -825,7 +825,7 @@ def _record_runtime_tool_event(*, run_id: int, tool_event: dict[str, object]) ->
         return
     persisted_tool_call = dict(tool_call)
     persisted_tool_call.pop("ag_ui_phase", None)
-    agent_run_lifecycle.record_tool_call(
+    agent_run_execution.record_tool_call(
         agent_run_store.get(run_id),
         tool_call=persisted_tool_call,
     )
