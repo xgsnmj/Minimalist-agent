@@ -103,6 +103,9 @@ class ConversationMessageRecord(Base):
     card: Mapped[dict | None] = mapped_column(JsonPayload, nullable=True)
 
 
+_VISIBLE_RUN_EVENT_TYPES = {"process.summary", "tool.call"}
+
+
 class ConversationStore:
     def reset(self) -> None:
         ConversationRecord.__table__.create(bind=engine, checkfirst=True)
@@ -172,7 +175,32 @@ class ConversationStore:
                 .where(ConversationRecord.deleted.is_(False))
                 .order_by(ConversationRecord.id.desc())
             ).all()
-            return [self._conversation_from_record(session, record) for record in records]
+            if not records:
+                return []
+            conversation_ids = [record.id for record in records]
+            message_records = session.scalars(
+                select(ConversationMessageRecord)
+                .where(ConversationMessageRecord.conversation_id.in_(conversation_ids))
+                .order_by(
+                    ConversationMessageRecord.conversation_id.asc(),
+                    ConversationMessageRecord.sequence.asc(),
+                )
+            ).all()
+            messages_by_conversation: dict[int, list[ConversationMessageRecord]] = {
+                conversation_id: [] for conversation_id in conversation_ids
+            }
+            for message in message_records:
+                messages_by_conversation.setdefault(message.conversation_id, []).append(message)
+            agents_by_id = {agent.id: agent for agent in agent_store.list_agents()}
+            return [
+                self._conversation_from_record(
+                    session,
+                    record,
+                    agent=agents_by_id.get(record.agent_id),
+                    messages=messages_by_conversation.get(record.id, []),
+                )
+                for record in records
+            ]
 
     def get_for_user(self, *, owner_user_id: int, conversation_id: int) -> AgentConversation:
         with SessionLocal() as session:
@@ -305,19 +333,22 @@ class ConversationStore:
         record: ConversationRecord,
         *,
         include_deleted: bool = False,
+        agent: Agent | None = None,
+        messages: list[ConversationMessageRecord] | None = None,
     ) -> AgentConversation:
         if record.deleted and not include_deleted:
             raise _conversation_not_found()
-        messages = session.scalars(
-            select(ConversationMessageRecord)
-            .where(ConversationMessageRecord.conversation_id == record.id)
-            .order_by(ConversationMessageRecord.sequence.asc())
-        ).all()
+        if messages is None:
+            messages = session.scalars(
+                select(ConversationMessageRecord)
+                .where(ConversationMessageRecord.conversation_id == record.id)
+                .order_by(ConversationMessageRecord.sequence.asc())
+            ).all()
         return AgentConversation(
             id=record.id,
             owner_user_id=record.owner_user_id,
             title=record.title,
-            agent=agent_store.get(record.agent_id),
+            agent=agent or agent_store.get(record.agent_id),
             selected_model_configuration_id=record.selected_model_configuration_id,
             updated_at=record.updated_at,
             status=ConversationStatus(record.status),
@@ -353,6 +384,34 @@ def _message_from_record(record: ConversationMessageRecord) -> ConversationMessa
 
 
 def to_conversation_response(conversation: AgentConversation) -> ConversationResponse:
+    runs_by_conversation, events_by_run = _visible_run_context_for_conversations([conversation])
+    return _to_conversation_response(
+        conversation,
+        runs=runs_by_conversation.get(conversation.id, []),
+        events_by_run=events_by_run,
+    )
+
+
+def to_conversation_responses(
+    conversations: list[AgentConversation],
+) -> list[ConversationResponse]:
+    runs_by_conversation, events_by_run = _visible_run_context_for_conversations(conversations)
+    return [
+        _to_conversation_response(
+            conversation,
+            runs=runs_by_conversation.get(conversation.id, []),
+            events_by_run=events_by_run,
+        )
+        for conversation in conversations
+    ]
+
+
+def _to_conversation_response(
+    conversation: AgentConversation,
+    *,
+    runs,
+    events_by_run: dict[int, list],
+) -> ConversationResponse:
     messages = [
         ConversationMessageResponse(
             role=message.role,
@@ -376,23 +435,57 @@ def to_conversation_response(conversation: AgentConversation) -> ConversationRes
         status=conversation.status,
         updated_at=conversation.updated_at,
         deleted=conversation.deleted,
-        messages=_merge_run_event_messages(conversation=conversation, messages=messages),
+        messages=_merge_run_event_messages(
+            messages=messages,
+            runs=runs,
+            events_by_run=events_by_run,
+        ),
     )
+
+
+def _visible_run_context_for_conversations(
+    conversations: list[AgentConversation],
+) -> tuple[dict[int, list], dict[int, list]]:
+    from apps.api.app.agent_runs import agent_run_store
+    from apps.api.app.run_event_log import run_event_log_store
+
+    runs_by_conversation: dict[int, list] = {conversation.id: [] for conversation in conversations}
+    if not conversations:
+        return runs_by_conversation, {}
+
+    runs = []
+    owner_ids = sorted({conversation.owner_user_id for conversation in conversations})
+    for owner_user_id in owner_ids:
+        conversation_ids = [
+            conversation.id
+            for conversation in conversations
+            if conversation.owner_user_id == owner_user_id
+        ]
+        runs.extend(
+            agent_run_store.list_for_conversations(
+                owner_user_id=owner_user_id,
+                conversation_ids=conversation_ids,
+            )
+        )
+    for run in runs:
+        runs_by_conversation.setdefault(run.conversation_id, []).append(run)
+
+    events_by_run: dict[int, list] = {}
+    for event in run_event_log_store.list_for_runs_by_type(
+        run_ids=[run.id for run in runs],
+        event_types=_VISIBLE_RUN_EVENT_TYPES,
+    ):
+        events_by_run.setdefault(event.run_id, []).append(event)
+    return runs_by_conversation, events_by_run
 
 
 def _merge_run_event_messages(
     *,
-    conversation: AgentConversation,
     messages: list[ConversationMessageResponse],
+    runs,
+    events_by_run: dict[int, list],
 ) -> list[ConversationMessageResponse]:
-    from apps.api.app.agent_runs import agent_run_store
-    from apps.api.app.run_event_log import run_event_log_store
-
-    runs = [
-        run
-        for run in sorted(agent_run_store.list_all(), key=lambda item: item.id)
-        if run.conversation_id == conversation.id
-    ]
+    runs = sorted(runs, key=lambda item: item.id)
     if not runs:
         return messages
 
@@ -412,10 +505,7 @@ def _merge_run_event_messages(
         merged_messages.extend(
             _visible_event_messages(
                 run_id=matched_run.id,
-                events=run_event_log_store.list_after(
-                    run_id=matched_run.id,
-                    after_sequence=0,
-                ),
+                events=events_by_run.get(matched_run.id, []),
             )
         )
 
@@ -423,10 +513,7 @@ def _merge_run_event_messages(
         merged_messages.extend(
             _visible_event_messages(
                 run_id=run.id,
-                events=run_event_log_store.list_after(
-                    run_id=run.id,
-                    after_sequence=0,
-                ),
+                events=events_by_run.get(run.id, []),
             )
         )
 

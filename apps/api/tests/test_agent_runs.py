@@ -186,15 +186,24 @@ def test_mock_runtime_failure_marks_background_agent_run_failed():
         f"/runs/{run['id']}",
         headers={"Authorization": f"Bearer {token}"},
     )
+    conversation_response = client.get(
+        f"/conversations/{conversation_id}",
+        headers={"Authorization": f"Bearer {token}"},
+    )
 
     assert worker_response["status"] == "failed"
     assert detail_response.json()["status"] == "failed"
     assert detail_response.json()["error"] == "Mock Agent Runtime failed."
+    assert detail_response.json()["assistant_message"] == "运行未完成：Mock Agent Runtime failed."
     assert detail_response.json()["status_events"] == [
         "queued",
         "worker_enqueued",
         "failed",
     ]
+    assert conversation_response.json()["messages"][-1] == {
+        "role": "assistant",
+        "content": "运行未完成：Mock Agent Runtime failed.",
+    }
 
 
 def test_worker_processes_persisted_run_without_api_process_memory_state():

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from collections.abc import AsyncIterator
 from dataclasses import dataclass, field
+import json
 import os
 import re
 import time
@@ -26,6 +27,12 @@ from apps.api.app.agent_run_lifecycle import agent_run_lifecycle
 from apps.api.app.agent_runs import AgentRunStatus, agent_run_store
 from apps.api.app.agents import agent_store
 from apps.api.app.model_configurations import ModelConfiguration, model_configuration_store
+from apps.api.app.runtime_tools import (
+    capability_for_tool_name,
+    project_safe_payload,
+    public_tool_name_for_sdk_name,
+    sdk_tools_for_run,
+)
 from apps.api.app.secret_vault import secret_vault_store
 
 _MODEL_PARAMETER_KEY_MAP = {
@@ -265,6 +272,7 @@ class RuntimeStore:
             name=agent.name,
             instructions=agent.instruction,
             model=model_name,
+            tools=sdk_tools_for_run(run),
         )
         run_config = RunConfig(
             model_provider=model_provider,
@@ -389,6 +397,7 @@ class RuntimeStore:
             name=agent.name,
             instructions=agent.instruction,
             model=model_name,
+            tools=sdk_tools_for_run(run),
         )
         run_config = RunConfig(
             model_provider=model_provider,
@@ -407,9 +416,21 @@ class RuntimeStore:
         )
 
         assistant_chunks: list[str] = []
+        pending_tool_calls: dict[str, dict[str, object]] = {}
         try:
             result = Runner.run_streamed(runtime_agent, run.user_message, run_config=run_config)
             async for event in result.stream_events():
+                if event.type == "run_item_stream_event":
+                    tool_event = _runtime_tool_event_from_run_item(
+                        event,
+                        conversation_id=run.conversation_id,
+                        pending_tool_calls=pending_tool_calls,
+                        run_id=run.id,
+                    )
+                    if tool_event is not None:
+                        _record_runtime_tool_event(run_id=run.id, tool_event=tool_event)
+                        yield tool_event
+                    continue
                 if event.type != "raw_response_event":
                     continue
                 if event.data.type != "response.output_text.delta":
@@ -513,6 +534,187 @@ def _resolve_model_configuration(configuration_id: int | None):
     if not configuration.enabled:
         raise RuntimeError("Model Configuration is disabled.")
     return configuration
+
+
+def _runtime_tool_event_from_run_item(
+    event: Any,
+    *,
+    conversation_id: int,
+    pending_tool_calls: dict[str, dict[str, object]],
+    run_id: int,
+) -> dict[str, object] | None:
+    item = getattr(event, "item", None)
+    item_type = getattr(item, "type", None)
+    event_name = getattr(event, "name", None)
+    if item is None:
+        return None
+
+    if item_type == "tool_call_item" or event_name in {
+        "tool_called",
+        "tool_search_called",
+        "mcp_list_tools",
+    }:
+        tool_call = _runtime_tool_call_payload(
+            item,
+            conversation_id=conversation_id,
+            run_id=run_id,
+        )
+        pending_tool_calls[str(tool_call["id"])] = tool_call
+        return {
+            "event_type": "tool.call",
+            "data": {"tool_call": {**tool_call, "ag_ui_phase": "start"}},
+        }
+
+    if item_type == "tool_call_output_item" or event_name in {
+        "tool_output",
+        "tool_search_output_created",
+    }:
+        tool_call_id = _tool_call_id_from_item(item)
+        if tool_call_id is None:
+            return None
+        known_tool_call = pending_tool_calls.get(tool_call_id, {})
+        output_record = _safe_record(getattr(item, "output", None))
+        extracted_output = _tool_output_fields(output_record)
+        tool_call = {
+            **known_tool_call,
+            "id": tool_call_id,
+            "conversation_id": conversation_id,
+            "run_id": run_id,
+            **extracted_output,
+            "ag_ui_phase": "result",
+        }
+        tool_call.setdefault("tool_name", "tool")
+        tool_call.setdefault("capability", "openai_agents_sdk")
+        tool_call.setdefault("safe_input", {})
+        tool_call.setdefault(
+            "provenance",
+            {"gateway": "openai_agents_sdk", "provider": "agents"},
+        )
+        return {
+            "event_type": "tool.call",
+            "data": {"tool_call": tool_call},
+        }
+
+    return None
+
+
+def _runtime_tool_call_payload(
+    item: Any,
+    *,
+    conversation_id: int,
+    run_id: int,
+) -> dict[str, object]:
+    raw_item = getattr(item, "raw_item", None)
+    tool_call_id = _tool_call_id_from_item(item) or f"{run_id}-tool"
+    tool_name = _tool_name_from_item(item)
+    return {
+        "id": tool_call_id,
+        "conversation_id": conversation_id,
+        "run_id": run_id,
+        "tool_name": tool_name,
+        "capability": capability_for_tool_name(tool_name),
+        "status": "running",
+        "started_at": "just now",
+        "ended_at": None,
+        "safe_input": project_safe_payload(_safe_record(_raw_value(raw_item, "arguments"))),
+        "safe_output": None,
+        "provenance": {"gateway": "openai_agents_sdk", "provider": "agents"},
+    }
+
+
+def _tool_call_id_from_item(item: Any) -> str | None:
+    raw_item = getattr(item, "raw_item", None)
+    value = (
+        getattr(item, "call_id", None)
+        or _raw_value(raw_item, "call_id")
+        or _raw_value(raw_item, "id")
+    )
+    return str(value) if value is not None else None
+
+
+def _tool_name_from_item(item: Any) -> str:
+    raw_item = getattr(item, "raw_item", None)
+    value = (
+        getattr(item, "title", None)
+        or getattr(item, "tool_name", None)
+        or _raw_value(raw_item, "name")
+        or _raw_value(raw_item, "type")
+        or "tool"
+    )
+    return public_tool_name_for_sdk_name(str(value))
+
+
+def _tool_output_fields(output_record: dict[str, object]) -> dict[str, object]:
+    status_value = str(output_record.get("status") or "completed")
+    if status_value not in {"completed", "failed", "rejected", "running"}:
+        status_value = "completed"
+
+    safe_output = output_record.get("safe_output")
+    if not isinstance(safe_output, dict) and status_value == "completed":
+        safe_output = output_record
+    elif not isinstance(safe_output, dict):
+        safe_output = None
+
+    fields: dict[str, object] = {
+        "status": status_value,
+        "safe_output": safe_output,
+        "ended_at": str(output_record.get("ended_at") or "just now"),
+    }
+    for key in ("tool_name", "capability", "started_at", "error_summary"):
+        value = output_record.get(key)
+        if value is not None:
+            fields[key] = value
+    provenance = output_record.get("provenance")
+    if isinstance(provenance, dict):
+        fields["provenance"] = provenance
+    safe_input = output_record.get("safe_input")
+    if isinstance(safe_input, dict):
+        fields["safe_input"] = project_safe_payload(safe_input)
+    return fields
+
+
+def _record_runtime_tool_event(*, run_id: int, tool_event: dict[str, object]) -> None:
+    data = tool_event.get("data")
+    if not isinstance(data, dict):
+        return
+    tool_call = data.get("tool_call")
+    if not isinstance(tool_call, dict):
+        return
+    if tool_call.get("ag_ui_phase") != "result":
+        return
+    persisted_tool_call = dict(tool_call)
+    persisted_tool_call.pop("ag_ui_phase", None)
+    agent_run_lifecycle.record_tool_call(
+        agent_run_store.get(run_id),
+        tool_call=persisted_tool_call,
+    )
+
+
+def _raw_value(raw_item: Any, key: str) -> Any:
+    if isinstance(raw_item, dict):
+        return raw_item.get(key)
+    return getattr(raw_item, key, None)
+
+
+def _safe_record(value: Any) -> dict[str, object]:
+    if isinstance(value, dict):
+        return dict(value)
+    if isinstance(value, str):
+        stripped = value.strip()
+        if not stripped:
+            return {}
+        try:
+            parsed = json.loads(stripped)
+        except json.JSONDecodeError:
+            return {"value": value}
+        return dict(parsed) if isinstance(parsed, dict) else {"value": parsed}
+    model_dump = getattr(value, "model_dump", None)
+    if callable(model_dump):
+        dumped = model_dump(mode="json")
+        return dict(dumped) if isinstance(dumped, dict) else {"value": dumped}
+    if value is None:
+        return {}
+    return {"value": str(value)}
 
 
 def _run_model_name(run) -> str:

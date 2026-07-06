@@ -1,9 +1,15 @@
+import asyncio
+import json
+
+from apps.api.app.agent_run_lifecycle import agent_run_lifecycle
+from apps.api.app.agent_runs import agent_run_store
 from apps.api.app.agents import AgentUpdateRequest, agent_store
 from apps.api.app.model_configurations import (
     ModelConfigurationMutationRequest,
     model_configuration_store,
 )
 from apps.api.app.runtime import runtime_store
+from apps.api.app.runtime_tools import public_tool_name_for_sdk_name, sdk_tools_for_run
 
 
 def create_model_configuration_for_tests(
@@ -49,3 +55,29 @@ def configure_default_agent_model(
 
 def use_fake_agent_runtime() -> None:
     runtime_store.use_fake_model_provider_for_tests()
+
+
+def invoke_sdk_tool_for_tests(
+    *,
+    run_id: int,
+    tool_name: str,
+    payload: dict,
+    call_id: str = "test-tool-call",
+) -> dict:
+    run = agent_run_store.get(run_id)
+    tool = next(
+        (
+            candidate
+            for candidate in sdk_tools_for_run(run)
+            if public_tool_name_for_sdk_name(candidate.name) == tool_name
+        ),
+        None,
+    )
+    if tool is None:
+        raise AssertionError(f"SDK tool {tool_name} is not registered for run {run_id}.")
+
+    raw_output = asyncio.run(tool.on_invoke_tool(None, json.dumps(payload)))
+    tool_call = json.loads(raw_output)
+    tool_call["id"] = call_id
+    agent_run_lifecycle.record_tool_call(run, tool_call=tool_call)
+    return tool_call

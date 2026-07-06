@@ -6010,3 +6010,71 @@ textarea {
     left: -26px;
   }
 }
+
+/* Sidebar history and composer hardening: keep long titles from shifting controls. */
+.conversation-sidebar {
+  display: flex;
+  flex-direction: column;
+}
+
+.sidebar-section {
+  flex: 0 0 auto;
+  gap: 6px;
+  min-height: 0;
+  overflow: hidden;
+}
+
+.conversation-sidebar-footer {
+  margin-top: auto;
+}
+
+.conversation-list {
+  align-content: start;
+  gap: 1px;
+  max-height: 195px;
+  min-width: 0;
+  overflow-x: hidden;
+  overflow-y: auto;
+  padding-right: 0;
+  width: 100%;
+}
+
+.conversation-item {
+  align-items: center;
+  display: flex;
+  height: 32px;
+  justify-content: flex-start;
+  min-height: 32px;
+  min-width: 0;
+  overflow: hidden;
+  padding: 0 10px;
+  width: 100%;
+}
+
+.conversation-title {
+  display: block;
+  flex: 1 1 auto;
+  line-height: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.conversation-list-more {
+  align-items: center;
+  display: flex;
+  flex: 0 0 auto;
+  height: 30px;
+  justify-content: center;
+  min-height: 30px;
+  min-width: 0;
+  overflow: hidden;
+  padding: 0 10px;
+  width: 100%;
+}
+
+.conversation-composer {
+  max-height: 132px;
+  overflow: hidden;
+}

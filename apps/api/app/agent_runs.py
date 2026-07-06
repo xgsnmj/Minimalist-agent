@@ -165,6 +165,23 @@ class AgentRunStore:
             ).all()
             return [self._run_from_record(record) for record in records]
 
+    def list_for_conversations(
+        self,
+        *,
+        owner_user_id: int,
+        conversation_ids: list[int],
+    ) -> list[AgentRun]:
+        if not conversation_ids:
+            return []
+        with SessionLocal() as session:
+            records = session.scalars(
+                select(AgentRunRecord)
+                .where(AgentRunRecord.owner_user_id == owner_user_id)
+                .where(AgentRunRecord.conversation_id.in_(conversation_ids))
+                .order_by(AgentRunRecord.id.asc())
+            ).all()
+            return [self._run_from_record(record) for record in records]
+
     def save(self, run: AgentRun) -> AgentRun:
         with SessionLocal() as session:
             record = self._record_or_404(session, run.id)

@@ -74,6 +74,19 @@ type TestMcpTool = {
   input_schema: Record<string, string>;
 };
 
+type TestWorkspaceRun = {
+  id: number;
+  conversation_id: number;
+  owner_user_id: number;
+  status: "queued" | "running" | "completed" | "failed" | "cancelled";
+  user_message: string;
+  assistant_message: string | null;
+  process_summaries: string[];
+  error: string | null;
+  worker_enqueued: boolean;
+  status_events: string[];
+};
+
 type TestCurrentUser = {
   id: number;
   username: string;
@@ -390,7 +403,7 @@ beforeEach(() => {
             ended_at: "10:01",
             safe_input: { query: "AI workspace conversation artifacts" },
             safe_output: { summary: "找到 3 条候选资料。" },
-            provenance: { gateway: "agent_tool_gateway", provider: "doubao" },
+            provenance: { gateway: "openai_agents_sdk", provider: "doubao" },
             error_summary: null,
           },
         },
@@ -473,7 +486,7 @@ beforeEach(() => {
       ],
     },
   ];
-  const workspaceRuns = [
+  const workspaceRuns: TestWorkspaceRun[] = [
     { id: 2, conversation_id: 2, owner_user_id: 1, status: "running", user_message: "对比三个同类产品的对话工作台信息架构。", assistant_message: null, process_summaries: [], error: null, worker_enqueued: true, status_events: ["queued", "worker_enqueued"] },
     { id: 3, conversation_id: 3, owner_user_id: 1, status: "failed", user_message: "生成一份行业报告结构和关键数据清单。", assistant_message: null, process_summaries: [], error: "模型网关超时，运行未完成。可重新运行或调整输入。", worker_enqueued: true, status_events: ["failed"] },
     { id: 4, conversation_id: 4, owner_user_id: 1, status: "completed", user_message: "整理品牌定位简报，输出 Markdown 文档。", assistant_message: "已完成品牌定位简报，并生成可预览制品。", process_summaries: [], error: null, worker_enqueued: true, status_events: ["completed"] },
@@ -865,10 +878,11 @@ beforeEach(() => {
       if (url === "/api/runs" && method === "GET") {
         return jsonResponse(workspaceRuns);
       }
-      if (url === "/api/conversations/1/run-attachments" && method === "POST") {
+      if (/^\/api\/conversations\/\d+\/run-attachments$/.test(url) && method === "POST") {
         const file = init?.body instanceof FormData ? init.body.get("file") : null;
         const filename = file instanceof File ? file.name : "attachment.md";
-        return jsonResponse({ id: 1, conversation_id: 1, filename, content_type: "text/markdown", size: 5, preview_type: "markdown" }, { status: 201 });
+        const conversationId = Number(url.split("/")[3]);
+        return jsonResponse({ id: 1, conversation_id: conversationId, filename, content_type: "text/markdown", size: 5, preview_type: "markdown" }, { status: 201 });
       }
       if (url === "/api/conversations/1" && method === "PATCH") {
         workspaceConversations = workspaceConversations.map((conversation) =>
@@ -883,8 +897,9 @@ beforeEach(() => {
       }
       if (url === "/api/conversations/drafts" && method === "POST") {
         const body = requestJson(init);
+        const conversationId = Math.max(...workspaceConversations.map((conversation) => conversation.id), 0) + 1;
         const created = {
-          id: 6,
+          id: conversationId,
           title: String(body.title),
           agent: agents[0],
           selected_model_configuration_id: typeof body.selected_model_configuration_id === "number"
@@ -898,14 +913,15 @@ beforeEach(() => {
         workspaceConversations = [created, ...workspaceConversations];
         return jsonResponse(created, { status: 201 });
       }
-      if (url === "/api/conversations/6/runs" && method === "POST") {
+      if (/^\/api\/conversations\/\d+\/runs$/.test(url) && method === "POST") {
         const body = requestJson(init);
+        const conversationId = Number(url.split("/")[3]);
         workspaceConversations = workspaceConversations.map((conversation) =>
-          conversation.id === 6
+          conversation.id === conversationId
             ? { ...conversation, status: "running", messages: [{ role: "user", content: String(body.message) }] }
             : conversation,
         );
-        return jsonResponse({ id: 6, conversation_id: 6, owner_user_id: 1, status: "queued", user_message: String(body.message), assistant_message: null, process_summaries: [], error: null, worker_enqueued: true, status_events: ["queued"] }, { status: 201 });
+        return jsonResponse({ id: conversationId, conversation_id: conversationId, owner_user_id: 1, status: "queued", user_message: String(body.message), assistant_message: null, process_summaries: [], error: null, worker_enqueued: true, status_events: ["queued"] }, { status: 201 });
       }
       if (url.startsWith("/api/copilotkit/agent/") && url.endsWith("/run") && method === "POST") {
         const body = requestJson(init);
@@ -928,21 +944,27 @@ beforeEach(() => {
           : null;
         const conversationId = forwardedConversationId ?? Math.max(...workspaceConversations.map((conversation) => conversation.id), 0) + 1;
         const assistantMessage = `openai:gpt-5 handled ${text}`;
+        const failedAssistantMessage = "运行未完成：Mock Agent Runtime failed.";
         const agentId = typeof forwardedProps.agent_id === "number" ? forwardedProps.agent_id : 1;
         const agent = agents.find((item) => item.id === agentId) ?? agents[0];
 
-        const persistRunResult = () => {
+        const persistRunResult = (status: "completed" | "failed" = "completed") => {
+          const persistedAssistantMessage = status === "failed" ? failedAssistantMessage : assistantMessage;
+          const runError = status === "failed" ? "Mock Agent Runtime failed." : null;
           if (forwardedConversationId) {
             workspaceConversations = workspaceConversations.map((conversation) =>
               conversation.id === forwardedConversationId
                 ? {
                     ...conversation,
                     status: "idle",
+                    title: conversation.title === "新对话"
+                      ? text.slice(0, 48) || "新对话"
+                      : conversation.title,
                     updated_at: "刚刚",
                     messages: [
                       ...conversation.messages,
                       { role: "user", content: text },
-                      { role: "assistant", content: assistantMessage },
+                      { role: "assistant", content: persistedAssistantMessage },
                     ],
                   }
                 : conversation,
@@ -959,7 +981,7 @@ beforeEach(() => {
                 deleted: false,
                 messages: [
                   { role: "user", content: text },
-                  { role: "assistant", content: assistantMessage },
+                  { role: "assistant", content: persistedAssistantMessage },
                 ],
               },
               ...workspaceConversations,
@@ -969,16 +991,20 @@ beforeEach(() => {
             id: Math.max(...workspaceRuns.map((run) => run.id), 0) + 1,
             conversation_id: conversationId,
             owner_user_id: 1,
-            status: "completed",
+            status,
             user_message: text,
-            assistant_message: assistantMessage,
+            assistant_message: persistedAssistantMessage,
             process_summaries: [],
-            error: null,
+            error: runError,
             worker_enqueued: true,
-            status_events: ["completed"],
+            status_events: [status],
           });
         };
 
+        if (text.includes("模拟运行失败")) {
+          persistRunResult("failed");
+          return jsonResponse({ detail: "Mock Agent Runtime failed." }, { status: 500 });
+        }
         if (text.includes("延迟完成态刷新")) {
           window.setTimeout(persistRunResult, 1000);
         } else {

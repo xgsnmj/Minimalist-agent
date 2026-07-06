@@ -126,6 +126,22 @@ describe("Agent Conversation workspace", () => {
     expect(recentConversationList.getByRole("button", { name: "归档研究" })).toBeInTheDocument();
   });
 
+  it("creates a fresh draft and clears the active conversation surface", async () => {
+    const user = userEvent.setup();
+    await renderLoadedWorkspace();
+
+    await user.click(within(screen.getByLabelText("最近对话")).getByRole("button", { name: "行业报告" }));
+    expect(screen.getByRole("heading", { name: "行业报告" })).toBeInTheDocument();
+    expect(within(screen.getByLabelText("对话消息")).getByText("模型网关超时，运行未完成。可重新运行或调整输入。")).toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: "新建对话" }));
+
+    expect(within(screen.getByLabelText("对话消息")).queryByText("模型网关超时，运行未完成。可重新运行或调整输入。")).not.toBeInTheDocument();
+    expect(await screen.findByRole("heading", { name: "新对话" })).toBeInTheDocument();
+    expect(within(screen.getByLabelText("对话消息")).getByRole("heading", { name: "Hi wang.user" })).toBeInTheDocument();
+    expect(within(screen.getByLabelText("对话消息")).queryByText("模型网关超时，运行未完成。可重新运行或调整输入。")).not.toBeInTheDocument();
+  });
+
   it("subscribes to run events only for active conversations", async () => {
     vi.stubGlobal("EventSource", MockEventSource);
     const user = userEvent.setup();
@@ -155,7 +171,7 @@ describe("Agent Conversation workspace", () => {
     await userEvent.click(messageStream.getByText("查看调用明细"));
 
     expect(messageStream.getByText(/AI workspace conversation artifacts/)).toBeInTheDocument();
-    expect(messageStream.getByText(/agent_tool_gateway/)).toBeInTheDocument();
+    expect(messageStream.getByText(/openai_agents_sdk/)).toBeInTheDocument();
   });
 
   it("appends live tool call events to the active conversation stream", async () => {
@@ -176,7 +192,7 @@ describe("Agent Conversation workspace", () => {
         ended_at: "10:12",
         safe_input: { url: "https://example.com/research" },
         safe_output: { summary: "读取页面摘要。" },
-        provenance: { gateway: "agent_tool_gateway", provider: "jina_reader" },
+        provenance: { gateway: "openai_agents_sdk", provider: "jina_reader" },
       },
     }, "9");
 
@@ -185,7 +201,7 @@ describe("Agent Conversation workspace", () => {
     expect(messageStream.getByText("读取页面摘要。")).toBeInTheDocument();
   });
 
-  it("assembles live assistant deltas into the active conversation stream", async () => {
+  it("does not replay backend message deltas from the run event stream", async () => {
     vi.stubGlobal("EventSource", MockEventSource);
     const user = userEvent.setup();
     await renderLoadedWorkspace();
@@ -195,7 +211,9 @@ describe("Agent Conversation workspace", () => {
     MockEventSource.instances[0].emit("message.delta", { delta: "结构化分析。" }, "10");
     MockEventSource.instances[0].emit("message.completed", { content: "已经完成结构化分析。" }, "11");
 
-    expect(await within(screen.getByLabelText("对话消息")).findByText("已经完成结构化分析。")).toBeInTheDocument();
+    await waitFor(() => {
+      expect(within(screen.getByLabelText("对话消息")).queryByText("已经完成结构化分析。")).not.toBeInTheDocument();
+    });
   });
 
   it("shows the bootstrapped gpt-5.5 model and uses it for new conversations", async () => {
@@ -203,6 +221,7 @@ describe("Agent Conversation workspace", () => {
     await renderLoadedWorkspace();
 
     await user.click(screen.getByRole("button", { name: "新建对话" }));
+    expect(await screen.findByRole("heading", { name: "新对话" })).toBeInTheDocument();
     const composer = screen.getByLabelText("对话输入区");
     expect(within(composer).getByRole("combobox", { name: "模型选择" })).toHaveTextContent("gpt-5.5 / gpt-5.5");
 
@@ -211,6 +230,51 @@ describe("Agent Conversation workspace", () => {
 
     expect(await screen.findByRole("heading", { name: "验证默认模型。" })).toBeInTheDocument();
     expect(within(screen.getByLabelText("对话输入区")).getByRole("combobox", { name: "模型选择" })).toHaveTextContent("gpt-5.5 / gpt-5.5");
+    expect(screen.getByRole("button", { name: "停止运行" })).toBeDisabled();
+  });
+
+  it("submits a new conversation when crypto.randomUUID is unavailable", async () => {
+    const cryptoWithoutRandomUUID: Pick<Crypto, "getRandomValues"> = {
+      getRandomValues<T extends ArrayBufferView>(array: T): T {
+        if (array instanceof Uint8Array) {
+          array.fill(7);
+        }
+        return array;
+      },
+    };
+    vi.stubGlobal("crypto", cryptoWithoutRandomUUID);
+    const user = userEvent.setup();
+    await renderLoadedWorkspace();
+
+    await user.click(screen.getByRole("button", { name: "新建对话" }));
+    expect(await screen.findByRole("heading", { name: "新对话" })).toBeInTheDocument();
+    await user.type(
+      within(screen.getByRole("form", { name: "CopilotKit 对话输入" })).getByLabelText("消息"),
+      "验证局域网开发访问。",
+    );
+    await user.click(
+      within(screen.getByRole("form", { name: "CopilotKit 对话输入" })).getByRole("button", { name: "发送" }),
+    );
+
+    expect(await screen.findByRole("heading", { name: "验证局域网开发访问。" })).toBeInTheDocument();
+  });
+
+  it("shows a persisted assistant error when a new conversation run fails", async () => {
+    const user = userEvent.setup();
+    await renderLoadedWorkspace();
+
+    await user.click(screen.getByRole("button", { name: "新建对话" }));
+    expect(await screen.findByRole("heading", { name: "新对话" })).toBeInTheDocument();
+    await user.type(
+      within(screen.getByRole("form", { name: "CopilotKit 对话输入" })).getByLabelText("消息"),
+      "模拟运行失败",
+    );
+    await user.click(
+      within(screen.getByRole("form", { name: "CopilotKit 对话输入" })).getByRole("button", { name: "发送" }),
+    );
+
+    const messageStream = within(screen.getByLabelText("对话消息"));
+    expect(await messageStream.findByText("运行未完成：Mock Agent Runtime failed.")).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "停止运行" })).toBeDisabled();
   });
 
@@ -517,18 +581,18 @@ describe("Agent Conversation workspace", () => {
     expect(screen.queryByRole("button", { name: "继续推进" })).not.toBeInTheDocument();
   });
 
-  it("surfaces upload failure when draft conversations do not yet have backend storage", async () => {
+  it("uploads context after creating a backend draft conversation", async () => {
     const user = userEvent.setup();
     await renderLoadedWorkspace();
 
     await user.click(screen.getByRole("button", { name: "新建对话" }));
+    expect(await screen.findByRole("heading", { name: "新对话" })).toBeInTheDocument();
     await user.upload(
       getContextFileInput(),
       new File(["# notes"], "draft-notes.md", { type: "text/markdown" }),
     );
 
-    expect(await screen.findByRole("alert")).toHaveTextContent("请先发送第一条消息创建对话，再添加上下文附件。");
-    expect(within(screen.getByLabelText("对话输入区")).queryByLabelText("已添加上下文附件")).not.toBeInTheDocument();
+    expect(await within(screen.getByLabelText("对话输入区")).findByLabelText("已添加上下文附件")).toHaveTextContent("draft-notes.md");
   });
 
   it("rejects unsupported CopilotKit attachment types before backend upload", async () => {

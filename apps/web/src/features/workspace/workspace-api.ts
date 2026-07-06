@@ -50,7 +50,7 @@ export type ApiConversationCard = {
 };
 
 export type ApiToolCall = {
-  id: number;
+  id: number | string;
   run_id: number;
   conversation_id: number;
   tool_name: string;

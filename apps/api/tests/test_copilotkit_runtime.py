@@ -2,6 +2,7 @@ import json
 
 from fastapi.testclient import TestClient
 
+from apps.api.app.agent_run_lifecycle import agent_run_lifecycle
 from apps.api.app.agent_runs import AgentRunStatus, agent_run_store
 from apps.api.app.agents import AgentMutationRequest, AgentUpdateRequest, agent_store
 from apps.api.app.auth import local_account_store
@@ -93,6 +94,17 @@ def text_message_content_events(response_text: str) -> list[dict]:
     return events
 
 
+def ag_ui_events(response_text: str, event_type: str) -> list[dict]:
+    events = []
+    for line in response_text.splitlines():
+        if not line.startswith("data: "):
+            continue
+        event = json.loads(line.removeprefix("data: "))
+        if event.get("type") == event_type:
+            events.append(event)
+    return events
+
+
 def test_copilotkit_runtime_info_exposes_enabled_backend_agents():
     client = TestClient(app)
     token = approved_user_token(client)
@@ -159,6 +171,7 @@ def test_copilotkit_run_executes_openai_agents_sdk_runtime_and_streams_ag_ui_eve
     assert '"type":"RUN_STARTED"' in response.text
     assert '"type":"TEXT_MESSAGE_START"' in response.text
     assert '"type":"TEXT_MESSAGE_CONTENT"' in response.text
+    assert '"type":"REASONING_MESSAGE_START"' in response.text
     content_events = text_message_content_events(response.text)
     assert len(content_events) > 1
     assert "".join(event["delta"] for event in content_events) == (
@@ -174,11 +187,128 @@ def test_copilotkit_run_executes_openai_agents_sdk_runtime_and_streams_ag_ui_eve
         "openai:gpt-5 handled Find recent market signals."
     )
     assert '"type":"RUN_FINISHED"' in response.text
+    reasoning_events = ag_ui_events(response.text, "REASONING_MESSAGE_CONTENT")
+    assert "".join(event["delta"] for event in reasoning_events) == (
+        "Reviewed the Agent Instruction snapshot for conversation "
+        f"{conversation_id}."
+        "Used model gpt-5 from openai."
+    )
     assert completed_run.status == AgentRunStatus.COMPLETED
     assert completed_run.full_trace["workflow_name"] == "Agent workflow"
     assert conversation["messages"][-1] == {
         "role": "assistant",
         "content": "openai:gpt-5 handled Find recent market signals.",
+    }
+
+
+def test_copilotkit_run_streams_tool_calls_as_ag_ui_events(monkeypatch):
+    client = TestClient(app)
+    token = approved_user_token(client)
+    conversation_id = create_conversation(client, token)
+
+    async def fake_stream_execute(run_id: int):
+        run = agent_run_lifecycle.begin_runtime_execution(run_id)
+        yield {
+            "event_type": "tool.call",
+            "data": {
+                "tool_call": {
+                    "id": 42,
+                    "tool_name": "search.web",
+                    "status": "completed",
+                    "safe_input": {"query": "agent workspace"},
+                    "safe_output": {"summary": "找到 3 条候选资料。"},
+                    "provenance": {"gateway": "openai_agents_sdk"},
+                }
+            },
+        }
+        agent_run_lifecycle.apply_runtime_success(
+            run_id=run.id,
+            assistant_message="工具调用完成。",
+            process_summaries=[],
+            full_trace={"workflow_name": "Agent workflow"},
+        )
+        yield {
+            "event_type": "message.delta",
+            "data": {"role": "assistant", "delta": "工具调用完成。"},
+        }
+
+    monkeypatch.setattr(runtime_store, "stream_execute", fake_stream_execute)
+
+    response = client.post(
+        "/copilotkit/agent/default/run",
+        headers={
+            "Authorization": f"Bearer {token}",
+            "Accept": "text/event-stream",
+        },
+        json=copilot_run_payload(thread_id=str(conversation_id)),
+    )
+
+    assert response.status_code == 200
+    assert ag_ui_events(response.text, "TOOL_CALL_START") == [
+        {
+            "type": "TOOL_CALL_START",
+            "toolCallId": "42",
+            "toolCallName": "search.web",
+        }
+    ]
+    assert ag_ui_events(response.text, "TOOL_CALL_ARGS") == [
+        {
+            "type": "TOOL_CALL_ARGS",
+            "toolCallId": "42",
+            "delta": '{"query":"agent workspace"}',
+        }
+    ]
+    assert ag_ui_events(response.text, "TOOL_CALL_END") == [
+        {
+            "type": "TOOL_CALL_END",
+            "toolCallId": "42",
+        }
+    ]
+    assert ag_ui_events(response.text, "TOOL_CALL_RESULT") == [
+        {
+            "type": "TOOL_CALL_RESULT",
+            "messageId": "42-result",
+            "toolCallId": "42",
+            "content": '{"status":"completed","toolName":"search.web","output":{"summary":"找到 3 条候选资料。"}}',
+            "role": "tool",
+        }
+    ]
+
+
+def test_copilotkit_run_streams_visible_error_message_when_runtime_fails():
+    client = TestClient(app)
+    token = approved_user_token(client)
+    conversation_id = create_conversation(client, token)
+
+    response = client.post(
+        "/copilotkit/agent/default/run",
+        headers={
+            "Authorization": f"Bearer {token}",
+            "Accept": "text/event-stream",
+        },
+        json=copilot_run_payload(
+            thread_id=str(conversation_id),
+            content="Simulate runtime failure.",
+        ),
+    )
+    failed_run = agent_run_store.list_all()[0]
+    conversation = client.get(
+        f"/conversations/{conversation_id}",
+        headers={"Authorization": f"Bearer {token}"},
+    ).json()
+
+    assert response.status_code == 200
+    assert '"type":"TEXT_MESSAGE_START"' in response.text
+    content_events = text_message_content_events(response.text)
+    assert "".join(event["delta"] for event in content_events) == (
+        "运行未完成：Mock Agent Runtime failed."
+    )
+    assert '"type":"RUN_ERROR"' in response.text
+    assert failed_run.status == AgentRunStatus.FAILED
+    assert failed_run.assistant_message == "运行未完成：Mock Agent Runtime failed."
+    assert conversation["messages"][-1] == {
+        "role": "assistant",
+        "content": "运行未完成：Mock Agent Runtime failed.",
     }
 
 

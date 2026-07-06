@@ -759,7 +759,7 @@ export function CopilotMcpServersBridge({
       authorizationAgent,
       currentPage: "MCP Servers",
       governanceBoundary:
-        "Copilot may focus remote MCP Servers, open the creation dialog, or switch the authorization Agent. It must not submit server registration, discover tools, save authorization, reveal raw credentials, or bypass the Agent Tool Gateway.",
+        "Copilot may focus remote MCP Servers, open the creation dialog, or switch the authorization Agent. It must not submit server registration, discover tools, save authorization, reveal raw credentials, or bypass the Agents SDK tool policy.",
       isConfigurationDraftOpen,
       selectedServerName,
       servers: servers.map((server) => ({

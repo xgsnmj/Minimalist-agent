@@ -2,6 +2,9 @@ from apps.api.app.agent_run_lifecycle import agent_run_lifecycle
 from apps.api.app.agent_runs import AgentRunCreateRequest, agent_run_store
 from apps.api.app.agents import agent_store
 from apps.api.app.conversations import ConversationCreateRequest, conversation_store
+from apps.api.app.model_configurations import model_configuration_store
+from apps.api.app.runtime import runtime_store
+from apps.api.tests.support import configure_default_agent_model, use_fake_agent_runtime
 from apps.worker.app.celery_app import process_agent_run, worker_health
 
 
@@ -13,13 +16,19 @@ def test_worker_health_reports_ok():
 
 
 def test_process_agent_run_task_completes_mock_runtime_run():
+    agent_store.reset()
+    model_configuration_store.reset()
     conversation_store.reset()
     agent_run_store.reset()
+    runtime_store.reset()
+    configure_default_agent_model()
+    use_fake_agent_runtime()
     conversation = conversation_store.create(
         owner_user_id=1,
         request=ConversationCreateRequest(
             title="Worker run",
             agent_id=1,
+            selected_model_configuration_id=1,
             initial_message="Start this conversation.",
         ),
         agent=agent_store.get(1),

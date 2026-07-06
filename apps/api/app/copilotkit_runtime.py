@@ -159,37 +159,81 @@ def run_copilotkit_agent(
 
     async def stream_events() -> AsyncIterator[str]:
         yield _sse_data(_run_started_event(request))
-        message_id = f"agent-run-{run.id}-assistant"
+        base_message_id = f"agent-run-{run.id}-assistant"
+        current_message_id: str | None = None
+        message_open = False
+        message_segment_count = 0
         message_started = False
+        reasoning_message_count = 0
         async for runtime_event in runtime_store.stream_execute(run.id):
-            if runtime_event["event_type"] != "message.delta":
-                continue
+            event_type = runtime_event["event_type"]
             data = runtime_event["data"]
-            delta = data.get("delta") if isinstance(data, dict) else None
-            if not isinstance(delta, str):
-                continue
-            if not message_started:
+            if event_type == "message.delta":
+                delta = data.get("delta") if isinstance(data, dict) else None
+                if not isinstance(delta, str):
+                    continue
+                if not message_open:
+                    message_segment_count += 1
+                    current_message_id = (
+                        base_message_id
+                        if message_segment_count == 1
+                        else f"{base_message_id}-{message_segment_count}"
+                    )
+                    yield _sse_data(
+                        {
+                            "type": "TEXT_MESSAGE_START",
+                            "messageId": current_message_id,
+                            "role": "assistant",
+                        }
+                    )
+                    message_open = True
+                    message_started = True
                 yield _sse_data(
                     {
-                        "type": "TEXT_MESSAGE_START",
-                        "messageId": message_id,
-                        "role": "assistant",
+                        "type": "TEXT_MESSAGE_CONTENT",
+                        "messageId": current_message_id,
+                        "delta": delta,
                     }
                 )
-                message_started = True
-            yield _sse_data(
-                {
-                    "type": "TEXT_MESSAGE_CONTENT",
-                    "messageId": message_id,
-                    "delta": delta,
-                }
-            )
+                continue
+            if event_type == "process.summary" and isinstance(data, dict):
+                summary = data.get("summary")
+                if isinstance(summary, str) and summary.strip():
+                    if message_open and current_message_id is not None:
+                        yield _sse_data(
+                            {
+                                "type": "TEXT_MESSAGE_END",
+                                "messageId": current_message_id,
+                            }
+                        )
+                        message_open = False
+                    reasoning_message_count += 1
+                    for event in _reasoning_message_events(
+                        message_id=f"agent-run-{run.id}-reasoning-{reasoning_message_count}",
+                        text=summary.strip(),
+                    ):
+                        yield event
+                continue
+            if event_type == "tool.call" and isinstance(data, dict):
+                tool_call = data.get("tool_call")
+                if isinstance(tool_call, dict):
+                    if message_open and current_message_id is not None:
+                        yield _sse_data(
+                            {
+                                "type": "TEXT_MESSAGE_END",
+                                "messageId": current_message_id,
+                            }
+                        )
+                        message_open = False
+                    for event in _tool_call_events(tool_call=tool_call):
+                        yield event
+                continue
         completed_run = agent_run_store.get(run.id)
-        if message_started:
+        if message_open and current_message_id is not None:
             yield _sse_data(
                 {
                     "type": "TEXT_MESSAGE_END",
-                    "messageId": message_id,
+                    "messageId": current_message_id,
                 }
             )
         for event in _events_for_completed_run(
@@ -306,6 +350,21 @@ def _events_for_completed_run(
         )
         return
 
+    if run.status == AgentRunStatus.FAILED:
+        if include_message and run.assistant_message:
+            yield from _text_message_events(
+                message_id=f"agent-run-{run.id}-assistant-error",
+                text=run.assistant_message,
+            )
+        yield _sse_data(
+            {
+                "type": "RUN_ERROR",
+                "message": run.error or "Agent Run failed.",
+                "code": "AGENT_RUN_FAILED",
+            }
+        )
+        return
+
     yield _sse_data(
         {
             "type": "RUN_ERROR",
@@ -341,6 +400,86 @@ def _text_message_events(*, message_id: str, text: str) -> Iterable[str]:
             "messageId": message_id,
         }
     )
+
+
+def _reasoning_message_events(*, message_id: str, text: str) -> Iterable[str]:
+    yield _sse_data(
+        {
+            "type": "REASONING_MESSAGE_START",
+            "messageId": message_id,
+            "role": "reasoning",
+        }
+    )
+    for chunk in _chunk_text(text):
+        yield _sse_data(
+            {
+                "type": "REASONING_MESSAGE_CONTENT",
+                "messageId": message_id,
+                "delta": chunk,
+            }
+        )
+    yield _sse_data(
+        {
+            "type": "REASONING_MESSAGE_END",
+            "messageId": message_id,
+        }
+    )
+
+
+def _tool_call_events(*, tool_call: dict[str, Any]) -> Iterable[str]:
+    tool_call_id = str(
+        tool_call.get("id")
+        or tool_call.get("tool_call_id")
+        or f"tool-call-{tool_call.get('tool_name') or tool_call.get('name') or 'unknown'}"
+    )
+    tool_name = str(tool_call.get("tool_name") or tool_call.get("name") or "tool")
+    safe_input = tool_call.get("safe_input")
+    safe_output = tool_call.get("safe_output")
+    result_payload = {
+        "status": tool_call.get("status") or "completed",
+        "toolName": tool_name,
+        "output": safe_output,
+    }
+    error_summary = tool_call.get("error_summary")
+    if error_summary:
+        result_payload["error"] = error_summary
+
+    phase = str(tool_call.get("ag_ui_phase") or "complete")
+    if phase in {"start", "complete"}:
+        yield _sse_data(
+            {
+                "type": "TOOL_CALL_START",
+                "toolCallId": tool_call_id,
+                "toolCallName": tool_name,
+            }
+        )
+        yield _sse_data(
+            {
+                "type": "TOOL_CALL_ARGS",
+                "toolCallId": tool_call_id,
+                "delta": _json_string(safe_input if isinstance(safe_input, dict) else {}),
+            }
+        )
+    if phase in {"result", "complete"}:
+        yield _sse_data(
+            {
+                "type": "TOOL_CALL_END",
+                "toolCallId": tool_call_id,
+            }
+        )
+        yield _sse_data(
+            {
+                "type": "TOOL_CALL_RESULT",
+                "messageId": f"{tool_call_id}-result",
+                "toolCallId": tool_call_id,
+                "content": _json_string(result_payload),
+                "role": "tool",
+            }
+        )
+
+
+def _json_string(value: object) -> str:
+    return json.dumps(value, ensure_ascii=False, separators=(",", ":"), default=str)
 
 
 def _chunk_text(text: str) -> list[str]:

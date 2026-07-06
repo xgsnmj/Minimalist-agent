@@ -64,6 +64,31 @@ class RunEventLogStore:
                 for record in records
             ]
 
+    def list_for_runs_by_type(
+        self,
+        *,
+        run_ids: list[int],
+        event_types: set[str],
+    ) -> list[RunEvent]:
+        if not run_ids or not event_types:
+            return []
+        with SessionLocal() as session:
+            records = session.scalars(
+                select(RunEventRecord)
+                .where(RunEventRecord.run_id.in_(run_ids))
+                .where(RunEventRecord.event_type.in_(event_types))
+                .order_by(RunEventRecord.run_id.asc(), RunEventRecord.sequence.asc())
+            ).all()
+            return [
+                RunEvent(
+                    run_id=record.run_id,
+                    sequence=record.sequence,
+                    event_type=record.event_type,
+                    data=record.data,
+                )
+                for record in records
+            ]
+
     def reset_for_tests(self) -> None:
         from apps.api.app.database import reset_database
 

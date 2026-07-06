@@ -1,3 +1,5 @@
+from types import SimpleNamespace
+
 from fastapi.testclient import TestClient
 
 from apps.api.app.agent_runs import agent_run_store
@@ -8,7 +10,11 @@ from apps.api.app.app import app
 from apps.api.app.model_configurations import ModelConfigurationMutationRequest
 from apps.api.app.model_configurations import model_configuration_store
 from apps.api.app.run_event_log import run_event_log_store
-from apps.api.app.runtime import runtime_model_parameters_for_configuration, runtime_store
+from apps.api.app.runtime import (
+    _runtime_tool_event_from_run_item,
+    runtime_model_parameters_for_configuration,
+    runtime_store,
+)
 from apps.api.tests.support import use_fake_agent_runtime
 
 
@@ -206,4 +212,84 @@ def test_runtime_model_parameters_filter_temperature_by_provider_model_allowlist
     assert parameters == {
         "max_tokens": 8192,
         "top_p": 0.9,
+    }
+
+
+def test_runtime_maps_agents_sdk_tool_items_to_stream_tool_events():
+    pending_tool_calls: dict[str, dict[str, object]] = {}
+    tool_call_event = SimpleNamespace(
+        name="tool_called",
+        item=SimpleNamespace(
+            call_id="call-1",
+            raw_item=SimpleNamespace(
+                arguments='{"query":"agent workspace"}',
+                call_id="call-1",
+                name="search.web",
+            ),
+            tool_name="search.web",
+            type="tool_call_item",
+        ),
+        type="run_item_stream_event",
+    )
+    tool_output_event = SimpleNamespace(
+        name="tool_output",
+        item=SimpleNamespace(
+            call_id="call-1",
+            output={"summary": "找到 3 条候选资料。"},
+            raw_item=SimpleNamespace(call_id="call-1"),
+            type="tool_call_output_item",
+        ),
+        type="run_item_stream_event",
+    )
+
+    started = _runtime_tool_event_from_run_item(
+        tool_call_event,
+        conversation_id=7,
+        pending_tool_calls=pending_tool_calls,
+        run_id=3,
+    )
+    completed = _runtime_tool_event_from_run_item(
+        tool_output_event,
+        conversation_id=7,
+        pending_tool_calls=pending_tool_calls,
+        run_id=3,
+    )
+
+    assert started == {
+        "event_type": "tool.call",
+        "data": {
+            "tool_call": {
+                "id": "call-1",
+                "conversation_id": 7,
+                "run_id": 3,
+                "tool_name": "search.web",
+                "capability": "search",
+                "status": "running",
+                "started_at": "just now",
+                "ended_at": None,
+                "safe_input": {"query": "agent workspace"},
+                "safe_output": None,
+                "provenance": {"gateway": "openai_agents_sdk", "provider": "agents"},
+                "ag_ui_phase": "start",
+            }
+        },
+    }
+    assert completed == {
+        "event_type": "tool.call",
+        "data": {
+            "tool_call": {
+                "id": "call-1",
+                "conversation_id": 7,
+                "run_id": 3,
+                "tool_name": "search.web",
+                "capability": "search",
+                "status": "completed",
+                "started_at": "just now",
+                "ended_at": "just now",
+                "safe_input": {"query": "agent workspace"},
+                "safe_output": {"summary": "找到 3 条候选资料。"},
+                "provenance": {"gateway": "openai_agents_sdk", "provider": "agents"},
+                "ag_ui_phase": "result",
+            }
+        },
     }

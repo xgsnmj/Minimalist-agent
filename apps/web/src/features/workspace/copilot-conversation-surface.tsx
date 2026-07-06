@@ -114,11 +114,12 @@ export function CopilotConversationSurface({
       ),
     [copilotMessages, liveAgentMessages, optimisticMessages],
   );
+  const visibleAgentMessages = isLoadingWorkspace ? [] : renderedAgentMessages;
   const richMessagesById = useMemo(
     () => new Map(conversationMessages.map((message) => [message.id, message])),
     [conversationMessages],
   );
-  const showEmptyHero = !isLoadingWorkspace && renderedAgentMessages.length === 0;
+  const showEmptyHero = !isLoadingWorkspace && visibleAgentMessages.length === 0;
   const copilotMessageFingerprint = useMemo(
     () => fingerprintCopilotMessages(copilotMessages),
     [copilotMessages],
@@ -227,7 +228,7 @@ export function CopilotConversationSurface({
     setInputValue("");
 
     const userMessage: Message = {
-      id: crypto.randomUUID(),
+      id: createClientMessageId(),
       role: "user",
       content: buildUserMessageContent(message, readyAttachments),
     };
@@ -397,11 +398,11 @@ export function CopilotConversationSurface({
                     <p>今天想推进什么？</p>
                   </div>
                 ) : null}
-                {renderedAgentMessages.length > 0 ? (
+                {visibleAgentMessages.length > 0 ? (
                   <ConversationTimeline
                     activeAgentName={activeAgent.name}
                     isStreaming={agent.isRunning || isBackendRunActive}
-                    messages={renderedAgentMessages}
+                    messages={visibleAgentMessages}
                     richMessagesById={richMessagesById}
                     onArtifactOpen={onArtifactOpen}
                   />
@@ -419,6 +420,27 @@ export function CopilotConversationSurface({
       </CopilotRichMessageRenderingProvider>
     </div>
   );
+}
+
+function createClientMessageId() {
+  const cryptoProvider = globalThis.crypto as Crypto | undefined;
+  if (typeof cryptoProvider?.randomUUID === "function") {
+    return cryptoProvider.randomUUID();
+  }
+  if (typeof cryptoProvider?.getRandomValues === "function") {
+    const bytes = cryptoProvider.getRandomValues(new Uint8Array(16));
+    bytes[6] = (bytes[6] & 0x0f) | 0x40;
+    bytes[8] = (bytes[8] & 0x3f) | 0x80;
+    const hex = Array.from(bytes, (byte) => byte.toString(16).padStart(2, "0"));
+    return [
+      hex.slice(0, 4).join(""),
+      hex.slice(4, 6).join(""),
+      hex.slice(6, 8).join(""),
+      hex.slice(8, 10).join(""),
+      hex.slice(10, 16).join(""),
+    ].join("-");
+  }
+  return `client-message-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
 }
 
 function ConversationTimeline({
@@ -490,7 +512,7 @@ function buildTimelineEntries(
   };
 
   for (const message of messages) {
-    if (message.role === "assistant") {
+    if (isAgentTimelineMessage(message)) {
       currentAgentTurn.push({
         message,
         richMessage: richMessagesById.get(message.id),
@@ -498,6 +520,9 @@ function buildTimelineEntries(
       continue;
     }
 
+    if (message.role !== "user") {
+      continue;
+    }
     flushAgentTurn();
     entries.push({
       message,
@@ -615,6 +640,44 @@ function AgentTurnSegment({
     );
   }
 
+  if (message.role === "reasoning") {
+    const reasoningText = formatMessageContent(message.content).trim();
+    if (!reasoningText) {
+      return null;
+    }
+    return (
+      <section className="agent-turn-segment process" aria-label="深度思考">
+        <p className="agent-segment-label">深度思考</p>
+        <ProcessSummaryView processSummary={{ summary: reasoningText }} />
+      </section>
+    );
+  }
+
+  if (message.role === "tool") {
+    return (
+      <section className="agent-turn-segment tool" aria-label="工具调用">
+        <p className="agent-segment-label">工具调用</p>
+        <ToolCallView toolCall={nativeToolResultToConversationToolCall(message)} />
+      </section>
+    );
+  }
+
+  const nativeToolCalls = nativeAssistantToolCalls(message);
+  if (nativeToolCalls.length > 0) {
+    const text = formatMessageContent(message.content).trim();
+    return (
+      <>
+        {nativeToolCalls.map((toolCall) => (
+          <section className="agent-turn-segment tool" aria-label="工具调用" key={toolCall.id}>
+            <p className="agent-segment-label">工具调用</p>
+            <ToolCallView toolCall={nativeToolCallToConversationToolCall(toolCall)} />
+          </section>
+        ))}
+        {text ? <AgentTextSegment isStreaming={isStreaming} text={text} /> : null}
+      </>
+    );
+  }
+
   const text = formatMessageContent(message.content).trim();
   const legacyProcessSummary = extractLegacyProcessSummary(text);
   if (legacyProcessSummary) {
@@ -629,6 +692,88 @@ function AgentTurnSegment({
     return null;
   }
   return <AgentTextSegment isStreaming={isStreaming} text={text} />;
+}
+
+function isAgentTimelineMessage(message: Message) {
+  return message.role === "assistant" || message.role === "reasoning" || message.role === "tool";
+}
+
+type NativeAssistantToolCall = {
+  id: string;
+  function: {
+    name: string;
+    arguments: string;
+  };
+};
+
+function nativeAssistantToolCalls(message: Message): NativeAssistantToolCall[] {
+  if (message.role !== "assistant") {
+    return [];
+  }
+  const toolCalls = (message as { toolCalls?: unknown }).toolCalls;
+  if (!Array.isArray(toolCalls)) {
+    return [];
+  }
+  return toolCalls.filter((toolCall): toolCall is NativeAssistantToolCall =>
+    isRecord(toolCall) &&
+    typeof toolCall.id === "string" &&
+    isRecord(toolCall.function) &&
+    typeof toolCall.function.name === "string" &&
+    typeof toolCall.function.arguments === "string",
+  );
+}
+
+function nativeToolCallToConversationToolCall(toolCall: NativeAssistantToolCall): ConversationToolCall {
+  return {
+    capability: "copilotkit-ag-ui",
+    provenance: {
+      gateway: "copilotkit",
+      provider: "ag-ui",
+    },
+    safeInput: parseJsonRecord(toolCall.function.arguments),
+    status: "running",
+    toolName: toolCall.function.name,
+  };
+}
+
+function nativeToolResultToConversationToolCall(message: Message): ConversationToolCall {
+  const content = formatMessageContent(message.content).trim();
+  const payload = parseJsonRecord(content);
+  const status = normalizeToolStatus(payload.status);
+  const output = isRecord(payload.output) ? payload.output : payload;
+  return {
+    capability: "copilotkit-ag-ui",
+    errorSummary: typeof payload.error === "string" ? payload.error : undefined,
+    provenance: {
+      gateway: "copilotkit",
+      provider: "ag-ui",
+    },
+    safeInput: {
+      toolCallId: "toolCallId" in message ? String(message.toolCallId) : "unknown",
+    },
+    safeOutput: output,
+    status,
+    toolName: typeof payload.toolName === "string"
+      ? payload.toolName
+      : "toolCallId" in message
+        ? `tool:${String(message.toolCallId)}`
+        : "tool",
+  };
+}
+
+function parseJsonRecord(value: string): Record<string, unknown> {
+  try {
+    const parsed = JSON.parse(value) as unknown;
+    return isRecord(parsed) ? parsed : {};
+  } catch {
+    return value ? { value } : {};
+  }
+}
+
+function normalizeToolStatus(value: unknown): ConversationToolCall["status"] {
+  return value === "completed" || value === "failed" || value === "rejected" || value === "running"
+    ? value
+    : "completed";
 }
 
 function extractLegacyProcessSummary(content: string): string | null {
@@ -737,7 +882,7 @@ function haveSameRoleAndContent(left: Message, right: Message): boolean {
 }
 
 function messageSignature(message: Message): string {
-  return `${message.role}:${messageContentSignature(message)}`;
+  return `${message.role}:${messageContentSignature(message)}:${messageMetadataSignature(message)}`;
 }
 
 function messageContentSignature(message: Message): string {
@@ -749,9 +894,20 @@ function fingerprintCopilotMessages(messages: Message[]): string {
     messages.map((message) => ({
       content: message.content,
       id: message.id,
+      metadata: messageMetadataSignature(message),
       role: message.role,
     })),
   );
+}
+
+function messageMetadataSignature(message: Message): string {
+  if (message.role === "assistant") {
+    return JSON.stringify(nativeAssistantToolCalls(message));
+  }
+  if (message.role === "tool" && "toolCallId" in message) {
+    return String(message.toolCallId);
+  }
+  return "";
 }
 
 function formatMessageContent(content: Message["content"]) {

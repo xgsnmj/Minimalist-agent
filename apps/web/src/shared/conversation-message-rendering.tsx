@@ -6,7 +6,7 @@ import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 
 export type ConversationToolCall = {
-  id?: number;
+  id?: number | string;
   runId?: number;
   capability?: string;
   toolName: string;
@@ -60,7 +60,7 @@ export function ToolCallView({ toolCall }: { toolCall: ConversationToolCall }) {
       <CardContent className="flex flex-col gap-2">
         <p className="preview-text">{formatToolCallSummary(toolCall)}</p>
         <p className="tool-call-meta">
-          网关：{toolCall.provenance.gateway ?? "agent_tool_gateway"} · 提供方：{toolCall.provenance.provider ?? "default"}
+          网关：{toolCall.provenance.gateway ?? "openai_agents_sdk"} · 提供方：{toolCall.provenance.provider ?? "default"}
         </p>
         <details className="tool-call-details">
           <summary>查看调用明细</summary>

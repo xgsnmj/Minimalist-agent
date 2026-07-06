@@ -28,6 +28,7 @@ from apps.api.app.conversations import (
     ConversationResponse,
     conversation_store,
     to_conversation_response,
+    to_conversation_responses,
 )
 from apps.api.app.model_configurations import (
     ModelConfigurationResponse,
@@ -42,12 +43,6 @@ from apps.api.app.run_attachments import (
     RunAttachmentPreviewResponse,
     RunAttachmentResponse,
     run_attachment_store,
-)
-from apps.api.app.tool_gateway import (
-    ToolCallRequest,
-    ToolCallResponse,
-    agent_tool_gateway_store,
-    to_tool_call_response,
 )
 
 
@@ -149,10 +144,7 @@ def create_conversation(
 def list_conversations(
     account: LocalAccount = Depends(current_user),
 ) -> list[ConversationResponse]:
-    return [
-        to_conversation_response(conversation)
-        for conversation in conversation_store.list_for_user(account.id)
-    ]
+    return to_conversation_responses(conversation_store.list_for_user(account.id))
 
 
 @router.get(
@@ -470,44 +462,6 @@ def list_agent_runs(
     return [
         to_agent_run_response(run)
         for run in agent_run_store.list_for_user(account.id)
-    ]
-
-
-@router.post(
-    "/runs/{run_id}/tool-calls",
-    response_model=ToolCallResponse,
-    response_model_exclude_none=True,
-    status_code=status.HTTP_201_CREATED,
-)
-def invoke_tool_call(
-    run_id: int,
-    request: ToolCallRequest,
-    account: LocalAccount = Depends(current_user),
-) -> ToolCallResponse:
-    return to_tool_call_response(
-        agent_tool_gateway_store.invoke_for_user(
-            owner_user_id=account.id,
-            run_id=run_id,
-            request=request,
-        )
-    )
-
-
-@router.get(
-    "/runs/{run_id}/tool-calls",
-    response_model=list[ToolCallResponse],
-    response_model_exclude_none=True,
-)
-def list_tool_calls(
-    run_id: int,
-    account: LocalAccount = Depends(current_user),
-) -> list[ToolCallResponse]:
-    return [
-        to_tool_call_response(tool_call)
-        for tool_call in agent_tool_gateway_store.list_for_user(
-            owner_user_id=account.id,
-            run_id=run_id,
-        )
     ]
 
 

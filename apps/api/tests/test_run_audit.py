@@ -11,8 +11,7 @@ from apps.api.app.run_attachments import run_attachment_store
 from apps.api.app.run_event_log import run_event_log_store
 from apps.api.app.runtime import runtime_store
 from apps.api.app.sandbox_runtime import sandbox_runtime_store
-from apps.api.app.tool_gateway import agent_tool_gateway_store
-from apps.api.tests.support import use_fake_agent_runtime
+from apps.api.tests.support import invoke_sdk_tool_for_tests, use_fake_agent_runtime
 
 
 def setup_function():
@@ -24,7 +23,6 @@ def setup_function():
     artifact_store.reset_for_tests()
     run_attachment_store.reset_for_tests()
     run_event_log_store.reset_for_tests()
-    agent_tool_gateway_store.reset()
     sandbox_runtime_store.reset()
     runtime_store.reset()
     use_fake_agent_runtime()
@@ -110,16 +108,13 @@ def create_audited_run(client: TestClient, admin_token: str, user_token: str, mo
         json={"message": "Summarize the task."},
     ).json()
     runtime_store.execute(run["id"])
-    client.post(
-        f"/runs/{run['id']}/tool-calls",
-        headers={"Authorization": f"Bearer {user_token}"},
-        json={
-            "tool_name": "sandbox.exec",
-            "input": {
-                "command": "python audit.py",
-                "artifact_filename": "audit-report.md",
-                "artifact_body": "# Audit Report\n\nGenerated for Run Audit.",
-            },
+    invoke_sdk_tool_for_tests(
+        run_id=run["id"],
+        tool_name="sandbox.exec",
+        payload={
+            "command": "python audit.py",
+            "artifact_filename": "audit-report.md",
+            "artifact_body": "# Audit Report\n\nGenerated for Run Audit.",
         },
     )
     return conversation["id"], run["id"]

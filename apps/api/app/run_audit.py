@@ -13,11 +13,7 @@ from apps.api.app.agent_runs import (
 )
 from apps.api.app.artifacts import ArtifactResponse, artifact_store
 from apps.api.app.run_event_log import RunEvent, run_event_log_store
-from apps.api.app.tool_gateway import (
-    ToolCallResponse,
-    agent_tool_gateway_store,
-    to_tool_call_response,
-)
+from apps.api.app.runtime_tools import ToolCallResponse, tool_call_responses_from_events
 
 
 FULL_TRACE_RETENTION_DAYS = 90
@@ -115,6 +111,7 @@ class RunAuditStore:
     def detail(self, run_id: int) -> RunAuditDetailResponse:
         run = agent_run_store.get(run_id)
         artifacts = artifact_store.list_for_conversation(run.conversation_id)
+        events = run_event_log_store.list_after(run_id=run.id, after_sequence=0)
         return RunAuditDetailResponse(
             id=run.id,
             conversation_id=run.conversation_id,
@@ -125,10 +122,7 @@ class RunAuditStore:
             assistant_message=run.assistant_message,
             process_summaries=list(run.process_summaries),
             capability_snapshot=self._capability_snapshot_response(run),
-            tool_calls=[
-                to_tool_call_response(tool_call)
-                for tool_call in agent_tool_gateway_store.list_for_run(run_id=run.id)
-            ],
+            tool_calls=tool_call_responses_from_events(events),
             artifacts=[
                 ArtifactResponse(
                     id=artifact.id,
@@ -146,7 +140,7 @@ class RunAuditStore:
                     event_type=event.event_type,
                     data=event.data,
                 )
-                for event in run_event_log_store.list_after(run_id=run.id, after_sequence=0)
+                for event in events
             ],
             full_trace_available=bool(run.full_trace),
             full_trace_retention_days=FULL_TRACE_RETENTION_DAYS,
@@ -197,7 +191,11 @@ class RunAuditStore:
             selected_model_configuration_id=run.capability_snapshot.selected_model_configuration_id,
             updated_at="just now",
             full_trace_available=bool(run.full_trace),
-            tool_call_count=len(agent_tool_gateway_store.list_for_run(run_id=run.id)),
+            tool_call_count=len(
+                tool_call_responses_from_events(
+                    run_event_log_store.list_after(run_id=run.id, after_sequence=0)
+                )
+            ),
             artifact_count=len(artifact_store.list_for_conversation(run.conversation_id)),
         )
 

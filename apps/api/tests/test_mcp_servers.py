@@ -10,8 +10,12 @@ from apps.api.app.mcp_servers import mcp_server_store
 from apps.api.app.model_configurations import model_configuration_store
 from apps.api.app.run_attachments import run_attachment_store
 from apps.api.app.run_event_log import run_event_log_store
-from apps.api.app.tool_gateway import agent_tool_gateway_store
-from apps.api.tests.support import configure_default_agent_model, create_model_configuration_for_tests
+from apps.api.app.runtime_tools import public_tool_name_for_sdk_name, sdk_tools_for_run
+from apps.api.tests.support import (
+    configure_default_agent_model,
+    create_model_configuration_for_tests,
+    invoke_sdk_tool_for_tests,
+)
 
 
 def setup_function():
@@ -23,7 +27,6 @@ def setup_function():
     artifact_store.reset_for_tests()
     run_attachment_store.reset_for_tests()
     run_event_log_store.reset_for_tests()
-    agent_tool_gateway_store.reset()
     mcp_server_store.reset()
     configure_default_agent_model()
 
@@ -108,7 +111,7 @@ def test_administrator_registers_remote_mcp_server_and_discovers_tools():
     assert list_response.json()[0]["server_id"] == create_response.json()["id"]
 
 
-def test_administrator_authorizes_mcp_tool_for_agent_and_gateway_enforces_it():
+def test_administrator_authorizes_mcp_tool_for_agent_and_agents_sdk_exposes_it():
     client = TestClient(app)
     admin_token = administrator_token(client)
     user_token = approved_user_token(client)
@@ -162,14 +165,7 @@ def test_administrator_authorizes_mcp_tool_for_agent_and_gateway_enforces_it():
         json={"message": "Use the MCP tool."},
     ).json()
 
-    blocked_response = client.post(
-        f"/runs/{run['id']}/tool-calls",
-        headers={"Authorization": f"Bearer {user_token}"},
-        json={
-            "tool_name": "mcp.research.search",
-            "input": {"query": "before authorization", "token": "secret"},
-        },
-    )
+    assert sdk_tools_for_run(agent_run_store.get(run["id"])) == []
     authorization_response = client.post(
         f"/admin/agents/{agent['id']}/mcp-tool-authorizations",
         headers={"Authorization": f"Bearer {admin_token}"},
@@ -179,12 +175,12 @@ def test_administrator_authorizes_mcp_tool_for_agent_and_gateway_enforces_it():
             "enabled": True,
         },
     )
-    allowed_response = client.post(
-        f"/runs/{run['id']}/tool-calls",
-        headers={"Authorization": f"Bearer {user_token}"},
-        json={
-            "tool_name": "mcp.research.search",
-            "input": {"query": "after authorization", "token": "secret"},
+    allowed_call = invoke_sdk_tool_for_tests(
+        run_id=run["id"],
+        tool_name="mcp.research.search",
+        payload={
+            "query": "after authorization",
+            "token": "secret",
         },
     )
     stream_response = client.get(
@@ -195,15 +191,17 @@ def test_administrator_authorizes_mcp_tool_for_agent_and_gateway_enforces_it():
         },
     )
 
-    assert blocked_response.status_code == 403
+    assert [
+        public_tool_name_for_sdk_name(tool.name)
+        for tool in sdk_tools_for_run(agent_run_store.get(run["id"]))
+    ] == ["mcp.research.search"]
     assert authorization_response.status_code == 201
     assert authorization_response.json()["agent_id"] == agent["id"]
     assert authorization_response.json()["tool_name"] == "mcp.research.search"
-    assert allowed_response.status_code == 201
-    assert allowed_response.json()["capability"] == "mcp"
-    assert allowed_response.json()["safe_input"] == {"query": "after authorization"}
-    assert allowed_response.json()["provenance"] == {
-        "gateway": "agent_tool_gateway",
+    assert allowed_call["capability"] == "mcp"
+    assert allowed_call["safe_input"] == {"query": "after authorization"}
+    assert allowed_call["provenance"] == {
+        "gateway": "openai_agents_sdk",
         "provider": "mcp",
         "server_id": str(server["id"]),
     }

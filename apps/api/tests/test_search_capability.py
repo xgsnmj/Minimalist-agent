@@ -10,9 +10,13 @@ from apps.api.app.mcp_servers import mcp_server_store
 from apps.api.app.model_configurations import model_configuration_store
 from apps.api.app.run_attachments import run_attachment_store
 from apps.api.app.run_event_log import run_event_log_store
+from apps.api.app.runtime_tools import public_tool_name_for_sdk_name, sdk_tools_for_run
 from apps.api.app.search_providers import search_provider_store
-from apps.api.app.tool_gateway import agent_tool_gateway_store
-from apps.api.tests.support import configure_default_agent_model, create_model_configuration_for_tests
+from apps.api.tests.support import (
+    configure_default_agent_model,
+    create_model_configuration_for_tests,
+    invoke_sdk_tool_for_tests,
+)
 
 
 def setup_function():
@@ -24,7 +28,6 @@ def setup_function():
     artifact_store.reset_for_tests()
     run_attachment_store.reset_for_tests()
     run_event_log_store.reset_for_tests()
-    agent_tool_gateway_store.reset()
     mcp_server_store.reset()
     search_provider_store.reset()
     configure_default_agent_model()
@@ -72,7 +75,7 @@ def create_search_enabled_run(client: TestClient, admin_token: str, user_token: 
             "name": "Search Agent",
             "description": "Uses Search Capability.",
             "icon": "search",
-            "instruction": "Search only through the Agent Tool Gateway.",
+            "instruction": "Search only through the Agents SDK search tool.",
             "default_model_configuration_id": model_id,
             "allowed_model_configuration_ids": [model_id],
             "capability_policy": {
@@ -128,7 +131,7 @@ def test_administrator_configures_doubao_search_provider():
     assert update_response.json()["max_results"] == 2
 
 
-def test_search_capability_invokes_doubao_provider_through_gateway():
+def test_search_capability_invokes_doubao_provider_through_agents_sdk_tool():
     client = TestClient(app)
     admin_token = administrator_token(client)
     user_token = approved_user_token(client)
@@ -139,15 +142,17 @@ def test_search_capability_invokes_doubao_provider_through_gateway():
     )
     run_id = create_search_enabled_run(client, admin_token, user_token)
 
-    search_response = client.post(
-        f"/runs/{run_id}/tool-calls",
-        headers={"Authorization": f"Bearer {user_token}"},
-        json={
-            "tool_name": "search.web",
-            "input": {
-                "query": "Minimalist Agent background runs",
-                "api_key": "do-not-leak",
-            },
+    run = agent_run_store.get(run_id)
+    assert [public_tool_name_for_sdk_name(tool.name) for tool in sdk_tools_for_run(run)] == [
+        "search.web"
+    ]
+
+    search_tool_call = invoke_sdk_tool_for_tests(
+        run_id=run_id,
+        tool_name="search.web",
+        payload={
+            "query": "Minimalist Agent background runs",
+            "api_key": "do-not-leak",
         },
     )
     stream_response = client.get(
@@ -166,27 +171,26 @@ def test_search_capability_invokes_doubao_provider_through_gateway():
         },
     )
 
-    assert search_response.status_code == 201
-    assert search_response.json()["capability"] == "search"
-    assert search_response.json()["provenance"] == {
-        "gateway": "agent_tool_gateway",
+    assert search_tool_call["capability"] == "search"
+    assert search_tool_call["provenance"] == {
+        "gateway": "openai_agents_sdk",
         "provider": "doubao",
         "provider_configuration_id": "1",
     }
-    assert search_response.json()["safe_input"] == {
+    assert search_tool_call["safe_input"] == {
         "query": "Minimalist Agent background runs"
     }
-    assert search_response.json()["safe_output"]["summary"].startswith(
+    assert search_tool_call["safe_output"]["summary"].startswith(
         "Doubao Search Provider returned 2 results"
     )
-    assert len(search_response.json()["safe_output"]["results"]) == 2
+    assert len(search_tool_call["safe_output"]["results"]) == 2
     assert '"api_key"' not in stream_response.text
     assert '"provider":"doubao"' in stream_response.text
     assert "id: 3" in resume_response.text
     assert '"tool_name":"search.web"' in resume_response.text
 
 
-def test_disabled_or_unauthorized_search_is_rejected_with_safe_audit():
+def test_disabled_search_provider_returns_safe_tool_failure_and_unauthorized_tool_is_not_registered():
     client = TestClient(app)
     admin_token = administrator_token(client)
     user_token = approved_user_token(client)
@@ -196,20 +200,13 @@ def test_disabled_or_unauthorized_search_is_rejected_with_safe_audit():
         json={"enabled": False},
     )
     search_enabled_run = create_search_enabled_run(client, admin_token, user_token)
-    disabled_provider_response = client.post(
-        f"/runs/{search_enabled_run}/tool-calls",
-        headers={"Authorization": f"Bearer {user_token}"},
-        json={
-            "tool_name": "search.web",
-            "input": {
-                "query": "disabled provider",
-                "authorization": "secret",
-            },
+    disabled_provider_call = invoke_sdk_tool_for_tests(
+        run_id=search_enabled_run,
+        tool_name="search.web",
+        payload={
+            "query": "disabled provider",
+            "authorization": "secret",
         },
-    )
-    disabled_provider_events = client.get(
-        f"/runs/{search_enabled_run}/tool-calls",
-        headers={"Authorization": f"Bearer {user_token}"},
     )
     disabled_provider_stream = client.get(
         f"/runs/{search_enabled_run}/events",
@@ -233,7 +230,7 @@ def test_disabled_or_unauthorized_search_is_rejected_with_safe_audit():
         json={"message": "Try search."},
     ).json()
 
-    response = client.post(
+    removed_gateway_response = client.post(
         f"/runs/{run['id']}/tool-calls",
         headers={"Authorization": f"Bearer {user_token}"},
         json={
@@ -241,17 +238,10 @@ def test_disabled_or_unauthorized_search_is_rejected_with_safe_audit():
             "input": {"query": "blocked", "authorization": "secret"},
         },
     )
-    list_response = client.get(
-        f"/runs/{run['id']}/tool-calls",
-        headers={"Authorization": f"Bearer {user_token}"},
-    )
 
-    assert response.status_code == 403
-    assert list_response.json()[0]["status"] == "rejected"
-    assert list_response.json()[0]["safe_input"] == {"query": "blocked"}
-    assert list_response.json()[0]["error_summary"] == "Tool is not authorized for this Agent Run."
-    assert disabled_provider_response.status_code == 503
-    assert "Search provider is disabled." in disabled_provider_response.json()["detail"]
-    assert disabled_provider_events.json()[0]["status"] == "failed"
-    assert disabled_provider_events.json()[0]["error_summary"] == "Search provider is disabled."
+    assert removed_gateway_response.status_code == 404
+    assert sdk_tools_for_run(agent_run_store.get(run["id"])) == []
+    assert disabled_provider_call["status"] == "failed"
+    assert disabled_provider_call["safe_input"] == {"query": "disabled provider"}
+    assert disabled_provider_call["error_summary"] == "Search provider is disabled."
     assert '"status":"failed"' in disabled_provider_stream.text

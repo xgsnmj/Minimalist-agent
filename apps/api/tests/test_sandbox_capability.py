@@ -9,9 +9,13 @@ from apps.api.app.app import app
 from apps.api.app.model_configurations import model_configuration_store
 from apps.api.app.run_attachments import run_attachment_store
 from apps.api.app.run_event_log import run_event_log_store
+from apps.api.app.runtime_tools import public_tool_name_for_sdk_name, sdk_tools_for_run
 from apps.api.app.sandbox_runtime import sandbox_runtime_store
-from apps.api.app.tool_gateway import agent_tool_gateway_store
-from apps.api.tests.support import configure_default_agent_model, create_model_configuration_for_tests
+from apps.api.tests.support import (
+    configure_default_agent_model,
+    create_model_configuration_for_tests,
+    invoke_sdk_tool_for_tests,
+)
 
 
 class FailingObjectStorage:
@@ -34,7 +38,6 @@ def setup_function():
     artifact_store.reset_for_tests()
     run_attachment_store.reset_for_tests()
     run_event_log_store.reset_for_tests()
-    agent_tool_gateway_store.reset()
     sandbox_runtime_store.reset()
     configure_default_agent_model()
 
@@ -87,7 +90,7 @@ def create_sandbox_run(
             "name": "Sandbox Agent",
             "description": "Uses Sandbox Capability.",
             "icon": "terminal",
-            "instruction": "Use sandbox execution only through the Agent Tool Gateway.",
+            "instruction": "Use sandbox execution only through the Agents SDK sandbox tool.",
             "default_model_configuration_id": model_id,
             "allowed_model_configuration_ids": [model_id],
             "capability_policy": {
@@ -126,17 +129,19 @@ def test_authorized_sandbox_execution_records_tool_call_and_creates_artifact_pre
         sandbox_enabled=True,
     )
 
-    sandbox_response = client.post(
-        f"/runs/{run_id}/tool-calls",
-        headers={"Authorization": f"Bearer {user_token}"},
-        json={
-            "tool_name": "sandbox.exec",
-            "input": {
-                "command": "python analyze.py",
-                "artifact_filename": "sandbox-report.md",
-                "artifact_body": "# Sandbox Report\n\nGenerated inside SDK sandbox.",
-                "api_key": "do-not-leak",
-            },
+    run = agent_run_store.get(run_id)
+    assert [public_tool_name_for_sdk_name(tool.name) for tool in sdk_tools_for_run(run)] == [
+        "sandbox.exec"
+    ]
+
+    sandbox_call = invoke_sdk_tool_for_tests(
+        run_id=run_id,
+        tool_name="sandbox.exec",
+        payload={
+            "command": "python analyze.py",
+            "artifact_filename": "sandbox-report.md",
+            "artifact_body": "# Sandbox Report\n\nGenerated inside SDK sandbox.",
+            "api_key": "do-not-leak",
         },
     )
     conversation_response = client.get(
@@ -151,25 +156,24 @@ def test_authorized_sandbox_execution_records_tool_call_and_creates_artifact_pre
         },
     )
 
-    assert sandbox_response.status_code == 201
-    assert sandbox_response.json()["tool_name"] == "sandbox.exec"
-    assert sandbox_response.json()["capability"] == "sandbox"
-    assert sandbox_response.json()["status"] == "completed"
-    assert sandbox_response.json()["safe_input"] == {
+    assert sandbox_call["tool_name"] == "sandbox.exec"
+    assert sandbox_call["capability"] == "sandbox"
+    assert sandbox_call["status"] == "completed"
+    assert sandbox_call["safe_input"] == {
         "command": "python analyze.py",
         "artifact_filename": "sandbox-report.md",
         "artifact_body": "# Sandbox Report\n\nGenerated inside SDK sandbox.",
     }
-    assert sandbox_response.json()["safe_output"]["summary"] == (
+    assert sandbox_call["safe_output"]["summary"] == (
         "OpenAI Agents SDK sandbox completed python analyze.py."
     )
-    assert sandbox_response.json()["safe_output"]["artifact"]["filename"] == "sandbox-report.md"
-    assert sandbox_response.json()["safe_output"]["artifact"]["preview_type"] == "markdown"
-    assert sandbox_response.json()["provenance"] == {
-        "gateway": "agent_tool_gateway",
+    assert sandbox_call["safe_output"]["artifact"]["filename"] == "sandbox-report.md"
+    assert sandbox_call["safe_output"]["artifact"]["preview_type"] == "markdown"
+    assert sandbox_call["provenance"] == {
+        "gateway": "openai_agents_sdk",
         "provider": "openai_agents_sdk_sandbox",
     }
-    artifact_id = sandbox_response.json()["safe_output"]["artifact"]["artifact_id"]
+    artifact_id = sandbox_call["safe_output"]["artifact"]["artifact_id"]
     preview_response = client.get(
         f"/artifacts/{artifact_id}/preview",
         headers={"Authorization": f"Bearer {user_token}"},
@@ -199,20 +203,10 @@ def test_unauthorized_sandbox_execution_is_blocked_and_audited_safely():
         sandbox_enabled=False,
     )
 
-    response = client.post(
+    removed_gateway_response = client.post(
         f"/runs/{run_id}/tool-calls",
         headers={"Authorization": f"Bearer {user_token}"},
-        json={
-            "tool_name": "sandbox.exec",
-            "input": {
-                "command": "python blocked.py",
-                "authorization": "secret",
-            },
-        },
-    )
-    list_response = client.get(
-        f"/runs/{run_id}/tool-calls",
-        headers={"Authorization": f"Bearer {user_token}"},
+        json={"tool_name": "sandbox.exec", "input": {"command": "python blocked.py"}},
     )
     stream_response = client.get(
         f"/runs/{run_id}/events",
@@ -222,14 +216,10 @@ def test_unauthorized_sandbox_execution_is_blocked_and_audited_safely():
         },
     )
 
-    assert response.status_code == 403
-    assert list_response.json()[0]["status"] == "rejected"
-    assert list_response.json()[0]["safe_input"] == {"command": "python blocked.py"}
-    assert list_response.json()[0]["error_summary"] == (
-        "Tool is not authorized for this Agent Run."
-    )
+    assert removed_gateway_response.status_code == 404
+    assert sdk_tools_for_run(agent_run_store.get(run_id)) == []
     assert '"authorization"' not in stream_response.text
-    assert '"status":"rejected"' in stream_response.text
+    assert '"tool_name":"sandbox.exec"' not in stream_response.text
 
 
 def test_sandbox_capability_does_not_expose_host_docker_boundary():
@@ -243,22 +233,18 @@ def test_sandbox_capability_does_not_expose_host_docker_boundary():
         sandbox_enabled=True,
     )
 
-    response = client.post(
-        f"/runs/{run_id}/tool-calls",
-        headers={"Authorization": f"Bearer {user_token}"},
-        json={
-            "tool_name": "sandbox.exec",
-            "input": {"command": "docker run unsafe-image"},
+    sandbox_call = invoke_sdk_tool_for_tests(
+        run_id=run_id,
+        tool_name="sandbox.exec",
+        payload={
+            "command": "docker run unsafe-image",
+            "artifact_filename": None,
+            "artifact_body": None,
         },
     )
-    list_response = client.get(
-        f"/runs/{run_id}/tool-calls",
-        headers={"Authorization": f"Bearer {user_token}"},
-    )
 
-    assert response.status_code == 503
-    assert list_response.json()[0]["status"] == "failed"
-    assert list_response.json()[0]["error_summary"] == (
+    assert sandbox_call["status"] == "failed"
+    assert sandbox_call["error_summary"] == (
         "Sandbox Capability uses OpenAI Agents SDK sandbox, not host Docker."
     )
 
@@ -277,22 +263,15 @@ def test_sandbox_storage_failure_is_recorded_as_safe_tool_failure(monkeypatch):
         sandbox_enabled=True,
     )
 
-    response = client.post(
-        f"/runs/{run_id}/tool-calls",
-        headers={"Authorization": f"Bearer {user_token}"},
-        json={
-            "tool_name": "sandbox.exec",
-            "input": {
-                "command": "python write_artifact.py",
-                "artifact_filename": "storage-failure.md",
-                "artifact_body": "# Storage failure",
-                "api_key": "do-not-leak",
-            },
+    sandbox_call = invoke_sdk_tool_for_tests(
+        run_id=run_id,
+        tool_name="sandbox.exec",
+        payload={
+            "command": "python write_artifact.py",
+            "artifact_filename": "storage-failure.md",
+            "artifact_body": "# Storage failure",
+            "api_key": "do-not-leak",
         },
-    )
-    list_response = client.get(
-        f"/runs/{run_id}/tool-calls",
-        headers={"Authorization": f"Bearer {user_token}"},
     )
     stream_response = client.get(
         f"/runs/{run_id}/events",
@@ -302,12 +281,10 @@ def test_sandbox_storage_failure_is_recorded_as_safe_tool_failure(monkeypatch):
         },
     )
 
-    assert response.status_code == 503
-    assert response.json()["detail"] == "Tool execution failed."
-    assert list_response.json()[0]["status"] == "failed"
-    assert list_response.json()[0]["error_summary"] == "Tool execution failed."
-    assert list_response.json()[0]["provenance"] == {
-        "gateway": "agent_tool_gateway",
+    assert sandbox_call["status"] == "failed"
+    assert sandbox_call["error_summary"] == "minio write failed"
+    assert sandbox_call["provenance"] == {
+        "gateway": "openai_agents_sdk",
         "provider": "openai_agents_sdk_sandbox",
     }
     assert '"api_key"' not in stream_response.text

@@ -22,6 +22,7 @@ import {
 import { CopilotConversationSurface } from "./copilot-conversation-surface";
 import {
   cancelAgentRun,
+  createConversationDraft,
   getArtifactPreview,
   listConversations,
   listRuns,
@@ -125,9 +126,11 @@ export function ConversationShell({ currentUser }: ConversationShellProps) {
   const [artifactPanelView, setArtifactPanelView] = useState<ArtifactPanelView>("preview");
   const [isSidebarCollapsed, setIsSidebarCollapsed] = useState(false);
   const [visibleConversationCount, setVisibleConversationCount] = useState(CONVERSATION_LIST_PAGE_SIZE);
+  const [draftRevision, setDraftRevision] = useState(0);
   const [latestAttachmentPreviewName, setLatestAttachmentPreviewName] = useState<string | null>(null);
   const [copiedArtifactId, setCopiedArtifactId] = useState<number | null>(null);
   const [isLoadingWorkspace, setIsLoadingWorkspace] = useState(true);
+  const [isCreatingDraft, setIsCreatingDraft] = useState(false);
   const [workspaceError, setWorkspaceError] = useState<string | null>(null);
 
   const selectedConversation = conversations.find(
@@ -280,21 +283,45 @@ export function ConversationShell({ currentUser }: ConversationShellProps) {
     }
   }
 
-  function startNewConversation() {
+  async function startNewConversation() {
     setSelectedConversationId(null);
     setIsRenaming(false);
-    setRenameValue("未命名对话");
+    setRenameValue("新对话");
     setPreviewArtifactId(null);
     setLatestAttachmentPreviewName(null);
+    setWorkspaceError(null);
+    setDraftRevision((currentRevision) => currentRevision + 1);
     const firstAgent = workspaceAgents[0];
     if (firstAgent) {
       setDraftAgentId(firstAgent.id);
-      setDraftModelId(firstAgent.defaultModelId ?? firstAgent.allowedModels[0]?.id ?? "");
+      const nextDraftModelId = firstAgent.defaultModelId ?? firstAgent.allowedModels[0]?.id ?? "";
+      setDraftModelId(nextDraftModelId);
+      setIsCreatingDraft(true);
+      try {
+        const createdConversation = await createConversationDraft({
+          agent_id: firstAgent.backendId,
+          selected_model_configuration_id: nextDraftModelId ? Number(nextDraftModelId) : null,
+          title: "新对话",
+        });
+        const mappedConversation = mapConversation(createdConversation, runs);
+        setConversations((currentConversations) => [
+          mappedConversation,
+          ...currentConversations.filter((conversation) => conversation.id !== mappedConversation.id),
+        ]);
+        setSelectedConversationId(mappedConversation.id);
+        setRenameValue(mappedConversation.title);
+        setDraftAgentId(mappedConversation.agentId);
+        setDraftModelId(mappedConversation.selectedModelId);
+      } catch (error) {
+        setWorkspaceError(error instanceof Error ? error.message : "新建对话失败。");
+      } finally {
+        setIsCreatingDraft(false);
+      }
     }
   }
 
-  function startNewConversationFromCommand() {
-    startNewConversation();
+  async function startNewConversationFromCommand() {
+    await startNewConversation();
     closeCommandPalette();
   }
 
@@ -440,7 +467,12 @@ export function ConversationShell({ currentUser }: ConversationShellProps) {
           <span>搜索对话、运行或制品</span>
           <kbd>⌘ K</kbd>
         </Button>
-        <Button className="primary-button full-width" type="button" onClick={startNewConversation}>
+        <Button
+          className="primary-button full-width"
+          disabled={isCreatingDraft}
+          type="button"
+          onClick={() => void startNewConversation()}
+        >
           新建对话
         </Button>
         <section className="sidebar-section" aria-label="历史对话">
@@ -540,7 +572,7 @@ export function ConversationShell({ currentUser }: ConversationShellProps) {
           <CopilotConversationSurface
             key={[
               activeAgent.copilotAgentId,
-              selectedConversation?.id ?? "draft",
+              selectedConversation?.id ?? `draft-${draftRevision}`,
               selectedModelId,
             ].join(":")}
             activeAgent={{
@@ -552,7 +584,7 @@ export function ConversationShell({ currentUser }: ConversationShellProps) {
             conversationMessages={selectedConversationMessages}
             currentUserName={currentUser?.username ?? null}
             isBackendRunActive={Boolean(selectedConversation && isActiveConversationRun(selectedConversation))}
-            isLoadingWorkspace={isLoadingWorkspace}
+            isLoadingWorkspace={isLoadingWorkspace || isCreatingDraft}
             modelControls={(
               <>
                 <label className="model-select-field">
@@ -815,7 +847,6 @@ function mapStreamEventsToMessages({
   }
 
   const messages: ConversationMessage[] = [];
-  let assistantContent = "";
 
   for (const event of events) {
     if (event.eventType === "process.summary") {
@@ -849,31 +880,6 @@ function mapStreamEventsToMessages({
       });
       continue;
     }
-
-    if (event.eventType === "message.delta") {
-      const delta = typeof event.data.delta === "string" ? event.data.delta : "";
-      if (!delta) {
-        continue;
-      }
-      assistantContent += delta;
-      continue;
-    }
-
-    if (event.eventType === "message.completed") {
-      const content = typeof event.data.content === "string" ? event.data.content : assistantContent;
-      if (!content.trim()) {
-        continue;
-      }
-      assistantContent = content;
-    }
-  }
-
-  if (assistantContent.trim()) {
-    messages.push({
-      content: assistantContent,
-      id: `run-${runId}-assistant-stream`,
-      role: "assistant" as const,
-    });
   }
 
   return messages;
@@ -897,7 +903,7 @@ function normalizeStreamToolCall(
     capability: typeof value.capability === "string" ? value.capability : undefined,
     endedAt: typeof value.ended_at === "string" ? value.ended_at : null,
     errorSummary: typeof value.error_summary === "string" ? value.error_summary : undefined,
-    id: typeof value.id === "number" ? value.id : undefined,
+    id: typeof value.id === "number" || typeof value.id === "string" ? value.id : undefined,
     provenance: isStringRecord(value.provenance) ? value.provenance : {},
     runId: typeof value.run_id === "number" ? value.run_id : runId,
     safeInput: isPlainRecord(value.safe_input) ? value.safe_input : {},

@@ -11,8 +11,7 @@ from apps.api.app.run_attachments import run_attachment_store
 from apps.api.app.run_event_log import run_event_log_store
 from apps.api.app.runtime import runtime_store
 from apps.api.app.sandbox_runtime import sandbox_runtime_store
-from apps.api.app.tool_gateway import agent_tool_gateway_store
-from apps.api.tests.support import use_fake_agent_runtime
+from apps.api.tests.support import invoke_sdk_tool_for_tests, use_fake_agent_runtime
 from apps.worker.app.celery_app import process_agent_run
 
 
@@ -28,7 +27,6 @@ def setup_function():
     artifact_store.reset_for_tests()
     run_attachment_store.reset_for_tests()
     run_event_log_store.reset_for_tests()
-    agent_tool_gateway_store.reset()
     sandbox_runtime_store.reset()
     runtime_store.reset()
     use_fake_agent_runtime()
@@ -197,33 +195,22 @@ def test_full_local_mvp_conversation_smoke_workflow():
     assert "event: message.completed" in resumed_events_response.text
     assert "openai:gpt-5 handled Summarize the MVP workflow." in resumed_events_response.text
 
-    tool_call_response = client.post(
-        f"/runs/{run_id}/tool-calls",
-        headers=authorization(user_token),
-        json={
-            "tool_name": "sandbox.exec",
-            "input": {
-                "command": "python generate_report.py",
-                "artifact_filename": "mvp-report.md",
-                "artifact_body": "# MVP Report\n\nSmoke workflow complete.",
-                "api_key": "do-not-leak",
-            },
+    tool_call = invoke_sdk_tool_for_tests(
+        run_id=run_id,
+        tool_name="sandbox.exec",
+        payload={
+            "command": "python generate_report.py",
+            "artifact_filename": "mvp-report.md",
+            "artifact_body": "# MVP Report\n\nSmoke workflow complete.",
+            "api_key": "do-not-leak",
         },
     )
-    assert tool_call_response.status_code == 201
-    assert tool_call_response.json()["tool_name"] == "sandbox.exec"
-    assert tool_call_response.json()["status"] == "completed"
-    assert "api_key" not in tool_call_response.json()["safe_input"]
-    artifact = tool_call_response.json()["safe_output"]["artifact"]
+    assert tool_call["tool_name"] == "sandbox.exec"
+    assert tool_call["status"] == "completed"
+    assert "api_key" not in tool_call["safe_input"]
+    artifact = tool_call["safe_output"]["artifact"]
     assert artifact["filename"] == "mvp-report.md"
     assert artifact["preview_type"] == "markdown"
-
-    tool_list_response = client.get(
-        f"/runs/{run_id}/tool-calls",
-        headers=authorization(user_token),
-    )
-    assert tool_list_response.status_code == 200
-    assert [tool["tool_name"] for tool in tool_list_response.json()] == ["sandbox.exec"]
 
     artifact_preview_response = client.get(
         f"/artifacts/{artifact['artifact_id']}/preview",

@@ -129,6 +129,13 @@ class AgentRunLifecycle:
         run = agent_run_store.get(run_id)
         run.status = AgentRunStatus.FAILED
         run.error = message
+        if not run.assistant_message:
+            run.assistant_message = _failure_assistant_message(message)
+            conversation_store.append_message(
+                conversation_id=run.conversation_id,
+                role="assistant",
+                content=run.assistant_message,
+            )
         if "failed" not in run.events:
             run.events.append("failed")
         self._append_event(
@@ -159,6 +166,14 @@ class AgentRunLifecycle:
             current_run,
             event_type="message.delta",
             data={"role": "assistant", "delta": delta},
+        )
+
+    def record_tool_call(self, run: AgentRun, *, tool_call: dict[str, object]) -> RunEvent:
+        current_run = agent_run_store.get(run.id)
+        return self._append_event(
+            current_run,
+            event_type="tool.call",
+            data={"tool_call": tool_call},
         )
 
     def append_card_event_for_user(
@@ -252,3 +267,8 @@ class AgentRunLifecycle:
 
 
 agent_run_lifecycle = AgentRunLifecycle()
+
+
+def _failure_assistant_message(message: str) -> str:
+    detail = message.strip() or "Agent Run failed."
+    return f"运行未完成：{detail}"

@@ -1,5 +1,6 @@
 from fastapi.testclient import TestClient
 
+from apps.api.app.agent_run_lifecycle import agent_run_lifecycle
 from apps.api.app.agent_runs import agent_run_store
 from apps.api.app.agents import AgentCapabilityPolicyResponse, AgentUpdateRequest, agent_store
 from apps.api.app.auth import local_account_store
@@ -8,7 +9,11 @@ from apps.api.app.run_event_log import run_event_log_store
 from apps.api.app.app import app
 from apps.api.app.model_configurations import model_configuration_store
 from apps.api.app.runtime import runtime_store
-from apps.api.tests.support import configure_default_agent_model, use_fake_agent_runtime
+from apps.api.tests.support import (
+    configure_default_agent_model,
+    invoke_sdk_tool_for_tests,
+    use_fake_agent_runtime,
+)
 from apps.worker.app.celery_app import process_agent_run
 
 
@@ -158,13 +163,10 @@ def test_conversation_response_includes_visible_process_and_tool_events():
     ).json()
 
     process_agent_run.run(run["id"])
-    client.post(
-        f"/runs/{run['id']}/tool-calls",
-        headers={"Authorization": f"Bearer {token}"},
-        json={
-            "tool_name": "search.web",
-            "input": {"query": "agent workspace traceability"},
-        },
+    invoke_sdk_tool_for_tests(
+        run_id=run["id"],
+        tool_name="search.web",
+        payload={"query": "agent workspace traceability"},
     )
 
     response = client.get(
@@ -186,3 +188,44 @@ def test_conversation_response_includes_visible_process_and_tool_events():
     assert tool_messages[0]["tool_call"]["safe_input"] == {
         "query": "agent workspace traceability",
     }
+
+
+def test_conversation_list_batches_visible_run_events_without_replaying_message_deltas(
+    monkeypatch,
+):
+    client = TestClient(app)
+    token = approved_user_token(client)
+    conversation = client.post(
+        "/conversations",
+        headers={"Authorization": f"Bearer {token}"},
+        json={
+            "title": "Visible process without deltas",
+            "agent_id": 1,
+            "initial_message": "Start this conversation.",
+        },
+    ).json()
+    run = client.post(
+        f"/conversations/{conversation['id']}/runs",
+        headers={"Authorization": f"Bearer {token}"},
+        json={"message": "Summarize without replaying deltas."},
+    ).json()
+    process_agent_run.run(run["id"])
+    agent_run_lifecycle.record_message_delta(
+        agent_run_store.get(run["id"]),
+        delta="streaming delta should not be replayed",
+    )
+
+    def fail_list_after(*, run_id: int, after_sequence: int):
+        raise AssertionError("conversation list should batch visible run events")
+
+    monkeypatch.setattr(run_event_log_store, "list_after", fail_list_after)
+
+    response = client.get(
+        "/conversations",
+        headers={"Authorization": f"Bearer {token}"},
+    )
+
+    assert response.status_code == 200
+    response_text = response.text
+    assert "运行过程：" in response_text
+    assert "streaming delta should not be replayed" not in response_text

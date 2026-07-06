@@ -11,9 +11,13 @@ from apps.api.app.model_configurations import model_configuration_store
 from apps.api.app.page_read_providers import page_read_provider_store
 from apps.api.app.run_attachments import run_attachment_store
 from apps.api.app.run_event_log import run_event_log_store
+from apps.api.app.runtime_tools import public_tool_name_for_sdk_name, sdk_tools_for_run
 from apps.api.app.search_providers import search_provider_store
-from apps.api.app.tool_gateway import agent_tool_gateway_store
-from apps.api.tests.support import configure_default_agent_model, create_model_configuration_for_tests
+from apps.api.tests.support import (
+    configure_default_agent_model,
+    create_model_configuration_for_tests,
+    invoke_sdk_tool_for_tests,
+)
 
 
 def setup_function():
@@ -25,7 +29,6 @@ def setup_function():
     artifact_store.reset_for_tests()
     run_attachment_store.reset_for_tests()
     run_event_log_store.reset_for_tests()
-    agent_tool_gateway_store.reset()
     mcp_server_store.reset()
     search_provider_store.reset()
     page_read_provider_store.reset()
@@ -81,7 +84,7 @@ def create_page_read_enabled_run(
             "name": "Reader Agent",
             "description": "Uses Page Read Capability.",
             "icon": "book-open",
-            "instruction": "Read known URLs only through the Agent Tool Gateway.",
+            "instruction": "Read known URLs only through the Agents SDK page tool.",
             "default_model_configuration_id": model_id,
             "allowed_model_configuration_ids": [model_id],
             "capability_policy": {
@@ -142,7 +145,7 @@ def test_administrator_configures_jina_reader_provider():
     ]
 
 
-def test_page_read_capability_invokes_jina_reader_through_gateway():
+def test_page_read_capability_invokes_jina_reader_through_agents_sdk_tool():
     client = TestClient(app)
     admin_token = administrator_token(client)
     user_token = approved_user_token(client)
@@ -156,15 +159,17 @@ def test_page_read_capability_invokes_jina_reader_through_gateway():
     )
     run_id = create_page_read_enabled_run(client, admin_token, user_token)
 
-    page_read_response = client.post(
-        f"/runs/{run_id}/tool-calls",
-        headers={"Authorization": f"Bearer {user_token}"},
-        json={
-            "tool_name": "page.read",
-            "input": {
-                "url": "https://example.com/research/mvp",
-                "api_key": "do-not-leak",
-            },
+    run = agent_run_store.get(run_id)
+    assert [public_tool_name_for_sdk_name(tool.name) for tool in sdk_tools_for_run(run)] == [
+        "page.read"
+    ]
+
+    page_read_call = invoke_sdk_tool_for_tests(
+        run_id=run_id,
+        tool_name="page.read",
+        payload={
+            "url": "https://example.com/research/mvp",
+            "api_key": "do-not-leak",
         },
     )
     stream_response = client.get(
@@ -183,24 +188,23 @@ def test_page_read_capability_invokes_jina_reader_through_gateway():
         },
     )
 
-    assert page_read_response.status_code == 201
-    assert page_read_response.json()["capability"] == "page_read"
-    assert page_read_response.json()["status"] == "completed"
-    assert page_read_response.json()["started_at"]
-    assert page_read_response.json()["ended_at"]
-    assert page_read_response.json()["provenance"] == {
-        "gateway": "agent_tool_gateway",
+    assert page_read_call["capability"] == "page_read"
+    assert page_read_call["status"] == "completed"
+    assert page_read_call["started_at"]
+    assert page_read_call["ended_at"]
+    assert page_read_call["provenance"] == {
+        "gateway": "openai_agents_sdk",
         "provider": "jina_reader",
         "provider_configuration_id": "1",
     }
-    assert page_read_response.json()["safe_input"] == {
+    assert page_read_call["safe_input"] == {
         "url": "https://example.com/research/mvp"
     }
-    assert page_read_response.json()["safe_output"]["summary"].startswith(
+    assert page_read_call["safe_output"]["summary"].startswith(
         "Jina Reader Provider read https://example.com/research/mvp"
     )
-    assert page_read_response.json()["safe_output"]["url"] == "https://example.com/research/mvp"
-    assert len(page_read_response.json()["safe_output"]["content"]) <= 180
+    assert page_read_call["safe_output"]["url"] == "https://example.com/research/mvp"
+    assert len(page_read_call["safe_output"]["content"]) <= 180
     assert '"api_key"' not in stream_response.text
     assert '"tool_name":"page.read"' in stream_response.text
     assert '"tool_name":"search.web"' not in stream_response.text
@@ -220,21 +224,10 @@ def test_page_read_capability_is_separate_from_search_and_records_safe_failures(
         search_enabled=True,
         page_read_enabled=False,
     )
-    unauthorized_response = client.post(
-        f"/runs/{search_only_run}/tool-calls",
-        headers={"Authorization": f"Bearer {user_token}"},
-        json={
-            "tool_name": "page.read",
-            "input": {
-                "url": "https://example.com/blocked",
-                "authorization": "secret",
-            },
-        },
-    )
-    unauthorized_events = client.get(
-        f"/runs/{search_only_run}/tool-calls",
-        headers={"Authorization": f"Bearer {user_token}"},
-    )
+    assert [
+        public_tool_name_for_sdk_name(tool.name)
+        for tool in sdk_tools_for_run(agent_run_store.get(search_only_run))
+    ] == ["search.web"]
 
     client.patch(
         "/admin/page-read-provider-configurations/1",
@@ -242,20 +235,13 @@ def test_page_read_capability_is_separate_from_search_and_records_safe_failures(
         json={"allowed_domains": ["docs.example.com"]},
     )
     page_read_run = create_page_read_enabled_run(client, admin_token, user_token)
-    domain_policy_response = client.post(
-        f"/runs/{page_read_run}/tool-calls",
-        headers={"Authorization": f"Bearer {user_token}"},
-        json={
-            "tool_name": "page.read",
-            "input": {
-                "url": "https://example.com/not-allowed",
-                "authorization": "secret",
-            },
+    domain_policy_call = invoke_sdk_tool_for_tests(
+        run_id=page_read_run,
+        tool_name="page.read",
+        payload={
+            "url": "https://example.com/not-allowed",
+            "authorization": "secret",
         },
-    )
-    domain_policy_events = client.get(
-        f"/runs/{page_read_run}/tool-calls",
-        headers={"Authorization": f"Bearer {user_token}"},
     )
     domain_policy_stream = client.get(
         f"/runs/{page_read_run}/events",
@@ -265,20 +251,11 @@ def test_page_read_capability_is_separate_from_search_and_records_safe_failures(
         },
     )
 
-    assert unauthorized_response.status_code == 403
-    assert unauthorized_events.json()[0]["status"] == "rejected"
-    assert unauthorized_events.json()[0]["safe_input"] == {
-        "url": "https://example.com/blocked"
-    }
-    assert unauthorized_events.json()[0]["error_summary"] == (
-        "Tool is not authorized for this Agent Run."
-    )
-    assert domain_policy_response.status_code == 503
-    assert domain_policy_events.json()[0]["status"] == "failed"
-    assert domain_policy_events.json()[0]["safe_input"] == {
+    assert domain_policy_call["status"] == "failed"
+    assert domain_policy_call["safe_input"] == {
         "url": "https://example.com/not-allowed"
     }
-    assert domain_policy_events.json()[0]["error_summary"] == (
+    assert domain_policy_call["error_summary"] == (
         "URL is outside the Page Read Provider domain policy."
     )
     assert '"status":"failed"' in domain_policy_stream.text
