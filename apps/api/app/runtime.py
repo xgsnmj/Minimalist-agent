@@ -690,12 +690,36 @@ def _tool_input_from_raw_item(raw_item: Any) -> dict[str, object]:
     raw_type = _raw_value(raw_item, "type")
     if raw_type == "web_search_call":
         return _safe_record(_raw_value(raw_item, "action"))
-    if raw_type == "shell_call":
+    if raw_type in {"shell_call", "local_shell_call"}:
         return _safe_record(_raw_value(raw_item, "action"))
+    if raw_type == "computer_call":
+        return _safe_record(
+            {
+                "action": _raw_value(raw_item, "action"),
+                "actions": _raw_value(raw_item, "actions"),
+            }
+        )
+    if raw_type == "apply_patch_call":
+        return _safe_record({"operation": _raw_value(raw_item, "operation")})
+    if raw_type == "custom_tool_call":
+        return _safe_record(
+            {
+                "name": _raw_value(raw_item, "name"),
+                "namespace": _raw_value(raw_item, "namespace"),
+                "input": _raw_value(raw_item, "input"),
+            }
+        )
     if raw_type == "code_interpreter_call":
         return _safe_record({"code": _raw_value(raw_item, "code")})
     if raw_type == "file_search_call":
         return _safe_record({"queries": _raw_value(raw_item, "queries")})
+    if raw_type == "tool_search_call":
+        return _safe_record(
+            {
+                "arguments": _raw_value(raw_item, "arguments"),
+                "execution": _raw_value(raw_item, "execution"),
+            }
+        )
     return _safe_record(_raw_value(raw_item, "arguments"))
 
 
@@ -712,11 +736,32 @@ def _tool_safe_output_from_raw_item(raw_item: Any) -> dict[str, object] | None:
         output = _raw_value(raw_item, "output")
         error = _raw_value(raw_item, "error")
         return _safe_record({"output": output, "error": error})
-    if raw_type == "shell_call":
+    if raw_type in {"shell_call", "local_shell_call"}:
         return _safe_record(
             {
                 "action": _raw_value(raw_item, "action"),
                 "status": _raw_value(raw_item, "status"),
+            }
+        )
+    if raw_type == "computer_call":
+        return _safe_record(
+            {
+                "pending_safety_checks": _raw_value(raw_item, "pending_safety_checks"),
+                "status": _raw_value(raw_item, "status"),
+            }
+        )
+    if raw_type == "apply_patch_call":
+        return _safe_record(
+            {
+                "operation": _raw_value(raw_item, "operation"),
+                "status": _raw_value(raw_item, "status"),
+            }
+        )
+    if raw_type == "custom_tool_call":
+        return _safe_record(
+            {
+                "name": _raw_value(raw_item, "name"),
+                "namespace": _raw_value(raw_item, "namespace"),
             }
         )
     if raw_type == "code_interpreter_call":
@@ -742,7 +787,20 @@ def _tool_safe_output_from_raw_item(raw_item: Any) -> dict[str, object] | None:
             }
         )
     if raw_type == "tool_search_call":
-        return _safe_record({"status": _raw_value(raw_item, "status")})
+        return _safe_record(
+            {
+                "execution": _raw_value(raw_item, "execution"),
+                "status": _raw_value(raw_item, "status"),
+            }
+        )
+    if raw_type == "tool_search_output":
+        return _safe_record(
+            {
+                "output": _raw_value(raw_item, "output"),
+                "status": _raw_value(raw_item, "status"),
+                "tools": _raw_value(raw_item, "tools"),
+            }
+        )
     return None
 
 
@@ -769,11 +827,17 @@ def _tool_provenance_from_raw_item(raw_item: Any) -> dict[str, str]:
     raw_type = str(_raw_value(raw_item, "type") or "")
     provider_by_type = {
         "web_search_call": "openai_web_search",
+        "computer_call": "openai_computer",
+        "custom_tool_call": "openai_custom_tool",
         "mcp_call": "openai_hosted_mcp",
+        "local_shell_call": "openai_local_shell",
         "shell_call": "openai_hosted_shell",
+        "apply_patch_call": "openai_apply_patch",
         "code_interpreter_call": "openai_code_interpreter",
         "file_search_call": "openai_file_search",
         "image_generation_call": "openai_image_generation",
+        "tool_search_call": "openai_tool_search",
+        "tool_search_output": "openai_tool_search",
     }
     provenance = {
         "gateway": "openai_agents_sdk",

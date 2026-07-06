@@ -12,6 +12,7 @@ from apps.api.app.model_configurations import model_configuration_store
 from apps.api.app.run_event_log import run_event_log_store
 from apps.api.app.runtime import (
     _runtime_tool_event_from_run_item,
+    _runtime_tool_events_from_run_item,
     runtime_model_parameters_for_configuration,
     runtime_store,
 )
@@ -215,6 +216,30 @@ def test_runtime_model_parameters_filter_temperature_by_provider_model_allowlist
     }
 
 
+def test_runtime_model_parameters_ignore_openai_native_tool_configuration():
+    configuration = model_configuration_store.create(
+        ModelConfigurationMutationRequest(
+            provider_id="openai",
+            name="OpenAI native tools",
+            model_name="gpt-5",
+            endpoint="https://api.openai.com/v1",
+            credential_reference="sk-direct",
+            default_parameters={
+                "max_tokens": 4096,
+                "openai_native_tools": {
+                    "file_search": {"vector_store_ids": ["vs_123"]},
+                    "web_search": {"search_context_size": "high"},
+                },
+            },
+            enabled=True,
+        )
+    )
+
+    parameters = runtime_model_parameters_for_configuration(configuration)
+
+    assert parameters == {"max_tokens": 4096}
+
+
 def test_runtime_maps_agents_sdk_tool_items_to_stream_tool_events():
     pending_tool_calls: dict[str, dict[str, object]] = {}
     tool_call_event = SimpleNamespace(
@@ -292,4 +317,52 @@ def test_runtime_maps_agents_sdk_tool_items_to_stream_tool_events():
                 "ag_ui_phase": "result",
             }
         },
+    }
+
+
+def test_runtime_maps_terminal_hosted_tool_item_to_start_and_result_events():
+    pending_tool_calls: dict[str, dict[str, object]] = {}
+    tool_call_event = SimpleNamespace(
+        name="tool_called",
+        item=SimpleNamespace(
+            raw_item={
+                "id": "ws-1",
+                "type": "web_search_call",
+                "action": {"query": "agents sdk native tools"},
+                "status": "completed",
+            },
+            type="tool_call_item",
+        ),
+        type="run_item_stream_event",
+    )
+
+    events = _runtime_tool_events_from_run_item(
+        tool_call_event,
+        conversation_id=7,
+        pending_tool_calls=pending_tool_calls,
+        run_id=3,
+    )
+
+    assert len(events) == 2
+    assert events[0]["data"]["tool_call"]["ag_ui_phase"] == "start"
+    assert events[1]["data"]["tool_call"]["ag_ui_phase"] == "result"
+    assert events[1]["data"]["tool_call"] == {
+        "id": "ws-1",
+        "conversation_id": 7,
+        "run_id": 3,
+        "tool_name": "search.web",
+        "capability": "search",
+        "status": "completed",
+        "started_at": "just now",
+        "ended_at": "just now",
+        "safe_input": {"query": "agents sdk native tools"},
+        "safe_output": {
+            "action": {"query": "agents sdk native tools"},
+            "status": "completed",
+        },
+        "provenance": {
+            "gateway": "openai_agents_sdk",
+            "provider": "openai_web_search",
+        },
+        "ag_ui_phase": "result",
     }

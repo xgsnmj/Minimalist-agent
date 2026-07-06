@@ -18,6 +18,7 @@ from agents import (
     WebSearchTool,
 )
 from fastapi import HTTPException
+from openai.types.responses.web_search_tool import Filters as WebSearchFilters
 from pydantic import BaseModel, Field
 
 from apps.api.app.agent_runs import AgentRun
@@ -87,6 +88,14 @@ _PUBLIC_TOOL_NAMES_BY_SDK_NAME.update(
         "hosted_mcp": "mcp",
         "mcp_call": "mcp",
         "mcp_list_tools": "mcp.list_tools",
+        "computer": "computer.use",
+        "computer_use_preview": "computer.use",
+        "computer_call": "computer.use",
+        "custom_tool_call": "custom.tool",
+        "local_shell": "shell.local",
+        "local_shell_call": "shell.local",
+        "apply_patch": "apply_patch",
+        "apply_patch_call": "apply_patch",
         "sandbox_exec": "sandbox.exec",
         "shell": "sandbox.exec",
         "shell_call": "sandbox.exec",
@@ -109,11 +118,11 @@ def sdk_tools_for_run(run: AgentRun, *, prefer_native: bool | None = None) -> li
     use_native = run_prefers_native_sdk_tools(run) if prefer_native is None else prefer_native
     tools: list[Tool] = []
     if policy.search_enabled:
-        tools.append(_native_search_tool() if use_native else _search_tool(run))
+        tools.append(_native_search_tool(run) if use_native else _search_tool(run))
     if policy.page_read_enabled:
         tools.append(_page_read_tool(run))
     if policy.sandbox_enabled:
-        tools.append(_native_sandbox_tool() if use_native else _sandbox_tool(run))
+        tools.append(_native_sandbox_tool(run) if use_native else _sandbox_tool(run))
     tools.extend(_mcp_tools(run, prefer_native=use_native))
     if use_native:
         tools.extend(_configured_openai_native_tools(run))
@@ -234,8 +243,19 @@ def _search_tool(run: AgentRun) -> FunctionTool:
     )
 
 
-def _native_search_tool() -> WebSearchTool:
-    return WebSearchTool(search_context_size="medium")
+def _native_search_tool(run: AgentRun) -> WebSearchTool:
+    native_config = _openai_native_tool_configuration(run)
+    config = _tool_config_record(native_config.get("web_search")) or _tool_config_record(
+        native_config.get("search")
+    ) or {}
+    return WebSearchTool(
+        user_location=config.get("user_location"),
+        filters=_web_search_filters(config.get("filters")),
+        search_context_size=_search_context_size(
+            config.get("search_context_size")
+        ),
+        external_web_access=_optional_bool(config.get("external_web_access")),
+    )
 
 
 def _page_read_tool(run: AgentRun) -> FunctionTool:
@@ -364,13 +384,11 @@ def _sandbox_tool(run: AgentRun) -> FunctionTool:
     )
 
 
-def _native_sandbox_tool() -> ShellTool:
+def _native_sandbox_tool(run: AgentRun) -> ShellTool:
+    config = _tool_config_record(_openai_native_tool_configuration(run).get("shell")) or {}
     return ShellTool(
         name="sandbox_exec",
-        environment={
-            "type": "container_auto",
-            "network_policy": {"type": "disabled"},
-        },
+        environment=_native_shell_environment(config.get("environment")),
     )
 
 
@@ -681,8 +699,36 @@ def _optional_int(value: Any) -> int | None:
     return value if isinstance(value, int) else None
 
 
+def _optional_bool(value: Any) -> bool | None:
+    return value if isinstance(value, bool) else None
+
+
 def _optional_string(value: Any) -> str | None:
     return value if isinstance(value, str) else None
+
+
+def _search_context_size(value: Any) -> str:
+    return value if value in {"low", "medium", "high"} else "medium"
+
+
+def _native_shell_environment(value: Any) -> dict[str, Any]:
+    if isinstance(value, dict) and value.get("type") in {
+        "container_auto",
+        "container_reference",
+    }:
+        return value
+    return {
+        "type": "container_auto",
+        "network_policy": {"type": "disabled"},
+    }
+
+
+def _web_search_filters(value: Any) -> WebSearchFilters | None:
+    if isinstance(value, WebSearchFilters):
+        return value
+    if isinstance(value, dict):
+        return WebSearchFilters.model_validate(value)
+    return None
 
 
 def _native_tool_search_tool(configuration: dict[str, Any]) -> ToolSearchTool:
