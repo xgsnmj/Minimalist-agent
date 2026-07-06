@@ -1,8 +1,12 @@
+import { QueryClientProvider, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useEffect, useState } from "react";
+import { Toaster } from "sonner";
 
+import { createAppQueryClient } from "./query-client";
+import { queryKeys } from "./query-keys";
 import { CopilotKitWorkspaceProvider } from "../shared/copilotkit-adapter";
 import { ConversationShell } from "../features/workspace/conversation-shell";
-import { getAuthToken, getCurrentUser, type CurrentUser } from "../features/workspace/auth-api";
+import { authRequestTimeoutMs, getAuthToken, getCurrentUser, type CurrentUser } from "../features/workspace/auth-api";
 import {
   AccountSettingsPage,
   AdminPage,
@@ -30,11 +34,32 @@ const protectedRoutes = new Set<ReturnType<typeof resolveAppRoute>>([
 type AuthState = "checking" | "authenticated" | "unauthenticated";
 
 export function App() {
-  const [pathname, setPathname] = useState(window.location.pathname);
-  const [authState, setAuthState] = useState<AuthState>(() =>
-    getAuthToken() ? "checking" : "unauthenticated",
+  const [queryClient] = useState(() => createAppQueryClient());
+
+  return (
+    <QueryClientProvider client={queryClient}>
+      <AppContent />
+      <Toaster position="top-center" richColors />
+    </QueryClientProvider>
   );
-  const [currentUser, setCurrentUser] = useState<CurrentUser | null>(null);
+}
+
+function AppContent() {
+  const queryClient = useQueryClient();
+  const [pathname, setPathname] = useState(window.location.pathname);
+  const [authToken, setAuthToken] = useState<string | null>(() => getAuthToken());
+  const [authVerificationTimedOut, setAuthVerificationTimedOut] = useState(false);
+  const currentUserQuery = useQuery({
+    enabled: Boolean(authToken),
+    queryFn: getCurrentUser,
+    queryKey: queryKeys.auth.me,
+  });
+  const authState: AuthState = !authToken
+    ? "unauthenticated"
+    : currentUserQuery.isPending && !authVerificationTimedOut
+      ? "checking"
+      : "authenticated";
+  const currentUser = currentUserQuery.data ?? null;
 
   useEffect(() => {
     function syncPathname() {
@@ -42,7 +67,10 @@ export function App() {
     }
     function syncAuthState() {
       const token = getAuthToken();
-      setAuthState(token ? "authenticated" : "unauthenticated");
+      setAuthToken(token);
+      if (!token) {
+        queryClient.removeQueries({ queryKey: queryKeys.auth.me });
+      }
     }
     function navigateWithinApp(event: MouseEvent) {
       if (event.defaultPrevented || event.button !== 0 || event.metaKey || event.altKey || event.ctrlKey || event.shiftKey) {
@@ -85,38 +113,20 @@ export function App() {
       window.removeEventListener("minimalist-agent:navigate", syncPathname);
       window.removeEventListener("minimalist-agent:auth-changed", syncAuthState);
     };
-  }, []);
+  }, [queryClient]);
 
   useEffect(() => {
-    const token = getAuthToken();
-    if (!token) {
-      setCurrentUser(null);
-      setAuthState("unauthenticated");
+    if (!authToken || !currentUserQuery.isPending) {
+      setAuthVerificationTimedOut(false);
       return;
     }
 
-    let isCurrent = true;
+    const timeoutId = window.setTimeout(() => {
+      setAuthVerificationTimedOut(true);
+    }, authRequestTimeoutMs);
 
-    getCurrentUser()
-      .then((user) => {
-        if (!isCurrent) {
-          return;
-        }
-        setCurrentUser(user);
-        setAuthState("authenticated");
-      })
-      .catch(() => {
-        if (!isCurrent) {
-          return;
-        }
-        setCurrentUser(null);
-        setAuthState(getAuthToken() ? "authenticated" : "unauthenticated");
-      });
-
-    return () => {
-      isCurrent = false;
-    };
-  }, []);
+    return () => window.clearTimeout(timeoutId);
+  }, [authToken, currentUserQuery.isPending]);
 
   const route = resolveAppRoute(pathname);
   const isPublicRoute = route === "login" || route === "register" || route === "approval-pending";
@@ -161,7 +171,7 @@ function renderRoute(route: ReturnType<typeof resolveAppRoute>, currentUser: Cur
     case "approval-pending":
       return <ApprovalPendingPage />;
     case "account-settings":
-      return <AccountSettingsPage />;
+      return <AccountSettingsPage currentUser={currentUser} />;
     case "conversation":
       return <ConversationShell currentUser={currentUser} />;
     default:

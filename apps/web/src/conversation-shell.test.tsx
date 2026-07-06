@@ -54,6 +54,10 @@ function getContextFileInput(): HTMLInputElement {
   return input;
 }
 
+function countFetchCalls(calls: Array<readonly unknown[]>, path: string) {
+  return calls.filter(([input]) => String(input) === path).length;
+}
+
 describe("Agent Conversation workspace", () => {
   afterEach(() => {
     MockEventSource.instances = [];
@@ -156,15 +160,14 @@ describe("Agent Conversation workspace", () => {
     expect(MockEventSource.instances[0].url).toBe("/api/runs/2/events?access_token=local-test-token");
   });
 
-  it("renders visible process summaries and tool call details in the conversation stream", async () => {
+  it("renders tool call details without low-value process summaries in the conversation stream", async () => {
     await renderLoadedWorkspace();
 
     const messageStream = within(screen.getByLabelText("对话消息"));
-    const agentTurn = within(messageStream.getByLabelText("Default Agent 回复"));
-    expect(agentTurn.getByText("深度思考")).toBeInTheDocument();
-    expect(agentTurn.getByText("工具调用")).toBeInTheDocument();
-    expect(messageStream.getByText("运行过程")).toBeInTheDocument();
-    expect(messageStream.getByText("拆解会话、运行、工具调用和制品预览的关系。")).toBeInTheDocument();
+    expect(messageStream.getByLabelText("CopilotKit 消息列表")).toBeInTheDocument();
+    expect(messageStream.getAllByLabelText("结构化消息").length).toBeGreaterThanOrEqual(1);
+    expect(messageStream.queryByText("运行过程")).not.toBeInTheDocument();
+    expect(messageStream.queryByText("拆解会话、运行、工具调用和制品预览的关系。")).not.toBeInTheDocument();
     expect(messageStream.getByText("search.web")).toBeInTheDocument();
     expect(messageStream.getByText("找到 3 条候选资料。")).toBeInTheDocument();
 
@@ -278,18 +281,30 @@ describe("Agent Conversation workspace", () => {
     expect(screen.getByRole("button", { name: "停止运行" })).toBeDisabled();
   });
 
-  it("keeps refreshing when CopilotKit settles before the backend run is visible", async () => {
+  it("streams CopilotKit run output without polling workspace settlement endpoints", async () => {
     const user = userEvent.setup();
     await renderLoadedWorkspace();
+    const fetchMock = vi.mocked(globalThis.fetch);
+    const callsBeforeSubmit = fetchMock.mock.calls.length;
 
     const inputForm = screen.getByRole("form", { name: "CopilotKit 对话输入" });
-    await user.type(within(inputForm).getByLabelText("消息"), "延迟完成态刷新");
+    await user.type(within(inputForm).getByLabelText("消息"), "验证原生流式输出");
     await user.click(within(inputForm).getByRole("button", { name: "发送" }));
 
     await waitFor(() => {
-      expect(screen.getByText("openai:gpt-5 handled 延迟完成态刷新")).toBeInTheDocument();
+      expect(screen.getByText("openai:gpt-5 handled 验证原生流式输出")).toBeInTheDocument();
       expect(screen.getByRole("button", { name: "停止运行" })).toBeDisabled();
     }, { timeout: 4000 });
+
+    const callsAfterSubmit = fetchMock.mock.calls.slice(callsBeforeSubmit);
+    expect(countFetchCalls(callsAfterSubmit, "/api/copilotkit/agent/default/run")).toBe(1);
+    await waitFor(() => {
+      expect(countFetchCalls(fetchMock.mock.calls.slice(callsBeforeSubmit), "/api/workspace/agents")).toBe(1);
+      expect(countFetchCalls(fetchMock.mock.calls.slice(callsBeforeSubmit), "/api/conversations")).toBe(1);
+      expect(countFetchCalls(fetchMock.mock.calls.slice(callsBeforeSubmit), "/api/runs")).toBe(1);
+    });
+    const settledCallsAfterSubmit = fetchMock.mock.calls.slice(callsBeforeSubmit);
+    expect(countFetchCalls(settledCallsAfterSubmit, "/api/copilotkit/agent/default/run")).toBe(1);
   });
 
   it("shows the authenticated account and groups account actions in the avatar menu", async () => {

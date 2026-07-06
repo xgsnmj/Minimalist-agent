@@ -3,6 +3,8 @@ import * as matchers from "@testing-library/jest-dom/matchers";
 import type { ReactNode } from "react";
 import { beforeEach, expect, vi } from "vitest";
 
+import { resetWorkspaceUiStore } from "./features/workspace/workspace-ui-store";
+
 expect.extend(matchers);
 
 if (!window.matchMedia) {
@@ -100,6 +102,7 @@ type TestCurrentUser = {
 };
 
 beforeEach(() => {
+  resetWorkspaceUiStore();
   window.localStorage.setItem("minimalist-agent:auth-token", "local-test-token");
   let currentUser: TestCurrentUser = {
     id: 3,
@@ -512,6 +515,17 @@ beforeEach(() => {
     });
   }
 
+  function sseResponse(events: Record<string, unknown>[], init: ResponseInit = {}) {
+    const headers = new Headers(init.headers);
+    headers.set("Content-Type", "text/event-stream");
+    const body = events.map((event) => `data: ${JSON.stringify(event)}\n\n`).join("");
+    return Promise.resolve(new Response(body, {
+      ...init,
+      headers,
+      status: init.status ?? 200,
+    }));
+  }
+
   function requestJson(init?: RequestInit) {
     return init?.body && typeof init.body === "string"
       ? JSON.parse(init.body) as Record<string, unknown>
@@ -856,13 +870,15 @@ beforeEach(() => {
         return jsonResponse(searchProviders);
       }
       if (url === "/api/admin/search-provider-configurations/1" && method === "PATCH") {
-        return jsonResponse({ ...searchProviders[0], ...requestJson(init) });
+        searchProviders[0] = { ...searchProviders[0], ...requestJson(init) };
+        return jsonResponse(searchProviders[0]);
       }
       if (url === "/api/admin/page-read-provider-configurations" && method === "GET") {
         return jsonResponse(pageReadProviders);
       }
       if (url === "/api/admin/page-read-provider-configurations/1" && method === "PATCH") {
-        return jsonResponse({ ...pageReadProviders[0], ...requestJson(init) });
+        pageReadProviders[0] = { ...pageReadProviders[0], ...requestJson(init) };
+        return jsonResponse(pageReadProviders[0]);
       }
       if (url === "/api/workspace/agents" && method === "GET") {
         return jsonResponse(agents.map((agent) => ({
@@ -1003,14 +1019,29 @@ beforeEach(() => {
 
         if (text.includes("模拟运行失败")) {
           persistRunResult("failed");
-          return jsonResponse({ detail: "Mock Agent Runtime failed." }, { status: 500 });
+          return sseResponse([
+            { type: "RUN_STARTED", threadId: body.threadId, runId: body.runId, input: body },
+            { type: "TEXT_MESSAGE_START", messageId: `test-run-${conversationId}-assistant-error`, role: "assistant" },
+            { type: "TEXT_MESSAGE_CONTENT", messageId: `test-run-${conversationId}-assistant-error`, delta: failedAssistantMessage },
+            { type: "TEXT_MESSAGE_END", messageId: `test-run-${conversationId}-assistant-error` },
+            { type: "RUN_ERROR", message: "Mock Agent Runtime failed.", code: "AGENT_RUN_FAILED" },
+          ]);
         }
-        if (text.includes("延迟完成态刷新")) {
-          window.setTimeout(persistRunResult, 1000);
-        } else {
-          persistRunResult();
-        }
-        return jsonResponse({ conversationId, status: "completed" }, { status: 200 });
+        persistRunResult();
+        return sseResponse([
+          { type: "RUN_STARTED", threadId: body.threadId, runId: body.runId, input: body },
+          { type: "TEXT_MESSAGE_START", messageId: `test-run-${conversationId}-assistant`, role: "assistant" },
+          { type: "TEXT_MESSAGE_CONTENT", messageId: `test-run-${conversationId}-assistant`, delta: assistantMessage.slice(0, 14) },
+          { type: "TEXT_MESSAGE_CONTENT", messageId: `test-run-${conversationId}-assistant`, delta: assistantMessage.slice(14) },
+          { type: "TEXT_MESSAGE_END", messageId: `test-run-${conversationId}-assistant` },
+          {
+            type: "RUN_FINISHED",
+            threadId: body.threadId,
+            runId: body.runId,
+            result: { conversationId, status: "completed" },
+            outcome: { type: "success" },
+          },
+        ], { status: 200 });
       }
       if (url === "/api/runs/2/cancel" && method === "POST") {
         workspaceRuns[0] = { ...workspaceRuns[0], status: "cancelled", status_events: ["cancelled"] };
@@ -1135,6 +1166,141 @@ vi.mock("@copilotkit/react-core/v2", async () => {
         .join("\n");
     }
     return "";
+  }
+
+  function parseSseEvents(text: string): Record<string, unknown>[] {
+    return text
+      .split(/\n\n/)
+      .map((frame) =>
+        frame
+          .split(/\n/)
+          .filter((line) => line.startsWith("data:"))
+          .map((line) => line.slice(5).trimStart())
+          .join("\n"),
+      )
+      .filter(Boolean)
+      .map((data) => JSON.parse(data) as Record<string, unknown>);
+  }
+
+  function applyAgUiEvent(agent: any, event: Record<string, unknown>) {
+    if (event.type === "RUN_STARTED") {
+      const input = event.input && typeof event.input === "object"
+        ? event.input as { messages?: unknown }
+        : {};
+      if (Array.isArray(input.messages)) {
+        const existingIds = new Set(agent.messages.map((message: any) => message.id));
+        const missingMessages = input.messages.filter((message: any) =>
+          message && typeof message === "object" && typeof message.id === "string" && !existingIds.has(message.id),
+        );
+        if (missingMessages.length > 0) {
+          agent.setMessages([...agent.messages, ...missingMessages]);
+        }
+      }
+      return undefined;
+    }
+
+    if (event.type === "TEXT_MESSAGE_START") {
+      const messageId = String(event.messageId);
+      if (!agent.messages.some((message: any) => message.id === messageId)) {
+        agent.setMessages([
+          ...agent.messages,
+          { id: messageId, role: event.role === "reasoning" ? "reasoning" : "assistant", content: "" },
+        ]);
+      }
+      return undefined;
+    }
+
+    if (event.type === "TEXT_MESSAGE_CONTENT") {
+      const messageId = String(event.messageId);
+      const delta = typeof event.delta === "string" ? event.delta : "";
+      agent.setMessages(agent.messages.map((message: any) =>
+        message.id === messageId
+          ? { ...message, content: `${typeof message.content === "string" ? message.content : ""}${delta}` }
+          : message,
+      ));
+      return undefined;
+    }
+
+    if (event.type === "REASONING_MESSAGE_START") {
+      const messageId = String(event.messageId);
+      if (!agent.messages.some((message: any) => message.id === messageId)) {
+        agent.setMessages([...agent.messages, { id: messageId, role: "reasoning", content: "" }]);
+      }
+      return undefined;
+    }
+
+    if (event.type === "REASONING_MESSAGE_CONTENT") {
+      const messageId = String(event.messageId);
+      const delta = typeof event.delta === "string" ? event.delta : "";
+      agent.setMessages(agent.messages.map((message: any) =>
+        message.id === messageId
+          ? { ...message, content: `${typeof message.content === "string" ? message.content : ""}${delta}` }
+          : message,
+      ));
+      return undefined;
+    }
+
+    if (event.type === "TOOL_CALL_START") {
+      const toolCallId = String(event.toolCallId);
+      const toolCallName = String(event.toolCallName ?? "tool");
+      const hasToolCall = agent.messages.some((message: any) =>
+        message.role === "assistant" && message.toolCalls?.some((toolCall: any) => toolCall.id === toolCallId),
+      );
+      if (!hasToolCall) {
+        agent.setMessages([
+          ...agent.messages,
+          {
+            id: toolCallId,
+            role: "assistant",
+            content: "",
+            toolCalls: [{ id: toolCallId, type: "function", function: { name: toolCallName, arguments: "" } }],
+          },
+        ]);
+      }
+      return undefined;
+    }
+
+    if (event.type === "TOOL_CALL_ARGS") {
+      const toolCallId = String(event.toolCallId);
+      const delta = typeof event.delta === "string" ? event.delta : "";
+      agent.setMessages(agent.messages.map((message: any) =>
+        message.role === "assistant" && Array.isArray(message.toolCalls)
+          ? {
+              ...message,
+              toolCalls: message.toolCalls.map((toolCall: any) =>
+                toolCall.id === toolCallId
+                  ? {
+                      ...toolCall,
+                      function: {
+                        ...toolCall.function,
+                        arguments: `${toolCall.function?.arguments ?? ""}${delta}`,
+                      },
+                    }
+                  : toolCall,
+              ),
+            }
+          : message,
+      ));
+      return undefined;
+    }
+
+    if (event.type === "TOOL_CALL_RESULT") {
+      const messageId = String(event.messageId);
+      if (!agent.messages.some((message: any) => message.id === messageId)) {
+        agent.setMessages([
+          ...agent.messages,
+          {
+            id: messageId,
+            role: "tool",
+            toolCallId: String(event.toolCallId),
+            content: typeof event.content === "string" ? event.content : "",
+          },
+        ]);
+      }
+      return undefined;
+    }
+
+    return event.type === "RUN_FINISHED" ? event.result : undefined;
   }
 
   function attachmentType(file: File) {
@@ -1464,23 +1630,35 @@ vi.mock("@copilotkit/react-core/v2", async () => {
       copilotkit: {
         runAgent: async ({ agent, forwardedProps }: any) => {
           agent.__setIsRunning?.(true);
-          const response = await fetch(`/api/copilotkit/agent/${agent.agentId ?? "default"}/run`, {
-            method: "POST",
-            body: JSON.stringify({
-              context: [],
-              forwardedProps,
-              messages: agent.messages,
-              runId: "test-copilot-run",
-              state: {},
-              threadId: forwardedProps?.thread_id ?? "test-thread",
-              tools: [],
-            }),
-          });
-          agent.__setIsRunning?.(false);
-          if (!response.ok) {
-            throw new Error("CopilotKit run failed.");
+          let result: unknown;
+          try {
+            const response = await fetch(`/api/copilotkit/agent/${agent.agentId ?? "default"}/run`, {
+              method: "POST",
+              body: JSON.stringify({
+                context: [],
+                forwardedProps,
+                messages: agent.messages,
+                runId: "test-copilot-run",
+                state: {},
+                threadId: agent.threadId ?? forwardedProps?.thread_id ?? "test-thread",
+                tools: [],
+              }),
+            });
+            if (!response.ok) {
+              throw new Error("CopilotKit run failed.");
+            }
+            const events = parseSseEvents(await response.text());
+            for (const event of events) {
+              const eventResult = applyAgUiEvent(agent, event);
+              if (event.type === "RUN_FINISHED") {
+                result = eventResult;
+              }
+              await new Promise((resolve) => window.setTimeout(resolve, 0));
+            }
+            return { result, newMessages: [] };
+          } finally {
+            agent.__setIsRunning?.(false);
           }
-          return response.json();
         },
       },
     }),

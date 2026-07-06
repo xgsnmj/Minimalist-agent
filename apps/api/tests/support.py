@@ -68,7 +68,7 @@ def invoke_sdk_tool_for_tests(
     tool = next(
         (
             candidate
-            for candidate in sdk_tools_for_run(run)
+            for candidate in sdk_tools_for_run(run, prefer_native=False)
             if public_tool_name_for_sdk_name(candidate.name) == tool_name
         ),
         None,

@@ -10,16 +10,10 @@ import {
 import type { Attachment } from "@copilotkit/react-core/v2";
 import type { InputContent, Message } from "@ag-ui/core";
 
-import {
-  ConversationCardView,
-  type ConversationProcessSummary,
-  type ConversationToolCall,
-  ProcessSummaryView,
-  ToolCallView,
-} from "../../shared/conversation-message-rendering";
+import type { ConversationToolCall } from "../../shared/conversation-message-rendering";
 import type { ConversationCard } from "../../shared/card-schema-contract";
 import { CopilotRichMessageRenderingProvider } from "../../shared/copilotkit-rich-message-rendering";
-import { uploadRunAttachment } from "./workspace-api";
+import { useUploadRunAttachmentMutation } from "./workspace-queries";
 
 export type CopilotConversationMessage = {
   id: string;
@@ -31,7 +25,6 @@ export type CopilotConversationMessage = {
     filename: string;
     previewType: string;
   };
-  processSummary?: ConversationProcessSummary;
   card?: ConversationCard;
 };
 
@@ -94,10 +87,10 @@ export function CopilotConversationSurface({
   const { copilotkit } = useCopilotKit();
   const [inputValue, setInputValue] = useState("");
   const [optimisticMessages, setOptimisticMessages] = useState<Message[]>([]);
+  const uploadRunAttachmentMutation = useUploadRunAttachmentMutation();
   const transcriptRef = useRef<HTMLElement | null>(null);
   const shouldFollowTranscriptRef = useRef(true);
   const previousThreadIdRef = useRef(threadId);
-  const stopSettlementRefreshRef = useRef<(() => void) | null>(null);
   const syncedMessageFingerprintRef = useRef<string | null>(null);
   const copilotMessages = useMemo(
     () => ensureUniqueMessageIds(conversationMessages.map(toCopilotMessage)),
@@ -115,10 +108,6 @@ export function CopilotConversationSurface({
     [copilotMessages, liveAgentMessages, optimisticMessages],
   );
   const visibleAgentMessages = isLoadingWorkspace ? [] : renderedAgentMessages;
-  const richMessagesById = useMemo(
-    () => new Map(conversationMessages.map((message) => [message.id, message])),
-    [conversationMessages],
-  );
   const showEmptyHero = !isLoadingWorkspace && visibleAgentMessages.length === 0;
   const copilotMessageFingerprint = useMemo(
     () => fingerprintCopilotMessages(copilotMessages),
@@ -130,6 +119,11 @@ export function CopilotConversationSurface({
   );
 
   useDefaultRenderTool();
+
+  useEffect(() => {
+    agent.threadId = threadId;
+  }, [agent, threadId]);
+
   const {
     attachments,
     consumeAttachments,
@@ -150,7 +144,7 @@ export function CopilotConversationSurface({
         if (!conversationId) {
           throw new Error("请先发送第一条消息创建对话，再添加上下文附件。");
         }
-        const attachment = await uploadRunAttachment(conversationId, file);
+        const attachment = await uploadRunAttachmentMutation.mutateAsync({ conversationId, file });
         onAttachmentUploaded?.(attachment.filename);
         return {
           type: "url",
@@ -213,10 +207,6 @@ export function CopilotConversationSurface({
     renderedMessageFingerprint,
   ]);
 
-  useEffect(() => () => {
-    stopSettlementRefreshRef.current?.();
-  }, []);
-
   async function submitMessage(value: string) {
     const message = value.trim();
     if (!message || agent.isRunning || !activeAgent.backendId) {
@@ -238,10 +228,9 @@ export function CopilotConversationSurface({
     queueTranscriptScroll("smooth");
 
     let preferredConversationId: string | null = conversationId;
-    stopSettlementRefreshRef.current?.();
-    stopSettlementRefreshRef.current = scheduleRunSettlementRefresh(() => preferredConversationId);
 
     try {
+      agent.threadId = threadId;
       const runResult = await copilotkit.runAgent({
         agent,
         forwardedProps: {
@@ -257,31 +246,6 @@ export function CopilotConversationSurface({
     } finally {
       await onRunSettled(preferredConversationId);
     }
-  }
-
-  function scheduleRunSettlementRefresh(getPreferredConversationId: () => string | null) {
-    let isCancelled = false;
-    let timeoutId: number | null = null;
-    const delays = [750, 1500, 2500, 4000, 6000, 9000];
-
-    const scheduleNext = (index: number) => {
-      if (isCancelled || index >= delays.length) {
-        return;
-      }
-      timeoutId = window.setTimeout(() => {
-        void onRunSettled(getPreferredConversationId()).finally(() => {
-          scheduleNext(index + 1);
-        });
-      }, delays[index]);
-    };
-
-    scheduleNext(0);
-    return () => {
-      isCancelled = true;
-      if (timeoutId != null) {
-        window.clearTimeout(timeoutId);
-      }
-    };
   }
 
   async function stopRun() {
@@ -375,7 +339,7 @@ export function CopilotConversationSurface({
             void submitMessage(value);
           }}
         >
-          {({ input }) => (
+          {({ input, messageView }) => (
             <>
               <section
                 className="conversation-transcript"
@@ -398,15 +362,7 @@ export function CopilotConversationSurface({
                     <p>今天想推进什么？</p>
                   </div>
                 ) : null}
-                {visibleAgentMessages.length > 0 ? (
-                  <ConversationTimeline
-                    activeAgentName={activeAgent.name}
-                    isStreaming={agent.isRunning || isBackendRunActive}
-                    messages={visibleAgentMessages}
-                    richMessagesById={richMessagesById}
-                    onArtifactOpen={onArtifactOpen}
-                  />
-                ) : null}
+                {visibleAgentMessages.length > 0 ? messageView : null}
               </section>
               <section className="conversation-composer copilot-native-composer" aria-label="对话输入区">
                 <div className="composer-model-row">
@@ -443,261 +399,6 @@ function createClientMessageId() {
   return `client-message-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
 }
 
-function ConversationTimeline({
-  activeAgentName,
-  isStreaming,
-  messages,
-  onArtifactOpen,
-  richMessagesById,
-}: {
-  activeAgentName: string;
-  isStreaming: boolean;
-  messages: Message[];
-  onArtifactOpen: (artifactId: number) => void;
-  richMessagesById: ReadonlyMap<string, CopilotConversationMessage>;
-}) {
-  const entries = buildTimelineEntries(messages, richMessagesById);
-  return (
-    <div className="conversation-timeline" aria-label="消息时间线">
-      {entries.map((entry) =>
-        entry.type === "agent-turn" ? (
-          <AgentTurn
-            activeAgentName={activeAgentName}
-            isStreaming={isStreaming}
-            items={entry.items}
-            key={entry.id}
-            onArtifactOpen={onArtifactOpen}
-          />
-        ) : (
-          <TimelineUserMessage key={entry.message.id} message={entry.message} />
-        ),
-      )}
-    </div>
-  );
-}
-
-type TimelineEntry =
-  | {
-      message: Message;
-      type: "user";
-    }
-  | {
-      id: string;
-      items: AgentTurnItem[];
-      type: "agent-turn";
-    };
-
-type AgentTurnItem = {
-  message: Message;
-  richMessage?: CopilotConversationMessage;
-};
-
-function buildTimelineEntries(
-  messages: Message[],
-  richMessagesById: ReadonlyMap<string, CopilotConversationMessage>,
-): TimelineEntry[] {
-  const entries: TimelineEntry[] = [];
-  let currentAgentTurn: AgentTurnItem[] = [];
-
-  const flushAgentTurn = () => {
-    if (currentAgentTurn.length === 0) {
-      return;
-    }
-    entries.push({
-      id: `agent-turn-${currentAgentTurn[0].message.id}`,
-      items: currentAgentTurn,
-      type: "agent-turn",
-    });
-    currentAgentTurn = [];
-  };
-
-  for (const message of messages) {
-    if (isAgentTimelineMessage(message)) {
-      currentAgentTurn.push({
-        message,
-        richMessage: richMessagesById.get(message.id),
-      });
-      continue;
-    }
-
-    if (message.role !== "user") {
-      continue;
-    }
-    flushAgentTurn();
-    entries.push({
-      message,
-      type: "user",
-    });
-  }
-
-  flushAgentTurn();
-  return entries;
-}
-
-function TimelineUserMessage({ message }: { message: Message }) {
-  const text = formatMessageContent(message.content).trim();
-  if (!text) {
-    return null;
-  }
-
-  return (
-    <article className={`message-row ${message.role}`} aria-label="用户消息">
-      <div className="message-content">{text}</div>
-    </article>
-  );
-}
-
-function AgentTurn({
-  activeAgentName,
-  isStreaming,
-  items,
-  onArtifactOpen,
-}: {
-  activeAgentName: string;
-  isStreaming: boolean;
-  items: AgentTurnItem[];
-  onArtifactOpen: (artifactId: number) => void;
-}) {
-  return (
-    <article className="agent-turn" aria-label={`${activeAgentName} 回复`}>
-      <header className="agent-turn-header">
-        <span className="agent-turn-avatar" aria-hidden="true">
-          {activeAgentName.slice(0, 2).toUpperCase()}
-        </span>
-        <div className="agent-turn-title">
-          <strong>{activeAgentName}</strong>
-          <span>{isStreaming ? "生成中" : "已完成"} · 过程摘要与工具调用可见</span>
-        </div>
-      </header>
-      <div className="agent-turn-body">
-        {items.map((item, index) => (
-          <AgentTurnSegment
-            isStreaming={isStreaming && index === items.length - 1}
-            item={item}
-            key={item.message.id}
-            onArtifactOpen={onArtifactOpen}
-          />
-        ))}
-      </div>
-    </article>
-  );
-}
-
-function AgentTurnSegment({
-  isStreaming,
-  item,
-  onArtifactOpen,
-}: {
-  isStreaming: boolean;
-  item: AgentTurnItem;
-  onArtifactOpen: (artifactId: number) => void;
-}) {
-  const { message, richMessage } = item;
-
-  if (richMessage?.processSummary) {
-    return (
-      <section className="agent-turn-segment process" aria-label="深度思考">
-        <p className="agent-segment-label">深度思考</p>
-        <ProcessSummaryView processSummary={richMessage.processSummary} />
-      </section>
-    );
-  }
-
-  if (richMessage?.toolCall) {
-    return (
-      <section className="agent-turn-segment tool" aria-label="工具调用">
-        <p className="agent-segment-label">工具调用</p>
-        <ToolCallView toolCall={richMessage.toolCall} />
-      </section>
-    );
-  }
-
-  if (richMessage?.artifactReference) {
-    return (
-      <section className="agent-turn-segment artifact" aria-label="制品">
-        <p className="agent-segment-label">制品</p>
-        <ConversationCardView
-          card={{
-            schema: "artifact_card",
-            payload: {
-              artifact_id: richMessage.artifactReference.artifactId,
-              filename: richMessage.artifactReference.filename,
-              preview_type: richMessage.artifactReference.previewType,
-            },
-          }}
-          onOpenArtifact={onArtifactOpen}
-        />
-      </section>
-    );
-  }
-
-  if (richMessage?.card) {
-    return (
-      <section className="agent-turn-segment card" aria-label="结构化内容">
-        <p className="agent-segment-label">结构化内容</p>
-        <ConversationCardView card={richMessage.card} onOpenArtifact={onArtifactOpen} />
-      </section>
-    );
-  }
-
-  if (message.role === "reasoning") {
-    const reasoningText = formatMessageContent(message.content).trim();
-    if (!reasoningText) {
-      return null;
-    }
-    return (
-      <section className="agent-turn-segment process" aria-label="深度思考">
-        <p className="agent-segment-label">深度思考</p>
-        <ProcessSummaryView processSummary={{ summary: reasoningText }} />
-      </section>
-    );
-  }
-
-  if (message.role === "tool") {
-    return (
-      <section className="agent-turn-segment tool" aria-label="工具调用">
-        <p className="agent-segment-label">工具调用</p>
-        <ToolCallView toolCall={nativeToolResultToConversationToolCall(message)} />
-      </section>
-    );
-  }
-
-  const nativeToolCalls = nativeAssistantToolCalls(message);
-  if (nativeToolCalls.length > 0) {
-    const text = formatMessageContent(message.content).trim();
-    return (
-      <>
-        {nativeToolCalls.map((toolCall) => (
-          <section className="agent-turn-segment tool" aria-label="工具调用" key={toolCall.id}>
-            <p className="agent-segment-label">工具调用</p>
-            <ToolCallView toolCall={nativeToolCallToConversationToolCall(toolCall)} />
-          </section>
-        ))}
-        {text ? <AgentTextSegment isStreaming={isStreaming} text={text} /> : null}
-      </>
-    );
-  }
-
-  const text = formatMessageContent(message.content).trim();
-  const legacyProcessSummary = extractLegacyProcessSummary(text);
-  if (legacyProcessSummary) {
-    return (
-      <section className="agent-turn-segment process" aria-label="深度思考">
-        <p className="agent-segment-label">深度思考</p>
-        <ProcessSummaryView processSummary={{ summary: legacyProcessSummary }} />
-      </section>
-    );
-  }
-  if (!text) {
-    return null;
-  }
-  return <AgentTextSegment isStreaming={isStreaming} text={text} />;
-}
-
-function isAgentTimelineMessage(message: Message) {
-  return message.role === "assistant" || message.role === "reasoning" || message.role === "tool";
-}
-
 type NativeAssistantToolCall = {
   id: string;
   function: {
@@ -721,119 +422,6 @@ function nativeAssistantToolCalls(message: Message): NativeAssistantToolCall[] {
     typeof toolCall.function.name === "string" &&
     typeof toolCall.function.arguments === "string",
   );
-}
-
-function nativeToolCallToConversationToolCall(toolCall: NativeAssistantToolCall): ConversationToolCall {
-  return {
-    capability: "copilotkit-ag-ui",
-    provenance: {
-      gateway: "copilotkit",
-      provider: "ag-ui",
-    },
-    safeInput: parseJsonRecord(toolCall.function.arguments),
-    status: "running",
-    toolName: toolCall.function.name,
-  };
-}
-
-function nativeToolResultToConversationToolCall(message: Message): ConversationToolCall {
-  const content = formatMessageContent(message.content).trim();
-  const payload = parseJsonRecord(content);
-  const status = normalizeToolStatus(payload.status);
-  const output = isRecord(payload.output) ? payload.output : payload;
-  return {
-    capability: "copilotkit-ag-ui",
-    errorSummary: typeof payload.error === "string" ? payload.error : undefined,
-    provenance: {
-      gateway: "copilotkit",
-      provider: "ag-ui",
-    },
-    safeInput: {
-      toolCallId: "toolCallId" in message ? String(message.toolCallId) : "unknown",
-    },
-    safeOutput: output,
-    status,
-    toolName: typeof payload.toolName === "string"
-      ? payload.toolName
-      : "toolCallId" in message
-        ? `tool:${String(message.toolCallId)}`
-        : "tool",
-  };
-}
-
-function parseJsonRecord(value: string): Record<string, unknown> {
-  try {
-    const parsed = JSON.parse(value) as unknown;
-    return isRecord(parsed) ? parsed : {};
-  } catch {
-    return value ? { value } : {};
-  }
-}
-
-function normalizeToolStatus(value: unknown): ConversationToolCall["status"] {
-  return value === "completed" || value === "failed" || value === "rejected" || value === "running"
-    ? value
-    : "completed";
-}
-
-function extractLegacyProcessSummary(content: string): string | null {
-  const prefix = "运行过程：";
-  if (!content.startsWith(prefix)) {
-    return null;
-  }
-  const summary = content.slice(prefix.length).trim();
-  return summary || null;
-}
-
-function AgentTextSegment({
-  isStreaming,
-  text,
-}: {
-  isStreaming: boolean;
-  text: string;
-}) {
-  const visibleText = useSmoothStreamingText(text, isStreaming);
-  return (
-    <section className="agent-turn-segment answer" aria-label="回答">
-      <div className="message-content">{visibleText}</div>
-      {isStreaming && visibleText.length < text.length ? <span className="stream-caret" aria-hidden="true" /> : null}
-    </section>
-  );
-}
-
-function useSmoothStreamingText(targetText: string, enabled: boolean) {
-  const [visibleText, setVisibleText] = useState(() => (enabled ? "" : targetText));
-
-  useEffect(() => {
-    if (!enabled) {
-      setVisibleText(targetText);
-      return;
-    }
-
-    setVisibleText((currentText) =>
-      targetText.startsWith(currentText) ? currentText : "",
-    );
-  }, [enabled, targetText]);
-
-  useEffect(() => {
-    if (!enabled || visibleText.length >= targetText.length) {
-      return;
-    }
-
-    const timeoutId = window.setTimeout(() => {
-      setVisibleText((currentText) => {
-        if (!targetText.startsWith(currentText)) {
-          return targetText.slice(0, 2);
-        }
-        const nextLength = Math.min(currentText.length + 3, targetText.length);
-        return targetText.slice(0, nextLength);
-      });
-    }, 18);
-
-    return () => window.clearTimeout(timeoutId);
-  }, [enabled, targetText, visibleText]);
-
-  return visibleText;
 }
 
 function toCopilotMessage(message: CopilotConversationMessage): Message {
@@ -908,29 +496,6 @@ function messageMetadataSignature(message: Message): string {
     return String(message.toolCallId);
   }
   return "";
-}
-
-function formatMessageContent(content: Message["content"]) {
-  if (typeof content === "string") {
-    return content;
-  }
-
-  if (!Array.isArray(content)) {
-    return "";
-  }
-
-  return content
-    .map((part) => {
-      if (typeof part === "string") {
-        return part;
-      }
-      if (part && typeof part === "object" && "text" in part && typeof part.text === "string") {
-        return part.text;
-      }
-      return "";
-    })
-    .filter(Boolean)
-    .join("\n");
 }
 
 function buildUserMessageContent(message: string, attachments: Attachment[]): string | InputContent[] {

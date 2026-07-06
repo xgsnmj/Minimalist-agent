@@ -1,8 +1,6 @@
 export const authTokenStorageKey = "minimalist-agent:auth-token";
 export const authRequestTimeoutMs = 10_000;
 
-const inFlightGetRequests = new Map<string, Promise<unknown>>();
-
 export type CurrentUser = {
   id: number;
   username: string;
@@ -90,43 +88,26 @@ export async function authFetch<T>(
     headers,
   };
 
-  const request = async () => {
-    const response = timeoutMs == null
-      ? await fetch(`/api${path}`, requestInit)
-      : await fetchWithAuthTimeout(`/api${path}`, requestInit, timeoutMs);
+  const response = timeoutMs == null
+    ? await fetch(`/api${path}`, requestInit)
+    : await fetchWithAuthTimeout(`/api${path}`, requestInit, timeoutMs);
 
-    if (!response.ok) {
-      if (response.status === 401) {
-        handleUnauthorized();
-        throw new Error("登录已过期，请重新登录。");
-      }
-      let detail = "请求失败。";
-      try {
-        const body = await response.json() as { detail?: string };
-        detail = body.detail ?? detail;
-      } catch {
-        detail = response.statusText || detail;
-      }
-      throw new Error(detail);
+  if (!response.ok) {
+    if (response.status === 401) {
+      handleUnauthorized();
+      throw new Error("登录已过期，请重新登录。");
     }
-
-    return response.json() as Promise<T>;
-  };
-
-  const requestKey = getInFlightRequestKey(path, init, headers, timeoutMs);
-  if (requestKey) {
-    const inFlightRequest = inFlightGetRequests.get(requestKey) as Promise<T> | undefined;
-    if (inFlightRequest) {
-      return inFlightRequest;
+    let detail = "请求失败。";
+    try {
+      const body = await response.json() as { detail?: string };
+      detail = body.detail ?? detail;
+    } catch {
+      detail = response.statusText || detail;
     }
-    const nextRequest = request().finally(() => {
-      inFlightGetRequests.delete(requestKey);
-    });
-    inFlightGetRequests.set(requestKey, nextRequest);
-    return nextRequest;
+    throw new Error(detail);
   }
 
-  return request();
+  return response.json() as Promise<T>;
 }
 
 export function getCurrentUser() {
@@ -137,26 +118,5 @@ export function updateCurrentUser(request: { username: string; email: string | n
   return authFetch<CurrentUser>("/auth/me", {
     method: "PATCH",
     body: JSON.stringify(request),
-  });
-}
-
-function getInFlightRequestKey(
-  path: string,
-  init: RequestInit,
-  headers: Headers,
-  timeoutMs: number | undefined,
-) {
-  const method = (init.method ?? "GET").toUpperCase();
-  if (method !== "GET" || init.body || init.signal) {
-    return null;
-  }
-  const headerEntries = Array.from(headers.entries()).sort(([left], [right]) =>
-    left.localeCompare(right),
-  );
-  return JSON.stringify({
-    method,
-    path,
-    headers: headerEntries,
-    timeoutMs: timeoutMs ?? null,
   });
 }

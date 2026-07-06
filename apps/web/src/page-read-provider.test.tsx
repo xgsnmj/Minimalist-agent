@@ -38,7 +38,7 @@ describe("Administrator Page Read Provider surface", () => {
     await user.clear(within(runtimeSettings).getByLabelText("内容长度"));
     await user.type(within(runtimeSettings).getByLabelText("内容长度"), "5000 字符");
     await user.click(within(domainPolicy).getByRole("button", { name: "保存策略" }));
-    expect(await within(domainPolicy).findByText("页面读取提供方配置已保存。")).toBeInTheDocument();
+    expect(await screen.findByText("页面读取提供方配置已保存。")).toBeInTheDocument();
 
     expect(screen.getByText("页面读取能力读取已知 URL 的全文；搜索能力只查找候选 URL 和摘要。")).toBeInTheDocument();
   });

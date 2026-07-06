@@ -171,7 +171,7 @@ def test_copilotkit_run_executes_openai_agents_sdk_runtime_and_streams_ag_ui_eve
     assert '"type":"RUN_STARTED"' in response.text
     assert '"type":"TEXT_MESSAGE_START"' in response.text
     assert '"type":"TEXT_MESSAGE_CONTENT"' in response.text
-    assert '"type":"REASONING_MESSAGE_START"' in response.text
+    assert '"type":"REASONING_MESSAGE_START"' not in response.text
     content_events = text_message_content_events(response.text)
     assert len(content_events) > 1
     assert "".join(event["delta"] for event in content_events) == (
@@ -188,11 +188,12 @@ def test_copilotkit_run_executes_openai_agents_sdk_runtime_and_streams_ag_ui_eve
     )
     assert '"type":"RUN_FINISHED"' in response.text
     reasoning_events = ag_ui_events(response.text, "REASONING_MESSAGE_CONTENT")
-    assert "".join(event["delta"] for event in reasoning_events) == (
+    assert reasoning_events == []
+    assert completed_run.process_summaries == [
         "Reviewed the Agent Instruction snapshot for conversation "
-        f"{conversation_id}."
-        "Used model gpt-5 from openai."
-    )
+        f"{conversation_id}.",
+        "Used model gpt-5 from openai.",
+    ]
     assert completed_run.status == AgentRunStatus.COMPLETED
     assert completed_run.full_trace["workflow_name"] == "Agent workflow"
     assert conversation["messages"][-1] == {

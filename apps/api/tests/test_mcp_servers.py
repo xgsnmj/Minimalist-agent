@@ -1,3 +1,4 @@
+from agents import HostedMCPTool, ToolSearchTool
 from fastapi.testclient import TestClient
 
 from apps.api.app.agent_runs import agent_run_store
@@ -7,7 +8,10 @@ from apps.api.app.auth import local_account_store
 from apps.api.app.conversations import conversation_store
 from apps.api.app.app import app
 from apps.api.app.mcp_servers import mcp_server_store
-from apps.api.app.model_configurations import model_configuration_store
+from apps.api.app.model_configurations import (
+    ModelConfigurationMutationRequest,
+    model_configuration_store,
+)
 from apps.api.app.run_attachments import run_attachment_store
 from apps.api.app.run_event_log import run_event_log_store
 from apps.api.app.runtime_tools import public_tool_name_for_sdk_name, sdk_tools_for_run
@@ -194,6 +198,13 @@ def test_administrator_authorizes_mcp_tool_for_agent_and_agents_sdk_exposes_it()
     assert [
         public_tool_name_for_sdk_name(tool.name)
         for tool in sdk_tools_for_run(agent_run_store.get(run["id"]))
+    ] == ["mcp"]
+    native_mcp_tool = sdk_tools_for_run(agent_run_store.get(run["id"]))[0]
+    assert isinstance(native_mcp_tool, HostedMCPTool)
+    assert native_mcp_tool.tool_config["allowed_tools"] == ["mcp.research.search"]
+    assert [
+        public_tool_name_for_sdk_name(tool.name)
+        for tool in sdk_tools_for_run(agent_run_store.get(run["id"]), prefer_native=False)
     ] == ["mcp.research.search"]
     assert authorization_response.status_code == 201
     assert authorization_response.json()["agent_id"] == agent["id"]
@@ -207,3 +218,97 @@ def test_administrator_authorizes_mcp_tool_for_agent_and_agents_sdk_exposes_it()
     }
     assert '"tool_name":"mcp.research.search"' in stream_response.text
     assert '"token"' not in stream_response.text
+
+
+def test_deferred_native_mcp_registers_tool_search_tool():
+    client = TestClient(app)
+    admin_token = administrator_token(client)
+    user_token = approved_user_token(client)
+    server = client.post(
+        "/admin/mcp-servers",
+        headers={"Authorization": f"Bearer {admin_token}"},
+        json={
+            "name": "Deferred Research MCP",
+            "connection_type": "streamable_http",
+            "url": "https://mcp.example.com/deferred",
+            "header_secret_refs": {},
+            "timeout_seconds": 20,
+            "enabled": True,
+        },
+    ).json()
+    client.post(
+        f"/admin/mcp-servers/{server['id']}/discover",
+        headers={"Authorization": f"Bearer {admin_token}"},
+    )
+    model_configuration = model_configuration_store.create(
+        ModelConfigurationMutationRequest(
+            provider_id="openai",
+            name="OpenAI Deferred MCP",
+            model_name="gpt-5",
+            endpoint="https://api.openai.com/v1",
+            credential_reference="env:TEST_MODEL_API_KEY",
+            default_parameters={
+                "openai_native_tools": {
+                    "mcp": {"defer_loading": True},
+                    "tool_search": {
+                        "description": "Find deferred MCP tools.",
+                        "execution": "server",
+                    },
+                }
+            },
+            enabled=True,
+        )
+    )
+    agent = client.post(
+        "/admin/agents",
+        headers={"Authorization": f"Bearer {admin_token}"},
+        json={
+            "name": "Deferred MCP Agent",
+            "description": "Uses deferred MCP tools.",
+            "icon": "plug",
+            "instruction": "Use MCP tools only when authorized.",
+            "default_model_configuration_id": model_configuration.id,
+            "allowed_model_configuration_ids": [model_configuration.id],
+            "capability_policy": {
+                "mcp_server_ids": [server["id"]],
+                "sandbox_enabled": False,
+                "search_enabled": False,
+                "page_read_enabled": False,
+            },
+        },
+    ).json()
+    client.post(
+        f"/admin/agents/{agent['id']}/mcp-tool-authorizations",
+        headers={"Authorization": f"Bearer {admin_token}"},
+        json={
+            "server_id": server["id"],
+            "tool_name": "mcp.research.search",
+            "enabled": True,
+        },
+    )
+    conversation = client.post(
+        "/conversations",
+        headers={"Authorization": f"Bearer {user_token}"},
+        json={
+            "title": "Deferred MCP run",
+            "agent_id": agent["id"],
+            "initial_message": "Start this conversation.",
+        },
+    ).json()
+    run = client.post(
+        f"/conversations/{conversation['id']}/runs",
+        headers={"Authorization": f"Bearer {user_token}"},
+        json={"message": "Use deferred MCP tools."},
+    ).json()
+
+    tools = sdk_tools_for_run(agent_run_store.get(run["id"]))
+
+    assert [public_tool_name_for_sdk_name(tool.name) for tool in tools] == [
+        "mcp",
+        "tool.search",
+    ]
+    assert isinstance(tools[0], HostedMCPTool)
+    assert tools[0].tool_config["defer_loading"] is True
+    assert isinstance(tools[1], ToolSearchTool)
+    assert tools[1].description == "Find deferred MCP tools."
+    assert tools[1].execution == "server"

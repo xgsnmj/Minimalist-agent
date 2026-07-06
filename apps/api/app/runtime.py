@@ -32,6 +32,7 @@ from apps.api.app.runtime_tools import (
     project_safe_payload,
     public_tool_name_for_sdk_name,
     sdk_tools_for_run,
+    tools_require_openai_responses,
 )
 from apps.api.app.secret_vault import secret_vault_store
 
@@ -253,7 +254,11 @@ class RuntimeStore:
         provider_id = model_configuration.provider_id
         model_name = model_configuration.model_name
         try:
-            model_provider = self._model_provider(model_configuration)
+            runtime_tools = sdk_tools_for_run(run)
+            model_provider = self._model_provider(
+                model_configuration,
+                use_responses=tools_require_openai_responses(runtime_tools),
+            )
             model_settings = _model_settings_for_configuration(model_configuration)
         except Exception as exc:
             agent_run_lifecycle.apply_runtime_failure(
@@ -272,7 +277,7 @@ class RuntimeStore:
             name=agent.name,
             instructions=agent.instruction,
             model=model_name,
-            tools=sdk_tools_for_run(run),
+            tools=runtime_tools,
         )
         run_config = RunConfig(
             model_provider=model_provider,
@@ -369,7 +374,11 @@ class RuntimeStore:
         provider_id = model_configuration.provider_id
         model_name = model_configuration.model_name
         try:
-            model_provider = self._model_provider(model_configuration)
+            runtime_tools = sdk_tools_for_run(run)
+            model_provider = self._model_provider(
+                model_configuration,
+                use_responses=tools_require_openai_responses(runtime_tools),
+            )
             model_settings = _model_settings_for_configuration(model_configuration)
         except Exception as exc:
             failed_run = agent_run_lifecycle.apply_runtime_failure(
@@ -397,7 +406,7 @@ class RuntimeStore:
             name=agent.name,
             instructions=agent.instruction,
             model=model_name,
-            tools=sdk_tools_for_run(run),
+            tools=runtime_tools,
         )
         run_config = RunConfig(
             model_provider=model_provider,
@@ -421,13 +430,13 @@ class RuntimeStore:
             result = Runner.run_streamed(runtime_agent, run.user_message, run_config=run_config)
             async for event in result.stream_events():
                 if event.type == "run_item_stream_event":
-                    tool_event = _runtime_tool_event_from_run_item(
+                    tool_events = _runtime_tool_events_from_run_item(
                         event,
                         conversation_id=run.conversation_id,
                         pending_tool_calls=pending_tool_calls,
                         run_id=run.id,
                     )
-                    if tool_event is not None:
+                    for tool_event in tool_events:
                         _record_runtime_tool_event(run_id=run.id, tool_event=tool_event)
                         yield tool_event
                     continue
@@ -517,13 +526,18 @@ class RuntimeStore:
             "full_trace": full_trace or _trace_fallback(run),
         }
 
-    def _model_provider(self, configuration: ModelConfiguration) -> ModelProvider:
+    def _model_provider(
+        self,
+        configuration: ModelConfiguration,
+        *,
+        use_responses: bool = False,
+    ) -> ModelProvider:
         if self._model_provider_factory is not None:
             return self._model_provider_factory(configuration)
         return OpenAIProvider(
             api_key=resolve_model_api_key(configuration.credential_reference),
             base_url=configuration.endpoint,
-            use_responses=False,
+            use_responses=use_responses,
         )
 
 
@@ -543,27 +557,53 @@ def _runtime_tool_event_from_run_item(
     pending_tool_calls: dict[str, dict[str, object]],
     run_id: int,
 ) -> dict[str, object] | None:
+    events = _runtime_tool_events_from_run_item(
+        event,
+        conversation_id=conversation_id,
+        pending_tool_calls=pending_tool_calls,
+        run_id=run_id,
+    )
+    return events[0] if events else None
+
+
+def _runtime_tool_events_from_run_item(
+    event: Any,
+    *,
+    conversation_id: int,
+    pending_tool_calls: dict[str, dict[str, object]],
+    run_id: int,
+) -> list[dict[str, object]]:
     item = getattr(event, "item", None)
     item_type = getattr(item, "type", None)
     event_name = getattr(event, "name", None)
     if item is None:
-        return None
+        return []
 
     if item_type == "tool_call_item" or event_name in {
         "tool_called",
         "tool_search_called",
         "mcp_list_tools",
     }:
+        if event_name == "mcp_list_tools" or item_type == "mcp_list_tools_item":
+            return []
         tool_call = _runtime_tool_call_payload(
             item,
             conversation_id=conversation_id,
             run_id=run_id,
         )
         pending_tool_calls[str(tool_call["id"])] = tool_call
-        return {
+        tool_events = [{
             "event_type": "tool.call",
             "data": {"tool_call": {**tool_call, "ag_ui_phase": "start"}},
-        }
+        }]
+        if _tool_call_is_terminal(tool_call):
+            tool_events.append(
+                {
+                    "event_type": "tool.call",
+                    "data": {"tool_call": {**tool_call, "ag_ui_phase": "result"}},
+                }
+            )
+        return tool_events
 
     if item_type == "tool_call_output_item" or event_name in {
         "tool_output",
@@ -571,7 +611,7 @@ def _runtime_tool_event_from_run_item(
     }:
         tool_call_id = _tool_call_id_from_item(item)
         if tool_call_id is None:
-            return None
+            return []
         known_tool_call = pending_tool_calls.get(tool_call_id, {})
         output_record = _safe_record(getattr(item, "output", None))
         extracted_output = _tool_output_fields(output_record)
@@ -590,12 +630,12 @@ def _runtime_tool_event_from_run_item(
             "provenance",
             {"gateway": "openai_agents_sdk", "provider": "agents"},
         )
-        return {
+        return [{
             "event_type": "tool.call",
             "data": {"tool_call": tool_call},
-        }
+        }]
 
-    return None
+    return []
 
 
 def _runtime_tool_call_payload(
@@ -607,18 +647,20 @@ def _runtime_tool_call_payload(
     raw_item = getattr(item, "raw_item", None)
     tool_call_id = _tool_call_id_from_item(item) or f"{run_id}-tool"
     tool_name = _tool_name_from_item(item)
+    safe_output = _tool_safe_output_from_raw_item(raw_item)
+    status = _tool_status_from_raw_item(raw_item, safe_output=safe_output)
     return {
         "id": tool_call_id,
         "conversation_id": conversation_id,
         "run_id": run_id,
         "tool_name": tool_name,
         "capability": capability_for_tool_name(tool_name),
-        "status": "running",
+        "status": status,
         "started_at": "just now",
-        "ended_at": None,
-        "safe_input": project_safe_payload(_safe_record(_raw_value(raw_item, "arguments"))),
-        "safe_output": None,
-        "provenance": {"gateway": "openai_agents_sdk", "provider": "agents"},
+        "ended_at": "just now" if status != "running" else None,
+        "safe_input": project_safe_payload(_tool_input_from_raw_item(raw_item)),
+        "safe_output": safe_output,
+        "provenance": _tool_provenance_from_raw_item(raw_item),
     }
 
 
@@ -642,6 +684,105 @@ def _tool_name_from_item(item: Any) -> str:
         or "tool"
     )
     return public_tool_name_for_sdk_name(str(value))
+
+
+def _tool_input_from_raw_item(raw_item: Any) -> dict[str, object]:
+    raw_type = _raw_value(raw_item, "type")
+    if raw_type == "web_search_call":
+        return _safe_record(_raw_value(raw_item, "action"))
+    if raw_type == "shell_call":
+        return _safe_record(_raw_value(raw_item, "action"))
+    if raw_type == "code_interpreter_call":
+        return _safe_record({"code": _raw_value(raw_item, "code")})
+    if raw_type == "file_search_call":
+        return _safe_record({"queries": _raw_value(raw_item, "queries")})
+    return _safe_record(_raw_value(raw_item, "arguments"))
+
+
+def _tool_safe_output_from_raw_item(raw_item: Any) -> dict[str, object] | None:
+    raw_type = _raw_value(raw_item, "type")
+    if raw_type == "web_search_call":
+        return _safe_record(
+            {
+                "action": _raw_value(raw_item, "action"),
+                "status": _raw_value(raw_item, "status"),
+            }
+        )
+    if raw_type == "mcp_call":
+        output = _raw_value(raw_item, "output")
+        error = _raw_value(raw_item, "error")
+        return _safe_record({"output": output, "error": error})
+    if raw_type == "shell_call":
+        return _safe_record(
+            {
+                "action": _raw_value(raw_item, "action"),
+                "status": _raw_value(raw_item, "status"),
+            }
+        )
+    if raw_type == "code_interpreter_call":
+        return _safe_record(
+            {
+                "container_id": _raw_value(raw_item, "container_id"),
+                "outputs": _raw_value(raw_item, "outputs"),
+                "status": _raw_value(raw_item, "status"),
+            }
+        )
+    if raw_type == "file_search_call":
+        return _safe_record(
+            {
+                "results": _raw_value(raw_item, "results"),
+                "status": _raw_value(raw_item, "status"),
+            }
+        )
+    if raw_type == "image_generation_call":
+        return _safe_record(
+            {
+                "result": _raw_value(raw_item, "result"),
+                "status": _raw_value(raw_item, "status"),
+            }
+        )
+    if raw_type == "tool_search_call":
+        return _safe_record({"status": _raw_value(raw_item, "status")})
+    return None
+
+
+def _tool_status_from_raw_item(
+    raw_item: Any,
+    *,
+    safe_output: dict[str, object] | None,
+) -> str:
+    raw_status = str(_raw_value(raw_item, "status") or "")
+    if raw_status == "failed":
+        return "failed"
+    if raw_status in {"completed", "incomplete"}:
+        return "completed"
+    if safe_output and raw_status not in {"in_progress", "searching", "calling", "interpreting"}:
+        return "completed"
+    return "running"
+
+
+def _tool_call_is_terminal(tool_call: dict[str, object]) -> bool:
+    return str(tool_call.get("status")) in {"completed", "failed", "rejected"}
+
+
+def _tool_provenance_from_raw_item(raw_item: Any) -> dict[str, str]:
+    raw_type = str(_raw_value(raw_item, "type") or "")
+    provider_by_type = {
+        "web_search_call": "openai_web_search",
+        "mcp_call": "openai_hosted_mcp",
+        "shell_call": "openai_hosted_shell",
+        "code_interpreter_call": "openai_code_interpreter",
+        "file_search_call": "openai_file_search",
+        "image_generation_call": "openai_image_generation",
+    }
+    provenance = {
+        "gateway": "openai_agents_sdk",
+        "provider": provider_by_type.get(raw_type, "agents"),
+    }
+    server_label = _raw_value(raw_item, "server_label")
+    if server_label is not None:
+        provenance["server_label"] = str(server_label)
+    return provenance
 
 
 def _tool_output_fields(output_record: dict[str, object]) -> dict[str, object]:
@@ -698,7 +839,10 @@ def _raw_value(raw_item: Any, key: str) -> Any:
 
 def _safe_record(value: Any) -> dict[str, object]:
     if isinstance(value, dict):
-        return dict(value)
+        return {
+            str(key): _json_safe_value(item)
+            for key, item in value.items()
+        }
     if isinstance(value, str):
         stripped = value.strip()
         if not stripped:
@@ -707,14 +851,27 @@ def _safe_record(value: Any) -> dict[str, object]:
             parsed = json.loads(stripped)
         except json.JSONDecodeError:
             return {"value": value}
-        return dict(parsed) if isinstance(parsed, dict) else {"value": parsed}
+        return _safe_record(parsed) if isinstance(parsed, dict) else {"value": parsed}
     model_dump = getattr(value, "model_dump", None)
     if callable(model_dump):
         dumped = model_dump(mode="json")
-        return dict(dumped) if isinstance(dumped, dict) else {"value": dumped}
+        return _safe_record(dumped) if isinstance(dumped, dict) else {"value": dumped}
     if value is None:
         return {}
     return {"value": str(value)}
+
+
+def _json_safe_value(value: Any) -> object:
+    if isinstance(value, dict):
+        return {str(key): _json_safe_value(item) for key, item in value.items()}
+    if isinstance(value, list):
+        return [_json_safe_value(item) for item in value]
+    model_dump = getattr(value, "model_dump", None)
+    if callable(model_dump):
+        return _json_safe_value(model_dump(mode="json"))
+    if value is None or isinstance(value, str | int | float | bool):
+        return value
+    return str(value)
 
 
 def _run_model_name(run) -> str:

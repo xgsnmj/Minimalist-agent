@@ -37,6 +37,6 @@ describe("Administrator Search Provider surface", () => {
     await user.clear(within(editPanel).getByLabelText("超时"));
     await user.type(within(editPanel).getByLabelText("超时"), "30s");
     await user.click(within(editPanel).getByRole("button", { name: "保存配置" }));
-    expect(await within(editPanel).findByText("搜索提供方配置已保存。")).toBeInTheDocument();
+    expect(await screen.findByText("搜索提供方配置已保存。")).toBeInTheDocument();
   });
 });

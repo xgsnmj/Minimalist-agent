@@ -1,16 +1,27 @@
 from __future__ import annotations
 
 import json
+import os
 import re
 from enum import StrEnum
 from typing import Any
 
-from agents import FunctionTool
+from agents import (
+    CodeInterpreterTool,
+    FileSearchTool,
+    FunctionTool,
+    HostedMCPTool,
+    ImageGenerationTool,
+    ShellTool,
+    Tool,
+    ToolSearchTool,
+    WebSearchTool,
+)
 from fastapi import HTTPException
 from pydantic import BaseModel, Field
 
 from apps.api.app.agent_runs import AgentRun
-from apps.api.app.mcp_servers import mcp_server_store
+from apps.api.app.mcp_servers import McpServer, mcp_server_store
 from apps.api.app.page_read_providers import (
     page_read_provider_store,
     to_page_read_execution_response,
@@ -20,6 +31,7 @@ from apps.api.app.search_providers import (
     search_provider_store,
     to_search_execution_response,
 )
+from apps.api.app.secret_vault import secret_vault_store
 
 
 class RuntimeToolCapability(StrEnum):
@@ -68,20 +80,54 @@ _STATIC_SDK_TOOL_NAMES = {
 _PUBLIC_TOOL_NAMES_BY_SDK_NAME = {
     sdk_name: public_name for public_name, sdk_name in _STATIC_SDK_TOOL_NAMES.items()
 }
+_PUBLIC_TOOL_NAMES_BY_SDK_NAME.update(
+    {
+        "web_search": "search.web",
+        "web_search_call": "search.web",
+        "hosted_mcp": "mcp",
+        "mcp_call": "mcp",
+        "mcp_list_tools": "mcp.list_tools",
+        "sandbox_exec": "sandbox.exec",
+        "shell": "sandbox.exec",
+        "shell_call": "sandbox.exec",
+        "file_search": "file.search",
+        "file_search_call": "file.search",
+        "code_interpreter": "code.interpreter",
+        "code_interpreter_call": "code.interpreter",
+        "image_generation": "image.generate",
+        "image_generation_call": "image.generate",
+        "tool_search": "tool.search",
+        "tool_search_call": "tool.search",
+    }
+)
 _SDK_TOOL_NAME_PATTERN = re.compile(r"[^A-Za-z0-9_-]+")
+_OPENAI_NATIVE_TOOLS_PARAMETER = "openai_native_tools"
 
 
-def sdk_tools_for_run(run: AgentRun) -> list[FunctionTool]:
+def sdk_tools_for_run(run: AgentRun, *, prefer_native: bool | None = None) -> list[Tool]:
     policy = run.capability_snapshot.capability_policy
-    tools: list[FunctionTool] = []
+    use_native = run_prefers_native_sdk_tools(run) if prefer_native is None else prefer_native
+    tools: list[Tool] = []
     if policy.search_enabled:
-        tools.append(_search_tool(run))
+        tools.append(_native_search_tool() if use_native else _search_tool(run))
     if policy.page_read_enabled:
         tools.append(_page_read_tool(run))
     if policy.sandbox_enabled:
-        tools.append(_sandbox_tool(run))
-    tools.extend(_mcp_tools(run))
+        tools.append(_native_sandbox_tool() if use_native else _sandbox_tool(run))
+    tools.extend(_mcp_tools(run, prefer_native=use_native))
+    if use_native:
+        tools.extend(_configured_openai_native_tools(run))
     return tools
+
+
+def run_prefers_native_sdk_tools(run: AgentRun) -> bool:
+    snapshot = run.capability_snapshot.selected_model_configuration_snapshot or {}
+    provider_id = str(snapshot.get("provider_id") or "").strip().lower()
+    return provider_id == "openai"
+
+
+def tools_require_openai_responses(tools: list[Tool]) -> bool:
+    return any(not isinstance(tool, FunctionTool) for tool in tools)
 
 
 def project_safe_payload(payload: dict[str, Any]) -> dict[str, Any]:
@@ -113,7 +159,7 @@ def capability_for_tool_name(tool_name: str) -> RuntimeToolCapability | str:
         return RuntimeToolCapability.PAGE_READ
     if public_name == "sandbox.exec":
         return RuntimeToolCapability.SANDBOX
-    if public_name.startswith("mcp."):
+    if public_name == "mcp" or public_name.startswith("mcp."):
         return RuntimeToolCapability.MCP
     return "openai_agents_sdk"
 
@@ -186,6 +232,10 @@ def _search_tool(run: AgentRun) -> FunctionTool:
         },
         invoke=invoke,
     )
+
+
+def _native_search_tool() -> WebSearchTool:
+    return WebSearchTool(search_context_size="medium")
 
 
 def _page_read_tool(run: AgentRun) -> FunctionTool:
@@ -314,7 +364,67 @@ def _sandbox_tool(run: AgentRun) -> FunctionTool:
     )
 
 
-def _mcp_tools(run: AgentRun) -> list[FunctionTool]:
+def _native_sandbox_tool() -> ShellTool:
+    return ShellTool(
+        name="sandbox_exec",
+        environment={
+            "type": "container_auto",
+            "network_policy": {"type": "disabled"},
+        },
+    )
+
+
+def _configured_openai_native_tools(run: AgentRun) -> list[Tool]:
+    configuration = _openai_native_tool_configuration(run)
+    tools: list[Tool] = []
+    file_search_config = _tool_config_record(configuration.get("file_search"))
+    if file_search_config is not None:
+        vector_store_ids = _string_list(file_search_config.get("vector_store_ids"))
+        if vector_store_ids:
+            tools.append(
+                FileSearchTool(
+                    vector_store_ids=vector_store_ids,
+                    max_num_results=_optional_int(file_search_config.get("max_num_results")),
+                    include_search_results=bool(
+                        file_search_config.get("include_search_results", False)
+                    ),
+                    ranking_options=file_search_config.get("ranking_options"),
+                    filters=file_search_config.get("filters"),
+                )
+            )
+
+    code_interpreter_config = _tool_config_record(configuration.get("code_interpreter"))
+    if code_interpreter_config is not None:
+        container = code_interpreter_config.get("container")
+        if container:
+            tool_config = {
+                **code_interpreter_config,
+                "type": "code_interpreter",
+                "container": container,
+            }
+            tools.append(CodeInterpreterTool(tool_config=tool_config))
+
+    image_generation_config = _tool_config_record(configuration.get("image_generation"))
+    if image_generation_config is not None:
+        tools.append(
+            ImageGenerationTool(
+                tool_config={
+                    **image_generation_config,
+                    "type": "image_generation",
+                }
+            )
+        )
+
+    return tools
+
+
+def _mcp_tools(run: AgentRun, *, prefer_native: bool) -> list[Tool]:
+    if prefer_native:
+        return _native_mcp_tools(run)
+    return _mcp_function_tools(run)
+
+
+def _mcp_function_tools(run: AgentRun) -> list[FunctionTool]:
     policy = run.capability_snapshot.capability_policy
     tools: list[FunctionTool] = []
     for server_id in policy.mcp_server_ids:
@@ -331,6 +441,57 @@ def _mcp_tools(run: AgentRun) -> list[FunctionTool]:
                 continue
             tools.append(_mcp_tool(run, discovered_tool.tool_name, discovered_tool.description))
     return tools
+
+
+def _native_mcp_tools(run: AgentRun) -> list[Tool]:
+    policy = run.capability_snapshot.capability_policy
+    native_configuration = _openai_native_tool_configuration(run)
+    mcp_configuration = _tool_config_record(native_configuration.get("mcp")) or {}
+    defer_loading = bool(mcp_configuration.get("defer_loading", False))
+    tools: list[Tool] = []
+    for server_id in policy.mcp_server_ids:
+        try:
+            server = mcp_server_store.get(server_id)
+        except HTTPException:
+            continue
+        allowed_tools = _authorized_mcp_tool_names(run, server_id=server_id)
+        if not allowed_tools:
+            continue
+        tool_config: dict[str, Any] = {
+            "type": "mcp",
+            "server_label": _mcp_server_label(server),
+            "server_description": server.name,
+            "server_url": server.url,
+            "allowed_tools": allowed_tools,
+            "require_approval": "never",
+        }
+        if defer_loading:
+            tool_config["defer_loading"] = True
+        headers = _resolved_mcp_headers(server)
+        if headers:
+            tool_config["headers"] = headers
+        tools.append(HostedMCPTool(tool_config=tool_config))
+    if tools and defer_loading:
+        tool_search_config = _tool_config_record(native_configuration.get("tool_search")) or {}
+        tools.append(_native_tool_search_tool(tool_search_config))
+    return tools
+
+
+def _authorized_mcp_tool_names(run: AgentRun, *, server_id: int) -> list[str]:
+    policy = run.capability_snapshot.capability_policy
+    try:
+        discovered_tools = mcp_server_store.list_tools(server_id)
+    except HTTPException:
+        return []
+    return [
+        discovered_tool.tool_name
+        for discovered_tool in discovered_tools
+        if mcp_server_store.is_tool_authorized(
+            agent_id=run.capability_snapshot.agent_id,
+            server_ids=policy.mcp_server_ids,
+            tool_name=discovered_tool.tool_name,
+        )
+    ]
 
 
 def _mcp_tool(run: AgentRun, tool_name: str, description: str) -> FunctionTool:
@@ -490,6 +651,89 @@ def _sdk_function_name(tool_name: str) -> str:
         return _STATIC_SDK_TOOL_NAMES[tool_name]
     normalized = _SDK_TOOL_NAME_PATTERN.sub("_", tool_name).strip("_")
     return (normalized or "runtime_tool")[:64]
+
+
+def _openai_native_tool_configuration(run: AgentRun) -> dict[str, Any]:
+    snapshot = run.capability_snapshot.selected_model_configuration_snapshot or {}
+    default_parameters = snapshot.get("default_parameters")
+    if not isinstance(default_parameters, dict):
+        return {}
+    configured_tools = default_parameters.get(_OPENAI_NATIVE_TOOLS_PARAMETER)
+    return configured_tools if isinstance(configured_tools, dict) else {}
+
+
+def _tool_config_record(value: Any) -> dict[str, Any] | None:
+    if not isinstance(value, dict):
+        return None
+    enabled = value.get("enabled")
+    if enabled is False:
+        return None
+    return {key: item for key, item in value.items() if key != "enabled"}
+
+
+def _string_list(value: Any) -> list[str]:
+    if not isinstance(value, list):
+        return []
+    return [str(item) for item in value if isinstance(item, str) and item.strip()]
+
+
+def _optional_int(value: Any) -> int | None:
+    return value if isinstance(value, int) else None
+
+
+def _optional_string(value: Any) -> str | None:
+    return value if isinstance(value, str) else None
+
+
+def _native_tool_search_tool(configuration: dict[str, Any]) -> ToolSearchTool:
+    return ToolSearchTool(
+        description=_optional_string(configuration.get("description")),
+        execution=_tool_search_execution(configuration.get("execution")),
+        parameters=configuration.get("parameters"),
+    )
+
+
+def _tool_search_execution(value: Any) -> str | None:
+    return value if value in {"server", "client"} else None
+
+
+def _mcp_server_label(server: McpServer) -> str:
+    normalized_name = _SDK_TOOL_NAME_PATTERN.sub("_", server.name.lower()).strip("_")
+    return f"mcp_{server.id}_{normalized_name or 'server'}"[:64]
+
+
+def _resolved_mcp_headers(server: McpServer) -> dict[str, str]:
+    headers: dict[str, str] = {}
+    for header_name, secret_reference in server.header_secret_refs.items():
+        secret_value = _resolve_secret_reference(secret_reference)
+        if secret_value:
+            headers[header_name] = secret_value
+    return headers
+
+
+def _resolve_secret_reference(reference: str) -> str | None:
+    direct_secret = secret_vault_store.get(reference)
+    if direct_secret:
+        return direct_secret
+    if not reference.startswith(("env:", "secret:", "secret://")):
+        return reference
+    for candidate in _secret_environment_candidates(reference):
+        value = os.environ.get(candidate)
+        if value:
+            return value
+    return None
+
+
+def _secret_environment_candidates(reference: str) -> list[str]:
+    if reference.startswith("env:"):
+        return [reference.removeprefix("env:").strip()]
+    normalized = re.sub(r"[^A-Za-z0-9]+", "_", reference).strip("_").upper()
+    candidates = []
+    if normalized:
+        candidates.append(normalized)
+        candidates.append(f"MODEL_SECRET_{normalized}")
+        candidates.append(f"MCP_SECRET_{normalized}")
+    return candidates
 
 
 def _json_string(value: dict[str, Any]) -> str:

@@ -1,4 +1,5 @@
 import { FormEvent, type ElementType, type ReactNode, useEffect, useMemo, useRef, useState } from "react";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 
 import {
   CopilotAccountApprovalBridge,
@@ -12,7 +13,6 @@ import {
 import {
   authTokenStorageKey,
   getAuthToken,
-  getCurrentUser,
   handleUnauthorized,
   logout,
   notifyAuthChanged,
@@ -64,6 +64,8 @@ import {
 import { Separator } from "@/components/ui/separator";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Textarea } from "@/components/ui/textarea";
+import { queryKeys } from "../app/query-keys";
+import { notify } from "../shared/notifications";
 
 gsap.registerPlugin(ScrollTrigger);
 
@@ -429,6 +431,78 @@ async function adminFetch<T>(path: string, init: RequestInit = {}): Promise<T> {
     throw new Error(`管理员接口请求失败：${response.status}`);
   }
   return await response.json() as T;
+}
+
+function useAdminSearchProviders() {
+  return useQuery({
+    queryKey: queryKeys.admin.searchProviders,
+    queryFn: () => adminFetch<ApiSearchProvider[]>("/api/admin/search-provider-configurations"),
+  });
+}
+
+function useUpdateSearchProviderMutation() {
+  const queryClient = useQueryClient();
+
+  return useMutation({
+    mutationFn: ({
+      provider,
+      request,
+    }: {
+      provider: ApiSearchProvider;
+      request: Pick<ApiSearchProvider, "enabled" | "endpoint" | "max_results" | "name" | "timeout_seconds">;
+    }) => adminFetch<ApiSearchProvider>(
+      `/api/admin/search-provider-configurations/${provider.id}`,
+      {
+        method: "PATCH",
+        body: JSON.stringify(request),
+      },
+    ),
+    onSuccess: (updatedProvider) => {
+      queryClient.setQueryData<ApiSearchProvider[]>(
+        queryKeys.admin.searchProviders,
+        (currentProviders = []) => currentProviders.map((provider) =>
+          provider.id === updatedProvider.id ? updatedProvider : provider,
+        ),
+      );
+      void queryClient.invalidateQueries({ queryKey: queryKeys.admin.searchProviders });
+    },
+  });
+}
+
+function useAdminPageReadProviders() {
+  return useQuery({
+    queryKey: queryKeys.admin.pageReadProviders,
+    queryFn: () => adminFetch<ApiPageReadProvider[]>("/api/admin/page-read-provider-configurations"),
+  });
+}
+
+function useUpdatePageReadProviderMutation() {
+  const queryClient = useQueryClient();
+
+  return useMutation({
+    mutationFn: ({
+      provider,
+      request,
+    }: {
+      provider: ApiPageReadProvider;
+      request: Pick<ApiPageReadProvider, "allowed_domains" | "enabled" | "endpoint" | "max_content_length" | "name" | "timeout_seconds">;
+    }) => adminFetch<ApiPageReadProvider>(
+      `/api/admin/page-read-provider-configurations/${provider.id}`,
+      {
+        method: "PATCH",
+        body: JSON.stringify(request),
+      },
+    ),
+    onSuccess: (updatedProvider) => {
+      queryClient.setQueryData<ApiPageReadProvider[]>(
+        queryKeys.admin.pageReadProviders,
+        (currentProviders = []) => currentProviders.map((provider) =>
+          provider.id === updatedProvider.id ? updatedProvider : provider,
+        ),
+      );
+      void queryClient.invalidateQueries({ queryKey: queryKeys.admin.pageReadProviders });
+    },
+  });
 }
 
 function parseAdminInteger(value: string, fallback: number): number {
@@ -1083,7 +1157,8 @@ export function ApprovalPendingPage() {
   );
 }
 
-export function AccountSettingsPage() {
+export function AccountSettingsPage({ currentUser: authenticatedUser }: { currentUser: CurrentUser | null }) {
+  const queryClient = useQueryClient();
   const [currentUser, setCurrentUser] = useState<CurrentUser | null>(null);
   const [username, setUsername] = useState("");
   const [email, setEmail] = useState("");
@@ -1092,28 +1167,13 @@ export function AccountSettingsPage() {
   const [isSaving, setIsSaving] = useState(false);
 
   useEffect(() => {
-    let isCurrent = true;
-
-    getCurrentUser()
-      .then((user) => {
-        if (!isCurrent) {
-          return;
-        }
-        setCurrentUser(user);
-        setUsername(user.username);
-        setEmail(user.email ?? "");
-      })
-      .catch((loadError) => {
-        if (!isCurrent) {
-          return;
-        }
-        setError(loadError instanceof Error ? loadError.message : "账号信息加载失败。");
-      });
-
-    return () => {
-      isCurrent = false;
-    };
-  }, []);
+    if (!authenticatedUser) {
+      return;
+    }
+    setCurrentUser(authenticatedUser);
+    setUsername(authenticatedUser.username);
+    setEmail(authenticatedUser.email ?? "");
+  }, [authenticatedUser]);
 
   async function saveProfile(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -1133,6 +1193,7 @@ export function AccountSettingsPage() {
         email: nextEmail || null,
       });
       setCurrentUser(updatedUser);
+      queryClient.setQueryData(queryKeys.auth.me, updatedUser);
       setUsername(updatedUser.username);
       setEmail(updatedUser.email ?? "");
       setStatusMessage("账号信息已保存。");
@@ -3152,85 +3213,58 @@ function McpServersPanel() {
 }
 
 function SearchProviderPanel() {
-  const [provider, setProvider] = useState<ApiSearchProvider | null>(null);
+  const providerQuery = useAdminSearchProviders();
+  const updateProviderMutation = useUpdateSearchProviderMutation();
+  const provider = providerQuery.data?.[0] ?? null;
   const [form, setForm] = useState({
     endpoint: "",
     maxResults: "5 个候选结果",
     name: "",
     timeout: "",
   });
-  const [loadError, setLoadError] = useState("");
-  const [saveStatus, setSaveStatus] = useState("");
-  const [isLoading, setIsLoading] = useState(true);
+  const loadError = providerQuery.error
+    ? "无法加载搜索提供方配置，请检查管理员权限或后端服务。"
+    : "";
+  const isLoading = providerQuery.isPending;
 
   useEffect(() => {
-    let isCurrent = true;
-    setIsLoading(true);
-    setLoadError("");
-
-    adminFetch<ApiSearchProvider[]>("/api/admin/search-provider-configurations")
-      .then((result) => {
-        if (isCurrent) {
-          const nextProvider = result[0] ?? null;
-          setProvider(nextProvider);
-          if (nextProvider) {
-            setForm({
-              endpoint: nextProvider.endpoint,
-              maxResults: `${nextProvider.max_results} 个候选结果`,
-              name: nextProvider.name,
-              timeout: `${nextProvider.timeout_seconds}s`,
-            });
-          }
-        }
-      })
-      .catch(() => {
-        if (isCurrent) {
-          setProvider(null);
-          setLoadError("无法加载搜索提供方配置，请检查管理员权限或后端服务。");
-        }
-      })
-      .finally(() => {
-        if (isCurrent) {
-          setIsLoading(false);
-        }
-      });
-
-    return () => {
-      isCurrent = false;
-    };
-  }, []);
+    if (!provider) {
+      return;
+    }
+    setForm({
+      endpoint: provider.endpoint,
+      maxResults: `${provider.max_results} 个候选结果`,
+      name: provider.name,
+      timeout: `${provider.timeout_seconds}s`,
+    });
+  }, [provider]);
 
   async function saveProviderSettings() {
     if (!provider) {
       return;
     }
-    setSaveStatus("");
     try {
       const timeoutSeconds = parseAdminInteger(form.timeout, provider.timeout_seconds);
       const maxResults = parseAdminInteger(form.maxResults, provider.max_results);
-      const updated = await adminFetch<ApiSearchProvider>(
-        `/api/admin/search-provider-configurations/${provider.id}`,
-        {
-          method: "PATCH",
-          body: JSON.stringify({
-            endpoint: form.endpoint,
-            enabled: provider.enabled,
-            max_results: maxResults,
-            name: form.name,
-            timeout_seconds: timeoutSeconds,
-          }),
+      const updated = await updateProviderMutation.mutateAsync({
+        provider,
+        request: {
+          endpoint: form.endpoint,
+          enabled: provider.enabled,
+          max_results: maxResults,
+          name: form.name,
+          timeout_seconds: timeoutSeconds,
         },
-      );
-      setProvider(updated);
+      });
       setForm({
         endpoint: updated.endpoint,
         maxResults: `${updated.max_results} 个候选结果`,
         name: updated.name,
         timeout: `${updated.timeout_seconds}s`,
       });
-      setSaveStatus("搜索提供方配置已保存。");
-    } catch {
-      setSaveStatus("搜索提供方配置保存失败。");
+      notify.success("搜索提供方配置已保存。");
+    } catch (error) {
+      notify.error(error, "搜索提供方配置保存失败。");
     }
   }
 
@@ -3298,8 +3332,7 @@ function SearchProviderPanel() {
             </Select>
           </label>
           <p className="inline-note">此设置不会改变页面读取的内容长度限制。</p>
-          <Button className="primary-button" type="button" disabled={!provider} onClick={saveProviderSettings}>保存配置</Button>
-          {saveStatus ? <p className="inline-note">{saveStatus}</p> : null}
+          <Button className="primary-button" type="button" disabled={!provider || updateProviderMutation.isPending} onClick={saveProviderSettings}>保存配置</Button>
         </section>
         <section className="sub-panel stack" aria-label="能力边界">
           <div>
@@ -3319,7 +3352,9 @@ function SearchProviderPanel() {
 }
 
 function PageReadProviderPanel() {
-  const [provider, setProvider] = useState<ApiPageReadProvider | null>(null);
+  const providerQuery = useAdminPageReadProviders();
+  const updateProviderMutation = useUpdatePageReadProviderMutation();
+  const provider = providerQuery.data?.[0] ?? null;
   const [form, setForm] = useState({
     allowedDomains: "",
     endpoint: "",
@@ -3327,53 +3362,28 @@ function PageReadProviderPanel() {
     name: "",
     timeout: "",
   });
-  const [loadError, setLoadError] = useState("");
-  const [saveStatus, setSaveStatus] = useState("");
-  const [isLoading, setIsLoading] = useState(true);
+  const loadError = providerQuery.error
+    ? "无法加载页面读取提供方配置，请检查管理员权限或后端服务。"
+    : "";
+  const isLoading = providerQuery.isPending;
 
   useEffect(() => {
-    let isCurrent = true;
-    setIsLoading(true);
-    setLoadError("");
-
-    adminFetch<ApiPageReadProvider[]>("/api/admin/page-read-provider-configurations")
-      .then((result) => {
-        if (isCurrent) {
-          const nextProvider = result[0] ?? null;
-          setProvider(nextProvider);
-          if (nextProvider) {
-            setForm({
-              allowedDomains: nextProvider.allowed_domains.join("\n"),
-              endpoint: nextProvider.endpoint,
-              maxContentLength: `${nextProvider.max_content_length} 字符`,
-              name: nextProvider.name,
-              timeout: `${nextProvider.timeout_seconds}s`,
-            });
-          }
-        }
-      })
-      .catch(() => {
-        if (isCurrent) {
-          setProvider(null);
-          setLoadError("无法加载页面读取提供方配置，请检查管理员权限或后端服务。");
-        }
-      })
-      .finally(() => {
-        if (isCurrent) {
-          setIsLoading(false);
-        }
-      });
-
-    return () => {
-      isCurrent = false;
-    };
-  }, []);
+    if (!provider) {
+      return;
+    }
+    setForm({
+      allowedDomains: provider.allowed_domains.join("\n"),
+      endpoint: provider.endpoint,
+      maxContentLength: `${provider.max_content_length} 字符`,
+      name: provider.name,
+      timeout: `${provider.timeout_seconds}s`,
+    });
+  }, [provider]);
 
   async function saveProviderSettings() {
     if (!provider) {
       return;
     }
-    setSaveStatus("");
     try {
       const allowedDomains = form.allowedDomains
         .split(/\r?\n/)
@@ -3381,21 +3391,17 @@ function PageReadProviderPanel() {
         .filter(Boolean);
       const maxContentLength = parseAdminInteger(form.maxContentLength, provider.max_content_length);
       const timeoutSeconds = parseAdminInteger(form.timeout, provider.timeout_seconds);
-      const updated = await adminFetch<ApiPageReadProvider>(
-        `/api/admin/page-read-provider-configurations/${provider.id}`,
-        {
-          method: "PATCH",
-          body: JSON.stringify({
-            allowed_domains: allowedDomains,
-            endpoint: form.endpoint,
-            enabled: provider.enabled,
-            max_content_length: maxContentLength,
-            name: form.name,
-            timeout_seconds: timeoutSeconds,
-          }),
+      const updated = await updateProviderMutation.mutateAsync({
+        provider,
+        request: {
+          allowed_domains: allowedDomains,
+          endpoint: form.endpoint,
+          enabled: provider.enabled,
+          max_content_length: maxContentLength,
+          name: form.name,
+          timeout_seconds: timeoutSeconds,
         },
-      );
-      setProvider(updated);
+      });
       setForm({
         allowedDomains: updated.allowed_domains.join("\n"),
         endpoint: updated.endpoint,
@@ -3403,9 +3409,9 @@ function PageReadProviderPanel() {
         name: updated.name,
         timeout: `${updated.timeout_seconds}s`,
       });
-      setSaveStatus("页面读取提供方配置已保存。");
-    } catch {
-      setSaveStatus("页面读取提供方配置保存失败。");
+      notify.success("页面读取提供方配置已保存。");
+    } catch (error) {
+      notify.error(error, "页面读取提供方配置保存失败。");
     }
   }
 
@@ -3453,8 +3459,7 @@ function PageReadProviderPanel() {
               placeholder="每行一个域名，例如 docs.example.com"
             />
           </label>
-          <Button className="primary-button" type="button" disabled={!provider} onClick={saveProviderSettings}>保存策略</Button>
-          {saveStatus ? <p className="inline-note">{saveStatus}</p> : null}
+          <Button className="primary-button" type="button" disabled={!provider || updateProviderMutation.isPending} onClick={saveProviderSettings}>保存策略</Button>
         </section>
         <section className="sub-panel stack" aria-label="页面读取运行设置">
           <div>

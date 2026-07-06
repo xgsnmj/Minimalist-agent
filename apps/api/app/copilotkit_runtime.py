@@ -164,7 +164,6 @@ def run_copilotkit_agent(
         message_open = False
         message_segment_count = 0
         message_started = False
-        reasoning_message_count = 0
         async for runtime_event in runtime_store.stream_execute(run.id):
             event_type = runtime_event["event_type"]
             data = runtime_event["data"]
@@ -195,24 +194,6 @@ def run_copilotkit_agent(
                         "delta": delta,
                     }
                 )
-                continue
-            if event_type == "process.summary" and isinstance(data, dict):
-                summary = data.get("summary")
-                if isinstance(summary, str) and summary.strip():
-                    if message_open and current_message_id is not None:
-                        yield _sse_data(
-                            {
-                                "type": "TEXT_MESSAGE_END",
-                                "messageId": current_message_id,
-                            }
-                        )
-                        message_open = False
-                    reasoning_message_count += 1
-                    for event in _reasoning_message_events(
-                        message_id=f"agent-run-{run.id}-reasoning-{reasoning_message_count}",
-                        text=summary.strip(),
-                    ):
-                        yield event
                 continue
             if event_type == "tool.call" and isinstance(data, dict):
                 tool_call = data.get("tool_call")
@@ -397,30 +378,6 @@ def _text_message_events(*, message_id: str, text: str) -> Iterable[str]:
     yield _sse_data(
         {
             "type": "TEXT_MESSAGE_END",
-            "messageId": message_id,
-        }
-    )
-
-
-def _reasoning_message_events(*, message_id: str, text: str) -> Iterable[str]:
-    yield _sse_data(
-        {
-            "type": "REASONING_MESSAGE_START",
-            "messageId": message_id,
-            "role": "reasoning",
-        }
-    )
-    for chunk in _chunk_text(text):
-        yield _sse_data(
-            {
-                "type": "REASONING_MESSAGE_CONTENT",
-                "messageId": message_id,
-                "delta": chunk,
-            }
-        )
-    yield _sse_data(
-        {
-            "type": "REASONING_MESSAGE_END",
             "messageId": message_id,
         }
     )

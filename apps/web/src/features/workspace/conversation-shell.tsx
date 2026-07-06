@@ -3,7 +3,6 @@ import { Activity, Bell, Copy, Download, ExternalLink, LogOut, Shield, UserRound
 
 import { type AgentRunStreamEvent, useAgentRunStream } from "../../shared/ag-ui-stream";
 import {
-  type ConversationProcessSummary,
   type ConversationToolCall,
 } from "../../shared/conversation-message-rendering";
 import { CopilotWorkspaceBridge } from "../../shared/copilotkit-adapter";
@@ -19,15 +18,9 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
+import { notify } from "../../shared/notifications";
 import { CopilotConversationSurface } from "./copilot-conversation-surface";
 import {
-  cancelAgentRun,
-  createConversationDraft,
-  getArtifactPreview,
-  listConversations,
-  listRuns,
-  listWorkspaceAgents,
-  renameConversation as renameConversationRequest,
   type ApiArtifactPreview,
   type ApiConversation,
   type ApiConversationCard,
@@ -36,6 +29,14 @@ import {
   type ApiWorkspaceAgent,
 } from "./workspace-api";
 import { logout, type CurrentUser } from "./auth-api";
+import {
+  useArtifactPreviewQuery,
+  useCancelAgentRunMutation,
+  useCreateConversationDraftMutation,
+  useRenameConversationMutation,
+  useWorkspaceData,
+} from "./workspace-queries";
+import { conversationListPageSize, useWorkspaceUiStore } from "./workspace-ui-store";
 
 type ModelOption = {
   id: string;
@@ -67,7 +68,6 @@ type ConversationMessage = {
     filename: string;
     previewType: string;
   };
-  processSummary?: ConversationProcessSummary;
   card?: ConversationCard;
 };
 
@@ -101,37 +101,70 @@ type CommandRun = {
   updatedAt: string;
 };
 
-type ArtifactPanelView = "preview" | "metadata";
-
-const CONVERSATION_LIST_PAGE_SIZE = 5;
-
 type ConversationShellProps = {
   currentUser: CurrentUser | null;
 };
 
 export function ConversationShell({ currentUser }: ConversationShellProps) {
-  const [workspaceAgents, setWorkspaceAgents] = useState<WorkspaceAgent[]>([]);
-  const [conversations, setConversations] = useState<Conversation[]>([]);
-  const [runs, setRuns] = useState<ApiRun[]>([]);
-  const [selectedConversationId, setSelectedConversationId] = useState<string | null>(null);
-  const [conversationSearch, setConversationSearch] = useState("");
-  const [commandSearch, setCommandSearch] = useState("");
-  const [isCommandPaletteOpen, setIsCommandPaletteOpen] = useState(false);
-  const [draftAgentId, setDraftAgentId] = useState("");
-  const [draftModelId, setDraftModelId] = useState("");
-  const [isRenaming, setIsRenaming] = useState(false);
-  const [renameValue, setRenameValue] = useState("");
-  const [previewArtifactId, setPreviewArtifactId] = useState<number | null>(null);
-  const [artifactPreviews, setArtifactPreviews] = useState<Record<number, ApiArtifactPreview>>({});
-  const [artifactPanelView, setArtifactPanelView] = useState<ArtifactPanelView>("preview");
-  const [isSidebarCollapsed, setIsSidebarCollapsed] = useState(false);
-  const [visibleConversationCount, setVisibleConversationCount] = useState(CONVERSATION_LIST_PAGE_SIZE);
-  const [draftRevision, setDraftRevision] = useState(0);
-  const [latestAttachmentPreviewName, setLatestAttachmentPreviewName] = useState<string | null>(null);
-  const [copiedArtifactId, setCopiedArtifactId] = useState<number | null>(null);
-  const [isLoadingWorkspace, setIsLoadingWorkspace] = useState(true);
-  const [isCreatingDraft, setIsCreatingDraft] = useState(false);
+  const {
+    agents: apiWorkspaceAgents,
+    conversations: apiConversations,
+    error: workspaceLoadError,
+    invalidateWorkspace,
+    isLoading: isLoadingWorkspace,
+    runs,
+  } = useWorkspaceData();
+  const createConversationDraftMutation = useCreateConversationDraftMutation();
+  const renameConversationMutation = useRenameConversationMutation();
+  const cancelAgentRunMutation = useCancelAgentRunMutation();
+  const {
+    artifactPanelView,
+    closeArtifactPreview,
+    closeCommandPalette,
+    commandSearch,
+    conversationSearch,
+    copiedArtifactId,
+    draftAgentId,
+    draftModelId,
+    draftRevision,
+    incrementVisibleConversationCount,
+    isCommandPaletteOpen,
+    isRenaming,
+    isSidebarCollapsed,
+    latestAttachmentPreviewName,
+    openArtifactPreview: openArtifactPreviewState,
+    openCommandPalette,
+    previewArtifactId,
+    renameValue,
+    resetForNewConversation,
+    selectConversation: selectConversationState,
+    selectedConversationId,
+    setArtifactPanelView,
+    setCommandSearch,
+    setConversationSearch,
+    setCopiedArtifactId,
+    setDraftModelId,
+    setDraftSelection,
+    setIsRenaming,
+    setLatestAttachmentPreviewName,
+    setPreviewArtifactId,
+    setRenameValue,
+    setSelectedConversationId,
+    toggleSidebar,
+    visibleConversationCount,
+  } = useWorkspaceUiStore();
   const [workspaceError, setWorkspaceError] = useState<string | null>(null);
+  const isCreatingDraft = createConversationDraftMutation.isPending;
+  const workspaceAgents = useMemo(
+    () => apiWorkspaceAgents.map(mapWorkspaceAgent),
+    [apiWorkspaceAgents],
+  );
+  const conversations = useMemo(
+    () => apiConversations.map((conversation) => mapConversation(conversation, runs)),
+    [apiConversations, runs],
+  );
+  const artifactPreviewQuery = useArtifactPreviewQuery(previewArtifactId);
+  const selectedArtifactPreview = artifactPreviewQuery.data ?? null;
 
   const selectedConversation = conversations.find(
     (conversation) => conversation.id === selectedConversationId,
@@ -142,6 +175,8 @@ export function ConversationShell({ currentUser }: ConversationShellProps) {
     : null;
   const { events: streamEvents, lastSeenSequence, status: streamStatus } = useAgentRunStream(streamRunId);
   const refreshedRunEventRef = useRef<string | null>(null);
+  const preferredConversationIdRef = useRef<string | null | undefined>(undefined);
+  const notifiedArtifactPreviewErrorRef = useRef<string | null>(null);
   const activeAgent = getAgent(workspaceAgents, selectedConversation?.agentId ?? draftAgentId);
   const allowedModels = activeAgent.allowedModels;
   const selectedModelId = selectedConversation?.selectedModelId ?? draftModelId;
@@ -169,9 +204,6 @@ export function ConversationShell({ currentUser }: ConversationShellProps) {
     previewArtifactId != null
       ? selectedArtifactReferences.find((artifact) => artifact.artifactId === previewArtifactId) ?? null
       : null;
-  const selectedArtifactPreview = previewArtifactId != null
-    ? artifactPreviews[previewArtifactId] ?? null
-    : null;
   const visibleConversations = useMemo(
     () =>
       conversations
@@ -211,12 +243,64 @@ export function ConversationShell({ currentUser }: ConversationShellProps) {
   );
 
   useEffect(() => {
-    void refreshWorkspace();
-  }, []);
+    if (isCreatingDraft && selectedConversationId === null) {
+      const firstAgent = workspaceAgents[0];
+      if (firstAgent) {
+        setDraftSelection(
+          firstAgent.id,
+          firstAgent.defaultModelId ?? firstAgent.allowedModels[0]?.id ?? "",
+        );
+      }
+      return;
+    }
 
-  useEffect(() => {
-    setVisibleConversationCount(CONVERSATION_LIST_PAGE_SIZE);
-  }, [conversationSearch]);
+    if (conversations.length === 0) {
+      const firstAgent = workspaceAgents[0];
+      if (selectedConversationId !== null) {
+        setSelectedConversationId(null);
+      }
+      if (firstAgent) {
+        setDraftSelection(
+          firstAgent.id,
+          firstAgent.defaultModelId ?? firstAgent.allowedModels[0]?.id ?? "",
+        );
+      }
+      return;
+    }
+
+    const preferredId = preferredConversationIdRef.current ?? selectedConversationId;
+    const nextSelectedConversation =
+      conversations.find((conversation) => conversation.id === preferredId) ?? conversations[0];
+    preferredConversationIdRef.current = undefined;
+
+    if (selectedConversationId !== nextSelectedConversation.id) {
+      setSelectedConversationId(nextSelectedConversation.id);
+    }
+
+    const nextAgent = getAgent(workspaceAgents, nextSelectedConversation.agentId);
+    const nextDraftModelId = nextSelectedConversation.selectedModelId
+      || nextAgent.defaultModelId
+      || nextAgent.allowedModels[0]?.id
+      || "";
+    if (draftAgentId !== nextSelectedConversation.agentId || draftModelId !== nextDraftModelId) {
+      setDraftSelection(nextSelectedConversation.agentId, nextDraftModelId);
+    }
+    if (!isRenaming && renameValue !== nextSelectedConversation.title) {
+      setRenameValue(nextSelectedConversation.title);
+    }
+  }, [
+    conversations,
+    draftAgentId,
+    draftModelId,
+    isCreatingDraft,
+    isRenaming,
+    renameValue,
+    selectedConversationId,
+    setDraftSelection,
+    setRenameValue,
+    setSelectedConversationId,
+    workspaceAgents,
+  ]);
 
   useEffect(() => {
     if (activeRunId == null || lastSeenSequence === 0) {
@@ -231,91 +315,60 @@ export function ConversationShell({ currentUser }: ConversationShellProps) {
   }, [activeRunId, lastSeenSequence, selectedConversationId]);
 
   useEffect(() => {
+    if (previewArtifactId == null || !artifactPreviewQuery.error) {
+      return;
+    }
+
+    const message = artifactPreviewQuery.error instanceof Error
+      ? artifactPreviewQuery.error.message
+      : "制品预览加载失败。";
+    const notificationKey = `${previewArtifactId}:${message}`;
+    if (notifiedArtifactPreviewErrorRef.current === notificationKey) {
+      return;
+    }
+    notifiedArtifactPreviewErrorRef.current = notificationKey;
+    notify.error(artifactPreviewQuery.error, "制品预览加载失败。");
+  }, [artifactPreviewQuery.error, previewArtifactId]);
+
+  useEffect(() => {
     function openCommandPaletteFromKeyboard(event: KeyboardEvent) {
       if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "k") {
         event.preventDefault();
-        setIsCommandPaletteOpen(true);
+        openCommandPalette();
       }
     }
 
     window.addEventListener("keydown", openCommandPaletteFromKeyboard);
     return () => window.removeEventListener("keydown", openCommandPaletteFromKeyboard);
-  }, []);
+  }, [openCommandPalette]);
 
   async function refreshWorkspace(preferredConversationId?: string | null) {
+    preferredConversationIdRef.current = preferredConversationId;
     setWorkspaceError(null);
-    try {
-      const [apiAgents, apiConversations, apiRuns] = await Promise.all([
-        listWorkspaceAgents(),
-        listConversations(),
-        listRuns(),
-      ]);
-      const nextAgents = apiAgents.map(mapWorkspaceAgent);
-      const nextRuns = apiRuns;
-      const nextConversations = apiConversations.map((conversation) =>
-        mapConversation(conversation, nextRuns),
-      );
-      const preferredId = preferredConversationId ?? selectedConversationId;
-      const nextSelectedId = preferredId && nextConversations.some((conversation) => conversation.id === preferredId)
-        ? preferredId
-        : nextConversations[0]?.id ?? null;
-      const nextSelectedConversation = nextConversations.find(
-        (conversation) => conversation.id === nextSelectedId,
-      );
-      const nextDraftAgentId = nextSelectedConversation?.agentId ?? nextAgents[0]?.id ?? "";
-      const nextAgent = getAgent(nextAgents, nextDraftAgentId);
-      const nextDraftModelId = nextSelectedConversation?.selectedModelId
-        ?? nextAgent.defaultModelId
-        ?? nextAgent.allowedModels[0]?.id
-        ?? "";
-
-      setWorkspaceAgents(nextAgents);
-      setRuns(nextRuns);
-      setConversations(nextConversations);
-      setSelectedConversationId(nextSelectedId);
-      setDraftAgentId(nextDraftAgentId);
-      setDraftModelId(nextDraftModelId);
-      setRenameValue(nextSelectedConversation?.title ?? "未命名对话");
-    } catch (error) {
-      setWorkspaceError(error instanceof Error ? error.message : "工作台数据加载失败。");
-    } finally {
-      setIsLoadingWorkspace(false);
-    }
+    await invalidateWorkspace();
   }
 
   async function startNewConversation() {
-    setSelectedConversationId(null);
-    setIsRenaming(false);
-    setRenameValue("新对话");
-    setPreviewArtifactId(null);
-    setLatestAttachmentPreviewName(null);
+    resetForNewConversation();
     setWorkspaceError(null);
-    setDraftRevision((currentRevision) => currentRevision + 1);
     const firstAgent = workspaceAgents[0];
     if (firstAgent) {
-      setDraftAgentId(firstAgent.id);
       const nextDraftModelId = firstAgent.defaultModelId ?? firstAgent.allowedModels[0]?.id ?? "";
-      setDraftModelId(nextDraftModelId);
-      setIsCreatingDraft(true);
+      setDraftSelection(firstAgent.id, nextDraftModelId);
       try {
-        const createdConversation = await createConversationDraft({
+        const createdConversation = await createConversationDraftMutation.mutateAsync({
           agent_id: firstAgent.backendId,
           selected_model_configuration_id: nextDraftModelId ? Number(nextDraftModelId) : null,
           title: "新对话",
         });
         const mappedConversation = mapConversation(createdConversation, runs);
-        setConversations((currentConversations) => [
-          mappedConversation,
-          ...currentConversations.filter((conversation) => conversation.id !== mappedConversation.id),
-        ]);
+        preferredConversationIdRef.current = mappedConversation.id;
         setSelectedConversationId(mappedConversation.id);
         setRenameValue(mappedConversation.title);
-        setDraftAgentId(mappedConversation.agentId);
-        setDraftModelId(mappedConversation.selectedModelId);
+        setDraftSelection(mappedConversation.agentId, mappedConversation.selectedModelId);
       } catch (error) {
         setWorkspaceError(error instanceof Error ? error.message : "新建对话失败。");
-      } finally {
-        setIsCreatingDraft(false);
+        notify.error(error, "新建对话失败。");
       }
     }
   }
@@ -327,10 +380,7 @@ export function ConversationShell({ currentUser }: ConversationShellProps) {
 
   function selectConversation(conversationId: string) {
     const conversation = conversations.find((item) => item.id === conversationId);
-    setSelectedConversationId(conversationId);
-    setRenameValue(conversation?.title ?? "");
-    setIsRenaming(false);
-    setPreviewArtifactId(null);
+    selectConversationState(conversationId, conversation?.title ?? "");
   }
 
   function selectConversationFromCommand(conversationId: string) {
@@ -349,32 +399,15 @@ export function ConversationShell({ currentUser }: ConversationShellProps) {
     closeCommandPalette();
   }
 
-  function closeCommandPalette() {
-    setCommandSearch("");
-    setIsCommandPaletteOpen(false);
-  }
-
-  async function openArtifactPreview(artifactId: number) {
-    setPreviewArtifactId(artifactId);
-    setArtifactPanelView("preview");
-    if (artifactPreviews[artifactId]) {
-      return;
-    }
-    try {
-      const preview = await getArtifactPreview(artifactId);
-      setArtifactPreviews((currentPreviews) => ({
-        ...currentPreviews,
-        [artifactId]: preview,
-      }));
-    } catch (error) {
-      setWorkspaceError(error instanceof Error ? error.message : "制品预览加载失败。");
-    }
+  function openArtifactPreview(artifactId: number) {
+    openArtifactPreviewState(artifactId);
   }
 
   async function copyArtifactPreview(reference: ArtifactReference) {
-    const content = getArtifactPreviewContent(reference, artifactPreviews[reference.artifactId]);
+    const content = getArtifactPreviewContent(reference, selectedArtifactPreview);
     try {
       await navigator.clipboard?.writeText(content);
+      notify.success("制品内容已复制。");
     } finally {
       setCopiedArtifactId(reference.artifactId);
     }
@@ -389,17 +422,18 @@ export function ConversationShell({ currentUser }: ConversationShellProps) {
     }
 
     try {
-      const updatedConversation = await renameConversationRequest(selectedConversation.id, nextTitle);
+      const updatedConversation = await renameConversationMutation.mutateAsync({
+        conversationId: selectedConversation.id,
+        title: nextTitle,
+      });
       const mappedConversation = mapConversation(updatedConversation, runs);
-      setConversations((currentConversations) =>
-        currentConversations.map((conversation) =>
-          conversation.id === selectedConversation.id ? mappedConversation : conversation,
-        ),
-      );
       setIsRenaming(false);
       setWorkspaceError(null);
+      setRenameValue(mappedConversation.title);
+      notify.success("对话名称已保存。");
     } catch (error) {
       setWorkspaceError(error instanceof Error ? error.message : "重命名失败。");
+      notify.error(error, "重命名失败。");
     }
   }
 
@@ -408,10 +442,19 @@ export function ConversationShell({ currentUser }: ConversationShellProps) {
       return;
     }
     try {
-      await cancelAgentRun(selectedConversation.latestRunId);
+      await cancelAgentRunMutation.mutateAsync(selectedConversation.latestRunId);
       await refreshWorkspace(selectedConversation.id);
+      notify.success("运行已停止。");
     } catch (error) {
       setWorkspaceError(error instanceof Error ? error.message : "停止运行失败。");
+      notify.error(error, "停止运行失败。");
+    }
+  }
+
+  function reportWorkspaceError(message: string | null) {
+    setWorkspaceError(message);
+    if (message) {
+      notify.error(message);
     }
   }
 
@@ -420,6 +463,8 @@ export function ConversationShell({ currentUser }: ConversationShellProps) {
     isSidebarCollapsed ? "sidebar-collapsed" : "",
     selectedArtifactReference ? "file-preview-open" : "file-preview-closed",
   ].filter(Boolean).join(" ");
+  const renderedWorkspaceError = workspaceError
+    ?? (workspaceLoadError instanceof Error ? workspaceLoadError.message : null);
 
   return (
     <main className={shellClassName}>
@@ -434,10 +479,12 @@ export function ConversationShell({ currentUser }: ConversationShellProps) {
         previewArtifactId={previewArtifactId}
         selectedArtifactId={selectedArtifactReference?.artifactId ?? null}
         selectedConversationId={selectedConversationId}
-        setIsRenaming={setIsRenaming}
-        setPreviewArtifactId={setPreviewArtifactId}
-        setRenameValue={setRenameValue}
-        setSelectedConversationId={setSelectedConversationId}
+        setIsRenaming={(value) => setIsRenaming(typeof value === "function" ? value(isRenaming) : value)}
+        setPreviewArtifactId={(value) => setPreviewArtifactId(typeof value === "function" ? value(previewArtifactId) : value)}
+        setRenameValue={(value) => setRenameValue(typeof value === "function" ? value(renameValue) : value)}
+        setSelectedConversationId={(value) => setSelectedConversationId(
+          typeof value === "function" ? value(selectedConversationId) : value,
+        )}
         streamStatus={streamStatus}
       />
       <aside className="conversation-sidebar" aria-label="智能体会话" data-collapsed={isSidebarCollapsed}>
@@ -452,7 +499,7 @@ export function ConversationShell({ currentUser }: ConversationShellProps) {
             aria-label={isSidebarCollapsed ? "展开侧边栏" : "收起侧边栏"}
             className="sidebar-toggle"
             type="button"
-            onClick={() => setIsSidebarCollapsed((isCollapsed) => !isCollapsed)}
+            onClick={toggleSidebar}
           >
             {isSidebarCollapsed ? "展开" : "收起"}
           </Button>
@@ -462,7 +509,7 @@ export function ConversationShell({ currentUser }: ConversationShellProps) {
           aria-label="搜索对话、运行或制品 ⌘ K"
           className="command-search-button"
           type="button"
-          onClick={() => setIsCommandPaletteOpen(true)}
+          onClick={openCommandPalette}
         >
           <span>搜索对话、运行或制品</span>
           <kbd>⌘ K</kbd>
@@ -512,13 +559,9 @@ export function ConversationShell({ currentUser }: ConversationShellProps) {
               <Button
                 className="conversation-list-more"
                 type="button"
-                onClick={() =>
-                  setVisibleConversationCount((currentCount) =>
-                    Math.min(currentCount + CONVERSATION_LIST_PAGE_SIZE, visibleConversations.length),
-                  )
-                }
+                onClick={() => incrementVisibleConversationCount(visibleConversations.length)}
               >
-                展开更多 {Math.min(hiddenConversationCount, CONVERSATION_LIST_PAGE_SIZE)} 条
+                展开更多 {Math.min(hiddenConversationCount, conversationListPageSize)} 条
               </Button>
             ) : null}
           </nav>
@@ -564,8 +607,8 @@ export function ConversationShell({ currentUser }: ConversationShellProps) {
             </Button>
           </form>
         ) : null}
-        {workspaceError ? (
-          <p className="workspace-error" role="alert">{workspaceError}</p>
+        {renderedWorkspaceError ? (
+          <p className="workspace-error" role="alert">{renderedWorkspaceError}</p>
         ) : null}
 
         <section className="copilot-chat-panel" aria-label="对话消息">
@@ -614,7 +657,7 @@ export function ConversationShell({ currentUser }: ConversationShellProps) {
             onAttachmentUploaded={setLatestAttachmentPreviewName}
             onRunSettled={refreshWorkspace}
             onStopBackendRun={stopActiveRun}
-            onWorkspaceError={setWorkspaceError}
+            onWorkspaceError={reportWorkspaceError}
           />
         </section>
       </section>
@@ -632,7 +675,7 @@ export function ConversationShell({ currentUser }: ConversationShellProps) {
                 <Button
                   className="artifact-tab"
                   type="button"
-                  onClick={() => setPreviewArtifactId(null)}
+                  onClick={closeArtifactPreview}
                 >
                   关闭文件预览
                 </Button>
@@ -761,8 +804,20 @@ function mapConversation(conversation: ApiConversation, runs: ApiRun[]): Convers
     completedAt: status === "completed" ? conversation.updated_at : undefined,
     cancelledAt: status === "cancelled" ? conversation.updated_at : undefined,
     runError: latestRun?.error ?? undefined,
-    messages: conversation.messages.map((message, index) => mapConversationMessage(message, conversation.id, index)),
+    messages: conversation.messages
+      .filter(isVisibleConversationMessage)
+      .map((message, index) => mapConversationMessage(message, conversation.id, index)),
   };
+}
+
+function isVisibleConversationMessage(message: ApiConversation["messages"][number]) {
+  return !isProcessSummaryMessage(message);
+}
+
+function isProcessSummaryMessage(message: ApiConversation["messages"][number]) {
+  return message.event_type === "process.summary" ||
+    typeof message.process_summary === "string" ||
+    message.content.trim().startsWith("运行过程：");
 }
 
 function mapConversationMessage(
@@ -770,7 +825,6 @@ function mapConversationMessage(
   conversationId: number,
   index: number,
 ): ConversationMessage {
-  const processSummary = message.process_summary ?? extractLegacyProcessSummary(message.content);
   return {
     id: conversationMessageId(message, conversationId, index),
     role: message.role,
@@ -782,25 +836,9 @@ function mapConversationMessage(
           previewType: message.artifact_reference.preview_type,
         }
       : undefined,
-    processSummary: processSummary
-      ? {
-          runId: message.run_id ?? null,
-          sequence: message.event_sequence ?? null,
-          summary: processSummary,
-        }
-      : undefined,
     toolCall: message.tool_call ? mapApiToolCall(message.tool_call) : undefined,
     card: message.card ? mapConversationCard(message.card) : undefined,
   };
-}
-
-function extractLegacyProcessSummary(content: string): string | null {
-  const prefix = "运行过程：";
-  if (!content.startsWith(prefix)) {
-    return null;
-  }
-  const summary = content.slice(prefix.length).trim();
-  return summary || null;
 }
 
 function conversationMessageId(
@@ -849,24 +887,6 @@ function mapStreamEventsToMessages({
   const messages: ConversationMessage[] = [];
 
   for (const event of events) {
-    if (event.eventType === "process.summary") {
-      const summary = typeof event.data.summary === "string" ? event.data.summary.trim() : "";
-      if (!summary) {
-        continue;
-      }
-      messages.push({
-        content: `运行过程：${summary}`,
-        id: `run-${runId}-event-${event.sequence}`,
-        processSummary: {
-          runId,
-          sequence: event.sequence,
-          summary,
-        },
-        role: "assistant" as const,
-      });
-      continue;
-    }
-
     if (event.eventType === "tool.call") {
       const toolCall = normalizeStreamToolCall(event.data.tool_call, runId);
       if (!toolCall) {

@@ -2411,17 +2411,6 @@ textarea {
   padding: 12px;
 }
 
-.process-summary-row {
-  background: #fbfaf7;
-  border: 1px solid #e8e2d8;
-  border-radius: 12px;
-  display: grid;
-  gap: 8px;
-  max-width: min(620px, 100%);
-  padding: 12px;
-}
-
-.process-summary-row > div:first-child,
 .tool-call-row > div:first-child {
   align-items: start;
   display: grid;
@@ -2429,7 +2418,6 @@ textarea {
   grid-template-columns: minmax(0, 1fr) auto;
 }
 
-.process-summary-row h3,
 .tool-call-row h3 {
   font-size: 13px;
   font-weight: 720;
@@ -4841,8 +4829,7 @@ textarea {
   padding: clamp(30px, 6vh, 72px) clamp(28px, 8vw, 128px) 32px;
 }
 
-.conversation-transcript > [aria-label="CopilotKit 消息列表"],
-.conversation-timeline {
+.conversation-transcript > [aria-label="CopilotKit 消息列表"] {
   background: transparent !important;
   border: 0 !important;
   box-shadow: none !important;
@@ -5579,8 +5566,7 @@ textarea {
   border-radius: 12px;
 }
 
-.conversation-transcript > [aria-label="CopilotKit 消息列表"],
-.conversation-timeline {
+.conversation-transcript > [aria-label="CopilotKit 消息列表"] {
   background: transparent !important;
   gap: 26px;
   max-width: min(920px, 100%);
@@ -5819,161 +5805,8 @@ textarea {
   width: 28px !important;
 }
 
-.agent-turn {
-  color: var(--ma-ink);
-  display: grid;
-  gap: 16px;
-  justify-self: start;
-  max-width: min(760px, 86%);
-  width: 100%;
-}
-
-.agent-turn-header {
-  align-items: center;
-  display: grid;
-  gap: 12px;
-  grid-template-columns: 36px minmax(0, 1fr);
-}
-
-.agent-turn-avatar {
-  align-items: center;
-  background: #38384d;
-  border-radius: 12px;
-  color: #f8f6ef;
-  display: inline-flex;
-  font-size: 11px;
-  font-weight: 760;
-  height: 36px;
-  justify-content: center;
-  width: 36px;
-}
-
-.agent-turn-title {
-  display: grid;
-  gap: 3px;
-}
-
-.agent-turn-title strong {
-  color: #24221e;
-  font-size: 15px;
-  font-weight: 760;
-  line-height: 1.2;
-}
-
-.agent-turn-title span {
-  color: #8a8378;
-  font-size: 13px;
-  font-weight: 560;
-  line-height: 1.3;
-}
-
-.agent-turn-body {
-  border-left: 1px solid #ded7cb;
-  display: grid;
-  gap: 16px;
-  margin-left: 18px;
-  padding-left: 24px;
-}
-
-.agent-turn-segment {
-  display: grid;
-  gap: 8px;
-  position: relative;
-}
-
-.agent-turn-segment::before {
-  background: #aaa297;
-  border: 3px solid var(--ma-panel);
-  border-radius: 999px;
-  content: "";
-  height: 10px;
-  left: -30px;
-  position: absolute;
-  top: 8px;
-  width: 10px;
-}
-
-.agent-turn-segment.tool::before {
-  background: #6f765d;
-}
-
-.agent-turn-segment.answer::before {
-  background: #262622;
-}
-
-.agent-segment-label {
-  color: #908a80;
-  font-size: 13px;
-  font-weight: 650;
-  line-height: 1.35;
-  margin: 0;
-}
-
-.agent-turn-segment.answer .message-content {
-  max-width: 68ch;
-}
-
-.stream-caret {
-  animation: ma-stream-caret 920ms steps(2, start) infinite;
-  background: #262622;
-  border-radius: 2px;
-  display: inline-block;
-  height: 17px;
-  margin-left: 3px;
-  transform: translateY(3px);
-  width: 2px;
-}
-
-.agent-turn .process-summary-row,
-.agent-turn .tool-call-row,
-.agent-turn .conversation-card {
-  box-shadow: none;
-  max-width: 100%;
-}
-
-.agent-turn .process-summary-row,
-.agent-turn .tool-call-row {
-  background: transparent;
-  border: 0;
-  border-radius: 0;
-  padding: 0;
-}
-
-.agent-turn .process-summary-row > div:first-child,
-.agent-turn .tool-call-row > div:first-child {
-  align-items: center;
-}
-
-.agent-turn .process-summary-row [data-slot="card-title"],
-.agent-turn .tool-call-row [data-slot="card-title"] {
-  font-size: 14px;
-}
-
-.agent-turn .process-summary-row [data-slot="badge"],
-.agent-turn .tool-call-row [data-slot="badge"] {
-  background: #efebe3;
-  color: #615b52;
-}
-
-.agent-turn .tool-call-details {
-  border-top-color: #e3dccf;
-}
-
-@keyframes ma-stream-caret {
-  0%,
-  42% {
-    opacity: 1;
-  }
-
-  43%,
-  100% {
-    opacity: 0;
-  }
-}
-
 @media (prefers-reduced-motion: no-preference) {
-  .message-row,
-  .agent-turn {
+  .message-row {
     animation: ma-message-enter 220ms cubic-bezier(0.16, 1, 0.3, 1) both;
   }
 }
@@ -5996,18 +5829,8 @@ textarea {
   }
 
   .message-row,
-  .message-row.user,
-  .agent-turn {
+  .message-row.user {
     max-width: 92%;
-  }
-
-  .agent-turn-body {
-    margin-left: 14px;
-    padding-left: 20px;
-  }
-
-  .agent-turn-segment::before {
-    left: -26px;
   }
 }
 

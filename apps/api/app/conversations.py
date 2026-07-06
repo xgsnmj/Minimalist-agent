@@ -103,7 +103,7 @@ class ConversationMessageRecord(Base):
     card: Mapped[dict | None] = mapped_column(JsonPayload, nullable=True)
 
 
-_VISIBLE_RUN_EVENT_TYPES = {"process.summary", "tool.call"}
+_VISIBLE_RUN_EVENT_TYPES = {"tool.call"}
 
 
 class ConversationStore:
@@ -523,20 +523,6 @@ def _merge_run_event_messages(
 def _visible_event_messages(*, run_id: int, events) -> list[ConversationMessageResponse]:
     messages: list[ConversationMessageResponse] = []
     for event in events:
-        if event.event_type == "process.summary":
-            summary = str(event.data.get("summary", "")).strip()
-            if not summary:
-                continue
-            messages.append(
-                ConversationMessageResponse(
-                    role="assistant",
-                    content=f"运行过程：{summary}",
-                    run_id=run_id,
-                    event_sequence=event.sequence,
-                    event_type=event.event_type,
-                    process_summary=summary,
-                )
-            )
         if event.event_type == "tool.call":
             tool_call = event.data.get("tool_call")
             if not isinstance(tool_call, dict):

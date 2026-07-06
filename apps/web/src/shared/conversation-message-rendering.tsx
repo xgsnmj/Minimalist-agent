@@ -19,30 +19,6 @@ export type ConversationToolCall = {
   errorSummary?: string;
 };
 
-export type ConversationProcessSummary = {
-  runId?: number | null;
-  sequence?: number | null;
-  summary: string;
-};
-
-export function ProcessSummaryView({
-  processSummary,
-}: {
-  processSummary: ConversationProcessSummary;
-}) {
-  return (
-    <Card className="process-summary-row">
-      <CardHeader>
-        <CardTitle>运行过程</CardTitle>
-        <Badge variant="secondary">可见摘要</Badge>
-      </CardHeader>
-      <CardContent>
-        <p className="preview-text">{processSummary.summary}</p>
-      </CardContent>
-    </Card>
-  );
-}
-
 export function ToolCallView({ toolCall }: { toolCall: ConversationToolCall }) {
   return (
     <Card className="tool-call-row">

@@ -1,3 +1,11 @@
+from agents import (
+    CodeInterpreterTool,
+    FileSearchTool,
+    FunctionTool,
+    ImageGenerationTool,
+    ShellTool,
+    WebSearchTool,
+)
 from fastapi.testclient import TestClient
 
 from apps.api.app.agent_runs import agent_run_store
@@ -5,14 +13,18 @@ from apps.api.app.agents import AgentCapabilityPolicyResponse, AgentUpdateReques
 from apps.api.app.auth import local_account_store
 from apps.api.app.conversations import conversation_store
 from apps.api.app.app import app
-from apps.api.app.model_configurations import model_configuration_store
+from apps.api.app.model_configurations import (
+    ModelConfigurationMutationRequest,
+    model_configuration_store,
+)
 from apps.api.app.run_event_log import run_event_log_store
 from apps.api.app.runtime_tools import (
     project_safe_payload,
     public_tool_name_for_sdk_name,
     sdk_tools_for_run,
+    tools_require_openai_responses,
 )
-from apps.api.tests.support import configure_default_agent_model
+from apps.api.tests.support import configure_default_agent_model, create_model_configuration_for_tests
 
 
 def setup_function():
@@ -97,6 +109,104 @@ def test_sdk_tools_are_registered_from_run_capability_snapshot():
     ]
 
     assert tool_names == ["search.web", "sandbox.exec"]
+    tools = sdk_tools_for_run(agent_run_store.get(run_id))
+    assert isinstance(tools[0], WebSearchTool)
+    assert isinstance(tools[1], ShellTool)
+    assert tools_require_openai_responses(tools) is True
+
+
+def test_sdk_tools_fall_back_to_function_tools_for_openai_compatible_providers():
+    client = TestClient(app)
+    token = approved_user_token(client)
+    model_id = create_model_configuration_for_tests(
+        provider_id="custom-openai-compatible",
+        model_name="compatible-chat",
+    )
+    agent_store.update(
+        1,
+        AgentUpdateRequest(
+            default_model_configuration_id=model_id,
+            allowed_model_configuration_ids=[model_id],
+            capability_policy=AgentCapabilityPolicyResponse(
+                mcp_server_ids=[],
+                sandbox_enabled=True,
+                search_enabled=True,
+                page_read_enabled=True,
+            ),
+        ),
+    )
+    run_id = create_run(client, token)
+
+    tools = sdk_tools_for_run(agent_run_store.get(run_id))
+    tool_names = [public_tool_name_for_sdk_name(tool.name) for tool in tools]
+
+    assert tool_names == ["search.web", "page.read", "sandbox.exec"]
+    assert all(isinstance(tool, FunctionTool) for tool in tools)
+    assert tools_require_openai_responses(tools) is False
+
+
+def test_sdk_tools_register_configured_openai_native_tools():
+    client = TestClient(app)
+    token = approved_user_token(client)
+    model_configuration = model_configuration_store.create(
+        ModelConfigurationMutationRequest(
+            provider_id="openai",
+            name="Native tools",
+            model_name="gpt-5",
+            endpoint="https://api.openai.com/v1",
+            credential_reference="env:TEST_MODEL_API_KEY",
+            default_parameters={
+                "openai_native_tools": {
+                    "file_search": {
+                        "vector_store_ids": ["vs_123"],
+                        "max_num_results": 4,
+                        "include_search_results": True,
+                    },
+                    "code_interpreter": {
+                        "container": {
+                            "type": "auto",
+                            "memory_limit": "1g",
+                            "network_policy": {"type": "disabled"},
+                        }
+                    },
+                    "image_generation": {
+                        "quality": "low",
+                        "size": "1024x1024",
+                    },
+                },
+                "max_tokens": 1024,
+            },
+            enabled=True,
+        )
+    )
+    agent_store.update(
+        1,
+        AgentUpdateRequest(
+            default_model_configuration_id=model_configuration.id,
+            allowed_model_configuration_ids=[model_configuration.id],
+            capability_policy=AgentCapabilityPolicyResponse(
+                mcp_server_ids=[],
+                sandbox_enabled=False,
+                search_enabled=False,
+                page_read_enabled=False,
+            ),
+        ),
+    )
+    run_id = create_run(client, token)
+
+    tools = sdk_tools_for_run(agent_run_store.get(run_id))
+    tool_names = [public_tool_name_for_sdk_name(tool.name) for tool in tools]
+
+    assert tool_names == ["file.search", "code.interpreter", "image.generate"]
+    assert isinstance(tools[0], FileSearchTool)
+    assert tools[0].vector_store_ids == ["vs_123"]
+    assert tools[0].max_num_results == 4
+    assert tools[0].include_search_results is True
+    assert isinstance(tools[1], CodeInterpreterTool)
+    assert tools[1].tool_config["container"]["memory_limit"] == "1g"
+    assert isinstance(tools[2], ImageGenerationTool)
+    assert tools[2].tool_config["quality"] == "low"
+    assert tools_require_openai_responses(tools) is True
 
 
 def test_runtime_tool_safe_payload_removes_sensitive_keys_recursively():

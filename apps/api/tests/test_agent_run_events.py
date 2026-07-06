@@ -133,7 +133,7 @@ def test_run_event_stream_resume_does_not_duplicate_completed_visible_events():
     ]
 
 
-def test_conversation_response_includes_visible_process_and_tool_events():
+def test_conversation_response_includes_tool_events_without_process_summaries():
     client = TestClient(app)
     token = approved_user_token(client)
     agent_store.update(
@@ -182,8 +182,7 @@ def test_conversation_response_includes_visible_process_and_tool_events():
     tool_messages = [
         message for message in messages if message.get("event_type") == "tool.call"
     ]
-    assert process_messages
-    assert process_messages[0]["process_summary"]
+    assert process_messages == []
     assert tool_messages[0]["tool_call"]["tool_name"] == "search.web"
     assert tool_messages[0]["tool_call"]["safe_input"] == {
         "query": "agent workspace traceability",
@@ -227,5 +226,5 @@ def test_conversation_list_batches_visible_run_events_without_replaying_message_
 
     assert response.status_code == 200
     response_text = response.text
-    assert "运行过程：" in response_text
+    assert "运行过程：" not in response_text
     assert "streaming delta should not be replayed" not in response_text
