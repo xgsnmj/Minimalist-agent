@@ -4,41 +4,6 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { App } from "./app/app";
 
-class MockEventSource {
-  static instances: MockEventSource[] = [];
-  url: string;
-  close = vi.fn();
-  onerror: (() => void) | null = null;
-  onopen: (() => void) | null = null;
-  private listeners = new Map<string, Array<(event: MessageEvent<string>) => void>>();
-
-  constructor(url: string) {
-    this.url = url;
-    MockEventSource.instances.push(this);
-  }
-
-  addEventListener(eventName: string, listener: (event: MessageEvent<string>) => void) {
-    this.listeners.set(eventName, [...(this.listeners.get(eventName) ?? []), listener]);
-  }
-
-  removeEventListener(eventName: string, listener: (event: MessageEvent<string>) => void) {
-    this.listeners.set(
-      eventName,
-      (this.listeners.get(eventName) ?? []).filter((currentListener) => currentListener !== listener),
-    );
-  }
-
-  emit(eventName: string, data: Record<string, unknown>, lastEventId: string) {
-    const event = {
-      data: JSON.stringify(data),
-      lastEventId,
-    } as MessageEvent<string>;
-    for (const listener of this.listeners.get(eventName) ?? []) {
-      listener(event);
-    }
-  }
-}
-
 async function renderLoadedWorkspace() {
   render(<App />);
   await screen.findByRole("heading", { name: "市场调研" });
@@ -62,7 +27,6 @@ function countFetchCalls(calls: Array<readonly unknown[]>, path: string) {
 
 describe("Agent Conversation workspace", () => {
   afterEach(() => {
-    MockEventSource.instances = [];
     cleanup();
     vi.unstubAllGlobals();
     window.history.pushState({}, "", "/");
@@ -148,18 +112,19 @@ describe("Agent Conversation workspace", () => {
     expect(within(screen.getByLabelText("对话消息")).queryByText("模型网关超时，运行未完成。可重新运行或调整输入。")).not.toBeInTheDocument();
   });
 
-  it("subscribes to run events only for active conversations", async () => {
-    vi.stubGlobal("EventSource", MockEventSource);
+  it("does not subscribe to backend run events while browsing active conversations", async () => {
+    const EventSourceMock = vi.fn();
+    vi.stubGlobal("EventSource", EventSourceMock);
     const user = userEvent.setup();
     await renderLoadedWorkspace();
 
     await user.click(within(screen.getByLabelText("最近对话")).getByRole("button", { name: "行业报告" }));
-    expect(MockEventSource.instances).toHaveLength(0);
+    expect(EventSourceMock).not.toHaveBeenCalled();
     expect(screen.getByRole("heading", { name: "行业报告" })).toBeInTheDocument();
 
     await user.click(within(screen.getByLabelText("最近对话")).getByRole("button", { name: "竞品分析" }));
-    expect(MockEventSource.instances).toHaveLength(1);
-    expect(MockEventSource.instances[0].url).toBe("/api/runs/2/events?access_token=local-test-token");
+    expect(screen.getByRole("heading", { name: "竞品分析" })).toBeInTheDocument();
+    expect(EventSourceMock).not.toHaveBeenCalled();
   });
 
   it("renders tool call details without low-value process summaries in the conversation stream", async () => {
@@ -177,48 +142,6 @@ describe("Agent Conversation workspace", () => {
 
     expect(messageStream.getByText(/AI workspace conversation artifacts/)).toBeInTheDocument();
     expect(messageStream.getByText(/openai_agents_sdk/)).toBeInTheDocument();
-  });
-
-  it("appends live tool call events to the active conversation stream", async () => {
-    vi.stubGlobal("EventSource", MockEventSource);
-    const user = userEvent.setup();
-    await renderLoadedWorkspace();
-
-    await user.click(within(screen.getByLabelText("最近对话")).getByRole("button", { name: "竞品分析" }));
-    MockEventSource.instances[0].emit("tool.call", {
-      tool_call: {
-        id: 99,
-        run_id: 2,
-        conversation_id: 2,
-        tool_name: "page.read",
-        capability: "page_read",
-        status: "completed",
-        started_at: "10:11",
-        ended_at: "10:12",
-        safe_input: { url: "https://example.com/research" },
-        safe_output: { summary: "读取页面摘要。" },
-        provenance: { gateway: "openai_agents_sdk", provider: "jina_reader" },
-      },
-    }, "9");
-
-    const messageStream = within(screen.getByLabelText("对话消息"));
-    expect(await messageStream.findByText("page.read")).toBeInTheDocument();
-    expect(messageStream.getByText("读取页面摘要。")).toBeInTheDocument();
-  });
-
-  it("does not replay backend message deltas from the run event stream", async () => {
-    vi.stubGlobal("EventSource", MockEventSource);
-    const user = userEvent.setup();
-    await renderLoadedWorkspace();
-
-    await user.click(within(screen.getByLabelText("最近对话")).getByRole("button", { name: "竞品分析" }));
-    MockEventSource.instances[0].emit("message.delta", { delta: "已经完成" }, "9");
-    MockEventSource.instances[0].emit("message.delta", { delta: "结构化分析。" }, "10");
-    MockEventSource.instances[0].emit("message.completed", { content: "已经完成结构化分析。" }, "11");
-
-    await waitFor(() => {
-      expect(within(screen.getByLabelText("对话消息")).queryByText("已经完成结构化分析。")).not.toBeInTheDocument();
-    });
   });
 
   it("shows the bootstrapped gpt-5.5 model and uses it for new conversations", async () => {

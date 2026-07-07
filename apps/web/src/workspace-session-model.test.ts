@@ -2,10 +2,8 @@ import { describe, expect, it } from "vitest";
 
 import {
   mapConversation,
-  mapStreamEventsToMessages,
-  mergeConversationMessages,
 } from "./features/workspace/workspace-session-model";
-import type { ApiConversation, ApiRun } from "./features/workspace/workspace-api";
+import type { ApiConversation } from "./features/workspace/workspace-api";
 
 describe("WorkspaceSessionModel", () => {
   it("filters process summaries from persisted conversation messages", () => {
@@ -52,50 +50,4 @@ describe("WorkspaceSessionModel", () => {
     ]);
   });
 
-  it("maps live tool events and keeps persisted messages authoritative", () => {
-    const runs: ApiRun[] = [
-      {
-        assistant_message: null,
-        conversation_id: 5,
-        error: null,
-        id: 9,
-        owner_user_id: 7,
-        process_summaries: [],
-        status: "running",
-        status_events: ["queued", "running"],
-        user_message: "继续调研。",
-        worker_enqueued: true,
-      },
-    ];
-    const streamMessages = mapStreamEventsToMessages({
-      conversationId: "5",
-      events: [
-        {
-          data: {
-            tool_call: {
-              id: 42,
-              run_id: 9,
-              safe_output: { summary: "读取页面摘要。" },
-              status: "completed",
-              tool_name: "page.read",
-            },
-          },
-          eventType: "tool.call",
-          sequence: 12,
-        },
-      ],
-      runId: runs[0].id,
-    });
-
-    expect(mergeConversationMessages(streamMessages)).toEqual([
-      expect.objectContaining({
-        content: "工具调用：page.read（completed）",
-        id: "run-9-event-12",
-        toolCall: expect.objectContaining({
-          safeOutput: { summary: "读取页面摘要。" },
-          toolName: "page.read",
-        }),
-      }),
-    ]);
-  });
 });

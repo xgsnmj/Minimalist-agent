@@ -1,4 +1,3 @@
-import { type AgentRunStreamEvent } from "../../shared/ag-ui-stream";
 import { type ConversationToolCall } from "../../shared/conversation-message-rendering";
 import { CARD_SCHEMAS, type CardSchema, type ConversationCard } from "../../shared/card-schema-contract";
 import {
@@ -68,7 +67,6 @@ export type CommandRun = {
   conversationId: string;
   conversationTitle: string;
   runId: number;
-  status: Conversation["status"];
   updatedAt: string;
 };
 
@@ -139,39 +137,6 @@ export function mapConversation(conversation: ApiConversation, runs: ApiRun[]): 
       .filter(isVisibleConversationMessage)
       .map((message, index) => mapConversationMessage(message, conversation.id, index)),
   };
-}
-
-export function mapStreamEventsToMessages({
-  conversationId,
-  events,
-  runId,
-}: {
-  conversationId: string | null;
-  events: AgentRunStreamEvent[];
-  runId: number | null;
-}): ConversationMessage[] {
-  if (!conversationId || runId == null || events.length === 0) {
-    return [];
-  }
-
-  const messages: ConversationMessage[] = [];
-
-  for (const event of events) {
-    if (event.eventType === "tool.call") {
-      const toolCall = normalizeStreamToolCall(event.data.tool_call, runId);
-      if (!toolCall) {
-        continue;
-      }
-      messages.push({
-        content: `工具调用：${toolCall.toolName}（${toolCall.status}）`,
-        id: `run-${runId}-event-${event.sequence}`,
-        role: "assistant" as const,
-        toolCall,
-      });
-    }
-  }
-
-  return messages;
 }
 
 export function mergeConversationMessages(messages: ConversationMessage[]): ConversationMessage[] {
@@ -255,7 +220,6 @@ export function collectCommandRuns(conversations: Conversation[], runs: ApiRun[]
       conversationId: conversation.id,
       conversationTitle: conversation.title,
       runId: run.id,
-      status: run.status,
       updatedAt: conversation.updatedAt,
     });
   }
@@ -264,23 +228,6 @@ export function collectCommandRuns(conversations: Conversation[], runs: ApiRun[]
 
 export function isActiveConversationRun(conversation: Conversation) {
   return conversation.status === "queued" || conversation.status === "running";
-}
-
-export function formatConversationStatus(status: Conversation["status"]) {
-  switch (status) {
-    case "running":
-      return "运行中";
-    case "completed":
-      return "已完成";
-    case "failed":
-      return "失败";
-    case "cancelled":
-      return "已停止";
-    case "idle":
-      return "空闲";
-    default:
-      return status;
-  }
 }
 
 function isVisibleConversationMessage(message: ApiConversation["messages"][number]) {
@@ -344,47 +291,8 @@ function mapApiToolCall(toolCall: ApiToolCall): ConversationToolCall {
   };
 }
 
-function normalizeStreamToolCall(
-  value: unknown,
-  runId: number,
-): ConversationToolCall | null {
-  if (!isPlainRecord(value)) {
-    return null;
-  }
-
-  const toolName = value.tool_name;
-  if (typeof toolName !== "string" || !toolName.trim()) {
-    return null;
-  }
-
-  const status = normalizeToolCallStatus(value.status);
-  return {
-    capability: typeof value.capability === "string" ? value.capability : undefined,
-    endedAt: typeof value.ended_at === "string" ? value.ended_at : null,
-    errorSummary: typeof value.error_summary === "string" ? value.error_summary : undefined,
-    id: typeof value.id === "number" || typeof value.id === "string" ? value.id : undefined,
-    provenance: isStringRecord(value.provenance) ? value.provenance : {},
-    runId: typeof value.run_id === "number" ? value.run_id : runId,
-    safeInput: isPlainRecord(value.safe_input) ? value.safe_input : {},
-    safeOutput: isPlainRecord(value.safe_output) ? value.safe_output : undefined,
-    startedAt: typeof value.started_at === "string" ? value.started_at : null,
-    status,
-    toolName,
-  };
-}
-
-function normalizeToolCallStatus(value: unknown): ConversationToolCall["status"] {
-  return value === "completed" || value === "failed" || value === "rejected" || value === "running"
-    ? value
-    : "completed";
-}
-
 function isPlainRecord(value: unknown): value is Record<string, unknown> {
   return Boolean(value) && typeof value === "object" && !Array.isArray(value);
-}
-
-function isStringRecord(value: unknown): value is Record<string, string> {
-  return isPlainRecord(value) && Object.values(value).every((item) => typeof item === "string");
 }
 
 function mapConversationCard(card: ApiConversationCard): ConversationCard {

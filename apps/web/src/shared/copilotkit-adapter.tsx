@@ -185,7 +185,6 @@ type CopilotWorkspaceBridgeProps = {
   conversations: Conversation[];
   draftAgentId: string;
   draftModelId: string;
-  lastSeenSequence: number;
   previewArtifactId: number | null;
   selectedArtifactId: number | null;
   selectedConversationId: string | null;
@@ -193,7 +192,6 @@ type CopilotWorkspaceBridgeProps = {
   setPreviewArtifactId: Dispatch<SetStateAction<number | null>>;
   setRenameValue: Dispatch<SetStateAction<string>>;
   setSelectedConversationId: Dispatch<SetStateAction<string | null>>;
-  streamStatus: "idle" | "connected" | "unavailable";
 };
 
 const copilotRuntimeUrl = "/api/copilotkit";
@@ -332,7 +330,6 @@ export function CopilotWorkspaceBridge({
   conversations,
   draftAgentId,
   draftModelId,
-  lastSeenSequence,
   previewArtifactId,
   selectedArtifactId,
   selectedConversationId,
@@ -340,7 +337,6 @@ export function CopilotWorkspaceBridge({
   setPreviewArtifactId,
   setRenameValue,
   setSelectedConversationId,
-  streamStatus,
 }: CopilotWorkspaceBridgeProps) {
   const selectedConversation = conversations.find(
     (conversation) => conversation.id === selectedConversationId,
@@ -362,7 +358,6 @@ export function CopilotWorkspaceBridge({
       currentPage: "对话工作台",
       draftAgentId,
       draftModelId,
-      lastSeenSequence,
       previewArtifactId,
       selectedArtifactId,
       selectedConversation: selectedConversation
@@ -385,7 +380,6 @@ export function CopilotWorkspaceBridge({
         status: conversation.status,
         updatedAt: conversation.updatedAt,
       })),
-      streamStatus,
     }),
     [
       activeRunId,
@@ -394,11 +388,9 @@ export function CopilotWorkspaceBridge({
       conversations,
       draftAgentId,
       draftModelId,
-      lastSeenSequence,
       previewArtifactId,
       selectedArtifactId,
       selectedConversation,
-      streamStatus,
     ],
   );
 

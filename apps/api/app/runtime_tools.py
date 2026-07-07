@@ -5,6 +5,7 @@ import os
 import re
 from enum import StrEnum
 from typing import Any
+from urllib.parse import urlparse
 
 from agents import (
     CodeInterpreterTool,
@@ -132,7 +133,8 @@ def sdk_tools_for_run(run: AgentRun, *, prefer_native: bool | None = None) -> li
 def run_prefers_native_sdk_tools(run: AgentRun) -> bool:
     snapshot = run.capability_snapshot.selected_model_configuration_snapshot or {}
     provider_id = str(snapshot.get("provider_id") or "").strip().lower()
-    return provider_id == "openai"
+    endpoint = str(snapshot.get("endpoint") or "").strip()
+    return provider_id == "openai" and _is_official_openai_endpoint(endpoint)
 
 
 def tools_require_openai_responses(tools: list[Tool]) -> bool:
@@ -678,6 +680,11 @@ def _openai_native_tool_configuration(run: AgentRun) -> dict[str, Any]:
         return {}
     configured_tools = default_parameters.get(_OPENAI_NATIVE_TOOLS_PARAMETER)
     return configured_tools if isinstance(configured_tools, dict) else {}
+
+
+def _is_official_openai_endpoint(endpoint: str) -> bool:
+    parsed = urlparse(endpoint)
+    return parsed.hostname == "api.openai.com"
 
 
 def _tool_config_record(value: Any) -> dict[str, Any] | None:

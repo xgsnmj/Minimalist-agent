@@ -149,6 +149,46 @@ def test_sdk_tools_fall_back_to_function_tools_for_openai_compatible_providers()
     assert tools_require_openai_responses(tools) is False
 
 
+def test_sdk_tools_fall_back_when_openai_provider_uses_compatible_gateway_endpoint():
+    client = TestClient(app)
+    token = approved_user_token(client)
+    model_configuration = model_configuration_store.create(
+        ModelConfigurationMutationRequest(
+            provider_id="openai",
+            name="OpenAI-compatible gateway",
+            model_name="gpt-5.5",
+            endpoint="https://www.packyapi.com/v1",
+            credential_reference="env:TEST_MODEL_API_KEY",
+            default_parameters={
+                "max_tokens": 8192,
+                "temperature": 0.1,
+            },
+            enabled=True,
+        )
+    )
+    agent_store.update(
+        1,
+        AgentUpdateRequest(
+            default_model_configuration_id=model_configuration.id,
+            allowed_model_configuration_ids=[model_configuration.id],
+            capability_policy=AgentCapabilityPolicyResponse(
+                mcp_server_ids=[],
+                sandbox_enabled=True,
+                search_enabled=True,
+                page_read_enabled=True,
+            ),
+        ),
+    )
+    run_id = create_run(client, token)
+
+    tools = sdk_tools_for_run(agent_run_store.get(run_id))
+    tool_names = [public_tool_name_for_sdk_name(tool.name) for tool in tools]
+
+    assert tool_names == ["search.web", "page.read", "sandbox.exec"]
+    assert all(isinstance(tool, FunctionTool) for tool in tools)
+    assert tools_require_openai_responses(tools) is False
+
+
 def test_sdk_tools_register_configured_openai_native_tools():
     client = TestClient(app)
     token = approved_user_token(client)

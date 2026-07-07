@@ -1,9 +1,11 @@
 from __future__ import annotations
 
+import asyncio
 import json
 import os
 import time
 from collections.abc import AsyncIterator, Iterable
+from contextlib import suppress
 from typing import Any
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Query, Response, status
@@ -28,6 +30,7 @@ from apps.api.app.runtime import runtime_store
 
 
 router = APIRouter(prefix="/copilotkit", tags=["copilotkit"])
+SSE_HEARTBEAT_COMMENT = ": heartbeat\n\n"
 
 
 class CopilotKitRunRequest(BaseModel):
@@ -224,10 +227,7 @@ def run_copilotkit_agent(
         ):
             yield event
 
-    return StreamingResponse(
-        content=stream_events(),
-        media_type="text/event-stream",
-    )
+    return _sse_stream_response(_with_sse_heartbeats(stream_events()))
 
 
 @router.post("/agent/{copilot_agent_id}/stop/{thread_id}")
@@ -257,14 +257,56 @@ def stop_copilotkit_agent(
 
 
 def _event_stream(events: list[dict[str, Any]]) -> StreamingResponse:
+    return _sse_stream_response(iter([_sse_data(event) for event in events]))
+
+
+def _sse_stream_response(content: Iterable[str] | AsyncIterator[str]) -> StreamingResponse:
     return StreamingResponse(
-        content=iter([_sse_data(event) for event in events]),
+        content=content,
+        headers={
+            "Cache-Control": "no-cache",
+            "X-Accel-Buffering": "no",
+        },
         media_type="text/event-stream",
     )
 
 
 def _sse_data(event: dict[str, Any]) -> str:
     return f"data: {json.dumps(event, separators=(',', ':'))}\n\n"
+
+
+async def _with_sse_heartbeats(stream: AsyncIterator[str]) -> AsyncIterator[str]:
+    heartbeat_seconds = _sse_heartbeat_seconds()
+    if heartbeat_seconds <= 0:
+        async for chunk in stream:
+            yield chunk
+        return
+
+    iterator = stream.__aiter__()
+    pending: asyncio.Task[str] | None = None
+    try:
+        while True:
+            if pending is None:
+                pending = asyncio.create_task(anext(iterator))
+            done, _ = await asyncio.wait({pending}, timeout=heartbeat_seconds)
+            if pending not in done:
+                yield SSE_HEARTBEAT_COMMENT
+                continue
+
+            try:
+                chunk = pending.result()
+            except StopAsyncIteration:
+                break
+            pending = None
+            yield chunk
+    finally:
+        if pending is not None and not pending.done():
+            pending.cancel()
+            with suppress(asyncio.CancelledError):
+                await pending
+        aclose = getattr(iterator, "aclose", None)
+        if aclose is not None:
+            await aclose()
 
 
 def _run_started_event(request: CopilotKitRunRequest) -> dict[str, Any]:
@@ -450,6 +492,14 @@ def _stream_chunk_delay_seconds() -> float:
         return max(float(raw_value), 0)
     except ValueError:
         return 0.012
+
+
+def _sse_heartbeat_seconds() -> float:
+    raw_value = os.getenv("COPILOTKIT_SSE_HEARTBEAT_SECONDS", "15")
+    try:
+        return max(float(raw_value), 0)
+    except ValueError:
+        return 15
 
 
 def _conversation_snapshot_events(

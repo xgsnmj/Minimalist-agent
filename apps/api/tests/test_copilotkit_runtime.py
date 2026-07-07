@@ -1,3 +1,4 @@
+import asyncio
 import json
 
 from fastapi.testclient import TestClient
@@ -200,6 +201,45 @@ def test_copilotkit_run_executes_openai_agents_sdk_runtime_and_streams_ag_ui_eve
         "role": "assistant",
         "content": "openai:gpt-5 handled Find recent market signals.",
     }
+
+
+def test_copilotkit_run_sends_heartbeat_comments_while_runtime_is_idle(monkeypatch):
+    monkeypatch.setenv("COPILOTKIT_SSE_HEARTBEAT_SECONDS", "0.002")
+    client = TestClient(app)
+    token = approved_user_token(client)
+    conversation_id = create_conversation(client, token)
+
+    async def idle_stream_execute(run_id: int):
+        run = agent_run_lifecycle.begin_runtime_execution(run_id)
+        await asyncio.sleep(0.01)
+        yield {
+            "event_type": "message.delta",
+            "data": {"role": "assistant", "delta": "空闲后继续。"},
+        }
+        agent_run_lifecycle.apply_runtime_success(
+            run_id=run.id,
+            assistant_message="空闲后继续。",
+            process_summaries=[],
+            full_trace={"workflow_name": "Agent workflow"},
+        )
+
+    monkeypatch.setattr(runtime_store, "stream_execute", idle_stream_execute)
+
+    response = client.post(
+        "/copilotkit/agent/default/run",
+        headers={
+            "Authorization": f"Bearer {token}",
+            "Accept": "text/event-stream",
+        },
+        json=copilot_run_payload(thread_id=str(conversation_id)),
+    )
+
+    assert response.status_code == 200
+    assert response.headers["cache-control"] == "no-cache"
+    assert response.headers["x-accel-buffering"] == "no"
+    assert ": heartbeat\n\n" in response.text
+    assert response.text.index(": heartbeat") < response.text.index('"type":"TEXT_MESSAGE_CONTENT"')
+    assert '"type":"RUN_FINISHED"' in response.text
 
 
 def test_copilotkit_run_streams_tool_calls_as_ag_ui_events(monkeypatch):

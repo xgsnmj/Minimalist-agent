@@ -1,7 +1,6 @@
 import { FormEvent, useEffect, useMemo, useRef, useState } from "react";
 import { Activity, Bell, Copy, Download, ExternalLink, LogOut, Shield, UserRound } from "lucide-react";
 
-import { useAgentRunStream } from "../../shared/ag-ui-stream";
 import {
   type ConversationToolCall,
 } from "../../shared/conversation-message-rendering";
@@ -35,12 +34,10 @@ import {
   collectCommandArtifacts,
   collectCommandRuns,
   compareConversationsByLatestInteraction,
-  formatConversationStatus,
   getAgent,
   getMessageArtifactReference,
   isActiveConversationRun,
   mapConversation,
-  mapStreamEventsToMessages,
   mapWorkspaceAgent,
   mergeConversationMessages,
   type ArtifactReference,
@@ -118,11 +115,6 @@ export function ConversationShell({ currentUser }: ConversationShellProps) {
     (conversation) => conversation.id === selectedConversationId,
   );
   const activeRunId = selectedConversation?.latestRunId ?? null;
-  const streamRunId = selectedConversation && isActiveConversationRun(selectedConversation)
-    ? activeRunId
-    : null;
-  const { events: streamEvents, lastSeenSequence, status: streamStatus } = useAgentRunStream(streamRunId);
-  const refreshedRunEventRef = useRef<string | null>(null);
   const preferredConversationIdRef = useRef<string | null | undefined>(undefined);
   const notifiedArtifactPreviewErrorRef = useRef<string | null>(null);
   const activeAgent = getAgent(workspaceAgents, selectedConversation?.agentId ?? draftAgentId);
@@ -138,15 +130,8 @@ export function ConversationShell({ currentUser }: ConversationShellProps) {
     [selectedConversation],
   );
   const selectedConversationMessages = useMemo(
-    () => mergeConversationMessages([
-      ...(selectedConversation?.messages ?? []),
-      ...mapStreamEventsToMessages({
-        conversationId: selectedConversation?.id ?? null,
-        events: streamEvents,
-        runId: activeRunId,
-      }),
-    ]),
-    [activeRunId, selectedConversation?.id, selectedConversation?.messages, streamEvents],
+    () => mergeConversationMessages(selectedConversation?.messages ?? []),
+    [selectedConversation?.messages],
   );
   const selectedArtifactReference =
     previewArtifactId != null
@@ -184,8 +169,7 @@ export function ConversationShell({ currentUser }: ConversationShellProps) {
     () =>
       commandRuns.filter((run) =>
         `run ${run.runId}`.includes(commandSearch.toLowerCase()) ||
-        run.conversationTitle.toLowerCase().includes(commandSearch.toLowerCase()) ||
-        formatConversationStatus(run.status).includes(commandSearch),
+        run.conversationTitle.toLowerCase().includes(commandSearch.toLowerCase()),
       ),
     [commandRuns, commandSearch],
   );
@@ -249,18 +233,6 @@ export function ConversationShell({ currentUser }: ConversationShellProps) {
     setSelectedConversationId,
     workspaceAgents,
   ]);
-
-  useEffect(() => {
-    if (activeRunId == null || lastSeenSequence === 0) {
-      return;
-    }
-    const refreshKey = `${activeRunId}:${lastSeenSequence}`;
-    if (refreshedRunEventRef.current === refreshKey) {
-      return;
-    }
-    refreshedRunEventRef.current = refreshKey;
-    void refreshWorkspace(selectedConversationId);
-  }, [activeRunId, lastSeenSequence, selectedConversationId]);
 
   useEffect(() => {
     if (previewArtifactId == null || !artifactPreviewQuery.error) {
@@ -423,7 +395,6 @@ export function ConversationShell({ currentUser }: ConversationShellProps) {
         conversations={conversations}
         draftAgentId={draftAgentId}
         draftModelId={draftModelId}
-        lastSeenSequence={lastSeenSequence}
         previewArtifactId={previewArtifactId}
         selectedArtifactId={selectedArtifactReference?.artifactId ?? null}
         selectedConversationId={selectedConversationId}
@@ -433,7 +404,6 @@ export function ConversationShell({ currentUser }: ConversationShellProps) {
         setSelectedConversationId={(value) => setSelectedConversationId(
           typeof value === "function" ? value(selectedConversationId) : value,
         )}
-        streamStatus={streamStatus}
       />
       <aside className="conversation-sidebar" aria-label="智能体会话" data-collapsed={isSidebarCollapsed}>
         <div className="brand-block">
@@ -526,9 +496,6 @@ export function ConversationShell({ currentUser }: ConversationShellProps) {
             </h2>
           </div>
           <div className="conversation-actions">
-            <span className={`run-status ${streamStatus}`}>
-              {formatStreamStatus(streamStatus)}
-            </span>
             <Button
               className="secondary-button"
               disabled={!selectedConversation || !isActiveConversationRun(selectedConversation)}
@@ -881,7 +848,7 @@ function CommandPalette({
               onClick={() => onSelectConversation(conversation.id)}
             >
               <span>{conversation.title}</span>
-              <small>{formatConversationStatus(conversation.status)} · {conversation.updatedAt}</small>
+              <small>{conversation.updatedAt}</small>
             </Button>
           ))}
         </div>
@@ -896,7 +863,7 @@ function CommandPalette({
               onClick={() => onOpenRun(run.conversationId)}
             >
               <span>Run {run.runId}</span>
-              <small>{run.conversationTitle} · {formatConversationStatus(run.status)} · {run.updatedAt}</small>
+              <small>{run.conversationTitle} · {run.updatedAt}</small>
             </Button>
           ))}
         </div>
@@ -1179,23 +1146,4 @@ function formatToolCallStatus(status: ConversationToolCall["status"]) {
 
 function formatCapabilitySnapshot(name: string, isEnabled: boolean) {
   return `${name}：${isEnabled ? "已授权" : "未授权"}`;
-}
-
-function formatRecentRunActivity(lastSeenSequence: number) {
-  return lastSeenSequence > 0
-    ? `已同步 ${lastSeenSequence} 条运行更新`
-    : "暂无新活动";
-}
-
-function formatStreamStatus(status: "idle" | "connected" | "unavailable") {
-  switch (status) {
-    case "connected":
-      return "运行已连接";
-    case "unavailable":
-      return "运行不可用";
-    case "idle":
-      return "运行空闲";
-    default:
-      return status;
-  }
 }
