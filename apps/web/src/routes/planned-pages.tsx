@@ -1373,7 +1373,7 @@ function AdminOverviewPanel() {
     Promise.all([
       adminFetch<ApiLocalAccount[]>("/api/admin/accounts"),
       adminFetch<ApiAgent[]>("/api/admin/agents"),
-      adminFetch<ApiRunAuditList>("/api/admin/run-audit"),
+      adminFetch<ApiRunAuditList>("/api/admin/run-audit?limit=100"),
       adminFetch<ApiSearchProvider[]>("/api/admin/search-provider-configurations"),
       adminFetch<ApiPageReadProvider[]>("/api/admin/page-read-provider-configurations"),
     ])
@@ -3520,7 +3520,7 @@ function SandboxStatusPanel() {
 
     Promise.all([
       adminFetch<ApiAgent[]>("/api/admin/agents"),
-      adminFetch<ApiRunAuditList>("/api/admin/run-audit"),
+      adminFetch<ApiRunAuditList>("/api/admin/run-audit?limit=100"),
     ])
       .then(([agentResult, auditResult]) => {
         if (!isCurrent) {
@@ -3635,7 +3635,7 @@ function FullTracePanel() {
     setIsLoading(true);
     setLoadError("");
 
-    adminFetch<ApiRunAuditList>("/api/admin/run-audit")
+    adminFetch<ApiRunAuditList>("/api/admin/run-audit?limit=100")
       .then(async (list) => {
         const traceableRun = list.runs.find((run) => run.full_trace_available);
         if (!traceableRun) {
@@ -3780,7 +3780,7 @@ function RunAuditPanel() {
     setIsLoading(true);
     setLoadError("");
 
-    adminFetch<ApiRunAuditList>("/api/admin/run-audit")
+    adminFetch<ApiRunAuditList>("/api/admin/run-audit?limit=100")
       .then((result) => {
         if (!isCurrent) {
           return;

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import base64
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -157,6 +158,27 @@ class ArtifactStore:
                 .order_by(ArtifactRecord.id.asc())
             ).all()
             return [self._artifact_from_record(record) for record in records]
+
+    def list_for_conversations(
+        self,
+        conversation_ids: list[int],
+    ) -> dict[int, list[Artifact]]:
+        if not conversation_ids:
+            return {}
+        with SessionLocal() as session:
+            records = session.scalars(
+                select(ArtifactRecord)
+                .where(ArtifactRecord.conversation_id.in_(conversation_ids))
+                .order_by(ArtifactRecord.conversation_id.asc(), ArtifactRecord.id.asc())
+            ).all()
+            artifacts_by_conversation: dict[int, list[Artifact]] = {
+                conversation_id: [] for conversation_id in conversation_ids
+            }
+            for record in records:
+                artifacts_by_conversation.setdefault(record.conversation_id, []).append(
+                    self._artifact_from_record(record)
+                )
+            return artifacts_by_conversation
 
     def preview(self, artifact_id: int) -> ArtifactPreviewResponse:
         artifact = self.get(artifact_id)

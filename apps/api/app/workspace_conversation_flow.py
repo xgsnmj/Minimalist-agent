@@ -46,6 +46,10 @@ from apps.api.app.run_attachments import (
 )
 
 
+MAX_ARTIFACT_BYTES = 20 * 1024 * 1024
+LIST_RUN_EVENT_LIMIT_PER_CONVERSATION = 20
+
+
 class WorkspaceAgentResponse(BaseModel):
     agent: AgentResponse
     allowed_model_configurations: list[ModelConfigurationResponse]
@@ -115,8 +119,28 @@ class WorkspaceConversationFlow:
         )
         return to_conversation_response(conversation)
 
-    def list_conversations(self, *, owner_user_id: int) -> list[ConversationResponse]:
-        return to_conversation_responses(conversation_store.list_for_user(owner_user_id))
+    def list_conversations(
+        self,
+        *,
+        owner_user_id: int,
+        limit: int | None = None,
+        offset: int = 0,
+        message_limit: int | None = None,
+    ) -> list[ConversationResponse]:
+        run_limit_per_conversation = (
+            LIST_RUN_EVENT_LIMIT_PER_CONVERSATION
+            if message_limit is not None
+            else None
+        )
+        return to_conversation_responses(
+            conversation_store.list_for_user(
+                owner_user_id,
+                limit=limit,
+                offset=offset,
+                message_limit=message_limit,
+            ),
+            run_limit_per_conversation=run_limit_per_conversation,
+        )
 
     def get_conversation(
         self,
@@ -235,12 +259,18 @@ class WorkspaceConversationFlow:
             owner_user_id=owner_user_id,
             conversation_id=conversation_id,
         )
+        content = request.content_bytes()
+        if len(content) > MAX_ARTIFACT_BYTES:
+            raise HTTPException(
+                status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
+                detail="Artifact is too large.",
+            )
         artifact = artifact_store.create(
             conversation_id=conversation_id,
             run_id=None,
             filename=request.filename,
             content_type=request.content_type,
-            content=request.content_bytes(),
+            content=content,
         )
         conversation_store.append_message(
             conversation_id=conversation_id,
@@ -335,10 +365,20 @@ class WorkspaceConversationFlow:
             )
         )
 
-    def list_agent_runs(self, *, owner_user_id: int) -> list[AgentRunResponse]:
+    def list_agent_runs(
+        self,
+        *,
+        owner_user_id: int,
+        limit: int | None = None,
+        offset: int = 0,
+    ) -> list[AgentRunResponse]:
         return [
             to_agent_run_response(run)
-            for run in agent_run_store.list_for_user(owner_user_id)
+            for run in agent_run_store.list_for_user(
+                owner_user_id,
+                limit=limit,
+                offset=offset,
+            )
         ]
 
     def format_sse_events(

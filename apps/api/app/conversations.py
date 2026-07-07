@@ -4,8 +4,8 @@ from typing import Any
 
 from fastapi import HTTPException, status
 from pydantic import BaseModel, Field
-from sqlalchemy import Boolean, Integer, String, Text, select
-from sqlalchemy.orm import Mapped, mapped_column
+from sqlalchemy import Boolean, Integer, String, Text, func, select
+from sqlalchemy.orm import Mapped, aliased, mapped_column
 
 from apps.api.app.agents import Agent, AgentResponse, to_agent_response
 from apps.api.app.artifacts import ArtifactMessageReference
@@ -167,25 +167,34 @@ class ConversationStore:
             session.refresh(record)
             return self._conversation_from_record(session, record)
 
-    def list_for_user(self, owner_user_id: int) -> list[AgentConversation]:
+    def list_for_user(
+        self,
+        owner_user_id: int,
+        *,
+        limit: int | None = None,
+        offset: int = 0,
+        message_limit: int | None = None,
+    ) -> list[AgentConversation]:
         with SessionLocal() as session:
-            records = session.scalars(
+            statement = (
                 select(ConversationRecord)
                 .where(ConversationRecord.owner_user_id == owner_user_id)
                 .where(ConversationRecord.deleted.is_(False))
                 .order_by(ConversationRecord.id.desc())
-            ).all()
+            )
+            if offset:
+                statement = statement.offset(offset)
+            if limit is not None:
+                statement = statement.limit(limit)
+            records = session.scalars(statement).all()
             if not records:
                 return []
             conversation_ids = [record.id for record in records]
-            message_records = session.scalars(
-                select(ConversationMessageRecord)
-                .where(ConversationMessageRecord.conversation_id.in_(conversation_ids))
-                .order_by(
-                    ConversationMessageRecord.conversation_id.asc(),
-                    ConversationMessageRecord.sequence.asc(),
-                )
-            ).all()
+            message_records = self._list_message_records(
+                session,
+                conversation_ids=conversation_ids,
+                message_limit=message_limit,
+            )
             messages_by_conversation: dict[int, list[ConversationMessageRecord]] = {
                 conversation_id: [] for conversation_id in conversation_ids
             }
@@ -201,6 +210,48 @@ class ConversationStore:
                 )
                 for record in records
             ]
+
+    def _list_message_records(
+        self,
+        session,
+        *,
+        conversation_ids: list[int],
+        message_limit: int | None,
+    ) -> list[ConversationMessageRecord]:
+        if message_limit == 0:
+            return []
+        if message_limit is None:
+            return session.scalars(
+                select(ConversationMessageRecord)
+                .where(ConversationMessageRecord.conversation_id.in_(conversation_ids))
+                .order_by(
+                    ConversationMessageRecord.conversation_id.asc(),
+                    ConversationMessageRecord.sequence.asc(),
+                )
+            ).all()
+
+        ranked_messages = (
+            select(
+                ConversationMessageRecord,
+                func.row_number()
+                .over(
+                    partition_by=ConversationMessageRecord.conversation_id,
+                    order_by=ConversationMessageRecord.sequence.desc(),
+                )
+                .label("message_rank"),
+            )
+            .where(ConversationMessageRecord.conversation_id.in_(conversation_ids))
+            .subquery()
+        )
+        message_record = aliased(ConversationMessageRecord, ranked_messages)
+        return session.scalars(
+            select(message_record)
+            .where(ranked_messages.c.message_rank <= message_limit)
+            .order_by(
+                message_record.conversation_id.asc(),
+                message_record.sequence.asc(),
+            )
+        ).all()
 
     def get_for_user(self, *, owner_user_id: int, conversation_id: int) -> AgentConversation:
         with SessionLocal() as session:
@@ -384,7 +435,9 @@ def _message_from_record(record: ConversationMessageRecord) -> ConversationMessa
 
 
 def to_conversation_response(conversation: AgentConversation) -> ConversationResponse:
-    runs_by_conversation, events_by_run = _visible_run_context_for_conversations([conversation])
+    runs_by_conversation, events_by_run = _visible_run_context_for_conversations(
+        [conversation],
+    )
     return _to_conversation_response(
         conversation,
         runs=runs_by_conversation.get(conversation.id, []),
@@ -394,8 +447,13 @@ def to_conversation_response(conversation: AgentConversation) -> ConversationRes
 
 def to_conversation_responses(
     conversations: list[AgentConversation],
+    *,
+    run_limit_per_conversation: int | None = None,
 ) -> list[ConversationResponse]:
-    runs_by_conversation, events_by_run = _visible_run_context_for_conversations(conversations)
+    runs_by_conversation, events_by_run = _visible_run_context_for_conversations(
+        conversations,
+        run_limit_per_conversation=run_limit_per_conversation,
+    )
     return [
         _to_conversation_response(
             conversation,
@@ -445,6 +503,8 @@ def _to_conversation_response(
 
 def _visible_run_context_for_conversations(
     conversations: list[AgentConversation],
+    *,
+    run_limit_per_conversation: int | None = None,
 ) -> tuple[dict[int, list], dict[int, list]]:
     from apps.api.app.agent_runs import agent_run_store
     from apps.api.app.run_event_log import run_event_log_store
@@ -465,6 +525,7 @@ def _visible_run_context_for_conversations(
             agent_run_store.list_for_conversations(
                 owner_user_id=owner_user_id,
                 conversation_ids=conversation_ids,
+                limit_per_conversation=run_limit_per_conversation,
             )
         )
     for run in runs:

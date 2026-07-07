@@ -721,11 +721,8 @@ def _conversation_title(user_message: str) -> str:
 
 
 def _active_run_for_conversation(*, owner_user_id: int, conversation_id: int):
-    active_runs = [
-        run
-        for run in agent_run_store.list_all()
-        if run.owner_user_id == owner_user_id
-        and run.conversation_id == conversation_id
-        and run.status in ACTIVE_RUN_STATUSES
-    ]
-    return sorted(active_runs, key=lambda run: run.id, reverse=True)[0] if active_runs else None
+    return agent_run_store.latest_active_for_conversation(
+        owner_user_id=owner_user_id,
+        conversation_id=conversation_id,
+        active_statuses=ACTIVE_RUN_STATUSES,
+    )

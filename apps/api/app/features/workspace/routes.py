@@ -29,6 +29,7 @@ from apps.api.app.workspace_conversation_flow import (
 
 
 router = APIRouter(tags=["workspace"])
+MAX_RUN_ATTACHMENT_BYTES = 20 * 1024 * 1024
 
 
 @router.get(
@@ -80,9 +81,17 @@ def create_conversation(
     response_model_exclude_none=True,
 )
 def list_conversations(
+    limit: int | None = Query(default=None, ge=1, le=100),
+    offset: int = Query(default=0, ge=0),
+    message_limit: int | None = Query(default=None, ge=0, le=200),
     account: LocalAccount = Depends(current_user),
 ) -> list[ConversationResponse]:
-    return workspace_conversation_flow.list_conversations(owner_user_id=account.id)
+    return workspace_conversation_flow.list_conversations(
+        owner_user_id=account.id,
+        limit=limit,
+        offset=offset,
+        message_limit=message_limit,
+    )
 
 
 @router.get(
@@ -143,7 +152,12 @@ async def upload_run_attachment(
     file: UploadFile = File(...),
     account: LocalAccount = Depends(current_user),
 ) -> RunAttachmentResponse:
-    body = await file.read()
+    body = await file.read(MAX_RUN_ATTACHMENT_BYTES + 1)
+    if len(body) > MAX_RUN_ATTACHMENT_BYTES:
+        raise HTTPException(
+            status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
+            detail="Run Attachment is too large.",
+        )
     return workspace_conversation_flow.create_run_attachment(
         owner_user_id=account.id,
         conversation_id=conversation_id,
@@ -196,7 +210,7 @@ def download_run_attachment(
         conversation_id=conversation_id,
         attachment_id=attachment_id,
     )
-    return Response(
+    return StreamingResponse(
         content=download.body,
         media_type=download.content_type,
         headers={
@@ -247,7 +261,7 @@ def download_artifact(
         owner_user_id=account.id,
         artifact_id=artifact_id,
     )
-    return Response(
+    return StreamingResponse(
         content=download.body,
         media_type=download.content_type,
         headers={
@@ -304,9 +318,15 @@ def get_agent_run(
 
 @router.get("/runs", response_model=list[AgentRunResponse])
 def list_agent_runs(
+    limit: int | None = Query(default=None, ge=1, le=200),
+    offset: int = Query(default=0, ge=0),
     account: LocalAccount = Depends(current_user),
 ) -> list[AgentRunResponse]:
-    return workspace_conversation_flow.list_agent_runs(owner_user_id=account.id)
+    return workspace_conversation_flow.list_agent_runs(
+        owner_user_id=account.id,
+        limit=limit,
+        offset=offset,
+    )
 
 
 @router.get("/runs/{run_id}/events")

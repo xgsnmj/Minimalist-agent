@@ -7,6 +7,7 @@ from pydantic import BaseModel
 
 from apps.api.app.agent_runs import (
     AgentRun,
+    AgentRunAuditProjection,
     AgentRunStatus,
     RunCapabilitySnapshotResponse,
     agent_run_store,
@@ -86,10 +87,13 @@ class RunAuditStore:
         user_id: int | None,
         agent_id: int | None,
         model_configuration_id: int | None,
+        limit: int | None = None,
+        offset: int = 0,
     ) -> RunAuditListResponse:
+        all_runs = agent_run_store.list_all_for_audit()
         runs = [
             run
-            for run in agent_run_store.list_all()
+            for run in all_runs
             if self._matches_filters(
                 run,
                 status_filter=status_filter,
@@ -99,13 +103,31 @@ class RunAuditStore:
             )
         ]
         runs = sorted(runs, key=lambda run: run.id, reverse=True)
+        if offset:
+            runs = runs[offset:]
+        if limit is not None:
+            runs = runs[:limit]
+        tool_call_counts = self._tool_call_counts_by_run(runs)
+        artifacts_by_conversation = artifact_store.list_for_conversations(
+            sorted({run.conversation_id for run in all_runs})
+        )
         return RunAuditListResponse(
-            runs=[self._summary_response(run) for run in runs],
+            runs=[
+                self._summary_response(
+                    run,
+                    tool_call_count=tool_call_counts.get(run.id, 0),
+                    artifact_count=len(artifacts_by_conversation.get(run.conversation_id, [])),
+                )
+                for run in runs
+            ],
             retention=RunAuditRetentionResponse(
                 full_trace_retention_days=FULL_TRACE_RETENTION_DAYS,
                 policy="Full Trace records are retained for 90 days by default.",
             ),
-            storage=self._storage_response(agent_run_store.list_all()),
+            storage=self._storage_response(
+                runs=all_runs,
+                artifacts_by_conversation=artifacts_by_conversation,
+            ),
         )
 
     def detail(self, run_id: int) -> RunAuditDetailResponse:
@@ -161,7 +183,7 @@ class RunAuditStore:
 
     def _matches_filters(
         self,
-        run: AgentRun,
+        run: AgentRun | AgentRunAuditProjection,
         *,
         status_filter: AgentRunStatus | None,
         user_id: int | None,
@@ -181,7 +203,13 @@ class RunAuditStore:
             return False
         return True
 
-    def _summary_response(self, run: AgentRun) -> RunAuditSummaryResponse:
+    def _summary_response(
+        self,
+        run: AgentRun | AgentRunAuditProjection,
+        *,
+        tool_call_count: int,
+        artifact_count: int,
+    ) -> RunAuditSummaryResponse:
         return RunAuditSummaryResponse(
             id=run.id,
             conversation_id=run.conversation_id,
@@ -190,20 +218,21 @@ class RunAuditStore:
             status=run.status,
             selected_model_configuration_id=run.capability_snapshot.selected_model_configuration_id,
             updated_at="just now",
-            full_trace_available=bool(run.full_trace),
-            tool_call_count=len(
-                tool_call_responses_from_events(
-                    run_event_log_store.list_after(run_id=run.id, after_sequence=0)
-                )
-            ),
-            artifact_count=len(artifact_store.list_for_conversation(run.conversation_id)),
+            full_trace_available=run.full_trace_available,
+            tool_call_count=tool_call_count,
+            artifact_count=artifact_count,
         )
 
-    def _storage_response(self, runs: list[AgentRun]) -> RunAuditStorageResponse:
+    def _storage_response(
+        self,
+        *,
+        runs: list[AgentRun | AgentRunAuditProjection],
+        artifacts_by_conversation: dict[int, list],
+    ) -> RunAuditStorageResponse:
         artifact_ids: set[int] = set()
         artifact_bytes = 0
         for run in runs:
-            for artifact in artifact_store.list_for_conversation(run.conversation_id):
+            for artifact in artifacts_by_conversation.get(run.conversation_id, []):
                 if artifact.id in artifact_ids:
                     continue
                 artifact_ids.add(artifact.id)
@@ -211,8 +240,24 @@ class RunAuditStore:
         return RunAuditStorageResponse(
             artifact_count=len(artifact_ids),
             artifact_bytes=artifact_bytes,
-            retained_full_trace_count=sum(1 for run in runs if run.full_trace),
+            retained_full_trace_count=sum(1 for run in runs if run.full_trace_available),
         )
+
+    def _tool_call_counts_by_run(
+        self,
+        runs: list[AgentRun | AgentRunAuditProjection],
+    ) -> dict[int, int]:
+        run_ids = [run.id for run in runs]
+        events_by_run: dict[int, list[RunEvent]] = {run_id: [] for run_id in run_ids}
+        for event in run_event_log_store.list_for_runs_by_type(
+            run_ids=run_ids,
+            event_types={"tool.call"},
+        ):
+            events_by_run.setdefault(event.run_id, []).append(event)
+        return {
+            run_id: len(tool_call_responses_from_events(events))
+            for run_id, events in events_by_run.items()
+        }
 
     def _capability_snapshot_response(self, run: AgentRun) -> RunCapabilitySnapshotResponse:
         return RunCapabilitySnapshotResponse(

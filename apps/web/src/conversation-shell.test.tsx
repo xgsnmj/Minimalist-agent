@@ -55,7 +55,9 @@ function getContextFileInput(): HTMLInputElement {
 }
 
 function countFetchCalls(calls: Array<readonly unknown[]>, path: string) {
-  return calls.filter(([input]) => String(input) === path).length;
+  return calls.filter(([input]) =>
+    String(input) === path || String(input).startsWith(`${path}?`),
+  ).length;
 }
 
 describe("Agent Conversation workspace", () => {
@@ -372,14 +374,14 @@ describe("Agent Conversation workspace", () => {
             ],
           });
         }
-        if (url === "/api/conversations" && method === "GET") {
+        if ((url === "/api/conversations" || url.startsWith("/api/conversations?")) && method === "GET") {
           return Promise.resolve({
             ok: true,
             status: 200,
             json: async () => [],
           });
         }
-        if (url === "/api/runs" && method === "GET") {
+        if ((url === "/api/runs" || url.startsWith("/api/runs?")) && method === "GET") {
           return Promise.resolve({
             ok: true,
             status: 200,

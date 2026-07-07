@@ -888,10 +888,10 @@ beforeEach(() => {
           ),
         })));
       }
-      if (url === "/api/conversations" && method === "GET") {
+      if ((url === "/api/conversations" || url.startsWith("/api/conversations?")) && method === "GET") {
         return jsonResponse(workspaceConversations);
       }
-      if (url === "/api/runs" && method === "GET") {
+      if ((url === "/api/runs" || url.startsWith("/api/runs?")) && method === "GET") {
         return jsonResponse(workspaceRuns);
       }
       if (/^\/api\/conversations\/\d+\/run-attachments$/.test(url) && method === "POST") {
@@ -1054,7 +1054,7 @@ beforeEach(() => {
         const artifactId = Number(url.split("/")[3]);
         return jsonResponse(artifactPreviews[artifactId] ?? {}, artifactPreviews[artifactId] ? {} : { status: 404 });
       }
-      if (url === "/api/admin/run-audit" && method === "GET") {
+      if ((url === "/api/admin/run-audit" || url.startsWith("/api/admin/run-audit?")) && method === "GET") {
         return jsonResponse(runAuditList);
       }
       if (url === "/api/admin/run-audit/1" && method === "GET") {

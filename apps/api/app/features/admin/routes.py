@@ -418,6 +418,8 @@ def list_run_audit(
     user_id: int | None = None,
     agent_id: int | None = None,
     model_configuration_id: int | None = None,
+    limit: int | None = Query(default=None, ge=1, le=200),
+    offset: int = Query(default=0, ge=0),
     _administrator: LocalAccount = Depends(current_administrator),
 ) -> RunAuditListResponse:
     return run_audit_store.list_runs(
@@ -425,6 +427,8 @@ def list_run_audit(
         user_id=user_id,
         agent_id=agent_id,
         model_configuration_id=model_configuration_id,
+        limit=limit,
+        offset=offset,
     )
 
 

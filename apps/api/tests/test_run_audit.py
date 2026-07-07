@@ -7,6 +7,7 @@ from apps.api.app.auth import local_account_store
 from apps.api.app.conversations import conversation_store
 from apps.api.app.app import app
 from apps.api.app.model_configurations import model_configuration_store
+from apps.api.app import run_audit as run_audit_module
 from apps.api.app.run_attachments import run_attachment_store
 from apps.api.app.run_event_log import run_event_log_store
 from apps.api.app.runtime import runtime_store
@@ -201,3 +202,38 @@ def test_regular_users_cannot_access_run_audit_or_full_trace():
     assert list_response.status_code == 403
     assert trace_response.status_code == 403
     assert list_response.json()["detail"] == "Administrator access required."
+
+
+def test_run_audit_list_uses_batch_summary_queries(monkeypatch):
+    client = TestClient(app)
+    admin_token = administrator_token(client)
+    _user_id, user_token = approved_user(client, "user")
+    model_id = create_model(client, admin_token)
+    _conversation_id, run_id = create_audited_run(client, admin_token, user_token, model_id)
+
+    def fail_per_run_event_lookup(*_args, **_kwargs):
+        raise AssertionError("Run Audit list should batch event lookups.")
+
+    def fail_per_conversation_artifact_lookup(*_args, **_kwargs):
+        raise AssertionError("Run Audit list should batch artifact lookups.")
+
+    monkeypatch.setattr(
+        run_audit_module.run_event_log_store,
+        "list_after",
+        fail_per_run_event_lookup,
+    )
+    monkeypatch.setattr(
+        run_audit_module.artifact_store,
+        "list_for_conversation",
+        fail_per_conversation_artifact_lookup,
+    )
+
+    response = client.get(
+        "/admin/run-audit",
+        headers={"Authorization": f"Bearer {admin_token}"},
+    )
+
+    assert response.status_code == 200
+    assert response.json()["runs"][0]["id"] == run_id
+    assert response.json()["runs"][0]["tool_call_count"] == 1
+    assert response.json()["runs"][0]["artifact_count"] == 1

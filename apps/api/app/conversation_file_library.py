@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections.abc import Iterator
 from dataclasses import dataclass
 
 from apps.api.app.artifacts import (
@@ -9,9 +10,9 @@ from apps.api.app.artifacts import (
     artifact_store,
 )
 from apps.api.app.object_backed_files import (
+    iter_object_bytes,
     object_backed_file_from_record,
     preview_payload_for_file,
-    read_object_bytes,
 )
 from apps.api.app.object_storage import object_storage
 from apps.api.app.run_attachments import (
@@ -25,7 +26,7 @@ from apps.api.app.run_attachments import (
 class ConversationFileDownload:
     filename: str
     content_type: str
-    body: bytes
+    body: Iterator[bytes]
 
 
 class ConversationFileLibrary:
@@ -103,7 +104,7 @@ class ConversationFileLibrary:
         return ConversationFileDownload(
             filename=file.filename,
             content_type=file.content_type,
-            body=read_object_bytes(
+            body=iter_object_bytes(
                 storage=object_storage,
                 file=object_backed_file_from_record(file),
             ),

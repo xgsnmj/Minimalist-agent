@@ -190,3 +190,35 @@ def test_artifact_preview_type_covers_html_images_and_code():
     assert html_artifact["preview_type"] == "html"
     assert image_artifact["preview_type"] == "image"
     assert code_artifact["preview_type"] == "code"
+
+
+def test_large_text_artifact_preview_is_bounded():
+    client = TestClient(app)
+    token = approved_user_token(client)
+    conversation = client.post(
+        "/conversations",
+        headers={"Authorization": f"Bearer {token}"},
+        json={
+            "title": "Large preview",
+            "agent_id": 1,
+            "initial_message": "Start this conversation.",
+        },
+    ).json()
+    body = "x" * (300 * 1024)
+    artifact = client.post(
+        f"/conversations/{conversation['id']}/artifacts",
+        headers={"Authorization": f"Bearer {token}"},
+        json={
+            "filename": "large.txt",
+            "content_type": "text/plain",
+            "body": body,
+        },
+    ).json()
+
+    preview = client.get(
+        f"/artifacts/{artifact['id']}/preview",
+        headers={"Authorization": f"Bearer {token}"},
+    )
+
+    assert preview.status_code == 200
+    assert len(preview.json()["text"]) == 256 * 1024

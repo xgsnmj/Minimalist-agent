@@ -1,10 +1,12 @@
 from fastapi.testclient import TestClient
 
+from apps.api.app.agent_runs import agent_run_store
 from apps.api.app.agents import agent_store
 from apps.api.app.auth import local_account_store
 from apps.api.app.app import app
 from apps.api.app.model_configurations import model_configuration_store
 from apps.api.app.conversations import conversation_store
+from apps.api.app.run_event_log import run_event_log_store
 from apps.api.tests.support import (
     configure_default_agent_model,
     create_model_configuration_for_tests,
@@ -12,10 +14,12 @@ from apps.api.tests.support import (
 
 
 def setup_function():
+    run_event_log_store.reset_for_tests()
     local_account_store.reset()
     agent_store.reset()
     model_configuration_store.reset()
     conversation_store.reset()
+    agent_run_store.reset()
 
 
 def approved_user_token(client: TestClient) -> str:
@@ -146,6 +150,34 @@ def test_user_can_rename_and_soft_delete_agent_conversation():
     assert delete_response.json()["deleted"] is True
     assert list_response.json() == []
     assert detail_response.status_code == 404
+
+
+def test_conversation_list_supports_bounded_history_loading():
+    client = TestClient(app)
+    configure_default_agent_model()
+    user_token = approved_user_token(client)
+    created_ids = []
+    for index in range(3):
+        response = client.post(
+            "/conversations",
+            headers={"Authorization": f"Bearer {user_token}"},
+            json={
+                "title": f"Conversation {index}",
+                "agent_id": 1,
+                "initial_message": f"Message {index}",
+            },
+        )
+        created_ids.append(response.json()["id"])
+
+    response = client.get(
+        "/conversations",
+        headers={"Authorization": f"Bearer {user_token}"},
+        params={"limit": 2, "message_limit": 0},
+    )
+
+    assert response.status_code == 200
+    assert [conversation["id"] for conversation in response.json()] == list(reversed(created_ids[-2:]))
+    assert [conversation["messages"] for conversation in response.json()] == [[], []]
 
 
 def test_user_conversation_uses_agent_default_model_when_selection_is_omitted():

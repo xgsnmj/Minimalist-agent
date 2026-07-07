@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import base64
+from collections.abc import Iterator
 import os
 from dataclasses import dataclass
 from io import BytesIO
@@ -28,6 +29,16 @@ class ObjectStorage(Protocol):
     ) -> StoredObject: ...
 
     def get_bytes(self, *, bucket: str, object_key: str) -> bytes: ...
+
+    def get_bytes_range(self, *, bucket: str, object_key: str, length: int) -> bytes: ...
+
+    def iter_bytes(
+        self,
+        *,
+        bucket: str,
+        object_key: str,
+        chunk_size: int = 1024 * 1024,
+    ) -> Iterator[bytes]: ...
 
 
 class InMemoryObjectStorage:
@@ -58,6 +69,20 @@ class InMemoryObjectStorage:
         if payload is None:
             raise KeyError(object_key)
         return payload[0]
+
+    def get_bytes_range(self, *, bucket: str, object_key: str, length: int) -> bytes:
+        return self.get_bytes(bucket=bucket, object_key=object_key)[:length]
+
+    def iter_bytes(
+        self,
+        *,
+        bucket: str,
+        object_key: str,
+        chunk_size: int = 1024 * 1024,
+    ) -> Iterator[bytes]:
+        body = self.get_bytes(bucket=bucket, object_key=object_key)
+        for index in range(0, len(body), chunk_size):
+            yield body[index:index + chunk_size]
 
     def get_text(self, *, bucket: str, object_key: str) -> str:
         return self.get_bytes(bucket=bucket, object_key=object_key).decode("utf-8", errors="replace")
@@ -95,6 +120,28 @@ class MinioObjectStorage:
         response = self._client.get_object(bucket, object_key)
         try:
             return response.read()
+        finally:
+            response.close()
+            response.release_conn()
+
+    def get_bytes_range(self, *, bucket: str, object_key: str, length: int) -> bytes:
+        response = self._client.get_object(bucket, object_key, offset=0, length=length)
+        try:
+            return response.read()
+        finally:
+            response.close()
+            response.release_conn()
+
+    def iter_bytes(
+        self,
+        *,
+        bucket: str,
+        object_key: str,
+        chunk_size: int = 1024 * 1024,
+    ) -> Iterator[bytes]:
+        response = self._client.get_object(bucket, object_key)
+        try:
+            yield from response.stream(chunk_size)
         finally:
             response.close()
             response.release_conn()

@@ -4,8 +4,8 @@ import json
 
 from fastapi import HTTPException, status
 from pydantic import BaseModel, Field
-from sqlalchemy import Boolean, Integer, String, Text, select
-from sqlalchemy.orm import Mapped, mapped_column
+from sqlalchemy import Boolean, Integer, String, Text, func, select
+from sqlalchemy.orm import Mapped, aliased, mapped_column
 
 from apps.api.app.agents import Agent, AgentCapabilityPolicyResponse
 from apps.api.app.database import Base, JsonPayload, SessionLocal, engine
@@ -84,6 +84,20 @@ class AgentRun:
     events: list[str] = field(default_factory=list)
     event_log: list[RunEvent] = field(default_factory=list)
 
+    @property
+    def full_trace_available(self) -> bool:
+        return bool(self.full_trace)
+
+
+@dataclass
+class AgentRunAuditProjection:
+    id: int
+    conversation_id: int
+    owner_user_id: int
+    status: AgentRunStatus
+    capability_snapshot: RunCapabilitySnapshot
+    full_trace_available: bool
+
 
 class AgentRunRecord(Base):
     __tablename__ = "agent_runs"
@@ -156,13 +170,51 @@ class AgentRunStore:
             ).all()
             return [self._run_from_record(record) for record in records]
 
-    def list_for_user(self, owner_user_id: int) -> list[AgentRun]:
+    def list_all_for_audit(self) -> list[AgentRunAuditProjection]:
         with SessionLocal() as session:
-            records = session.scalars(
+            rows = session.execute(
+                select(
+                    AgentRunRecord.id,
+                    AgentRunRecord.conversation_id,
+                    AgentRunRecord.owner_user_id,
+                    AgentRunRecord.status,
+                    AgentRunRecord.capability_snapshot,
+                    (AgentRunRecord.full_trace != {}).label("full_trace_available"),
+                )
+                .order_by(AgentRunRecord.id.asc())
+            ).all()
+            return [
+                AgentRunAuditProjection(
+                    id=row.id,
+                    conversation_id=row.conversation_id,
+                    owner_user_id=row.owner_user_id,
+                    status=AgentRunStatus(row.status),
+                    capability_snapshot=_capability_snapshot_from_payload(
+                        row.capability_snapshot
+                    ),
+                    full_trace_available=bool(row.full_trace_available),
+                )
+                for row in rows
+            ]
+
+    def list_for_user(
+        self,
+        owner_user_id: int,
+        *,
+        limit: int | None = None,
+        offset: int = 0,
+    ) -> list[AgentRun]:
+        with SessionLocal() as session:
+            statement = (
                 select(AgentRunRecord)
                 .where(AgentRunRecord.owner_user_id == owner_user_id)
                 .order_by(AgentRunRecord.id.desc())
-            ).all()
+            )
+            if offset:
+                statement = statement.offset(offset)
+            if limit is not None:
+                statement = statement.limit(limit)
+            records = session.scalars(statement).all()
             return [self._run_from_record(record) for record in records]
 
     def list_for_conversations(
@@ -170,10 +222,36 @@ class AgentRunStore:
         *,
         owner_user_id: int,
         conversation_ids: list[int],
+        limit_per_conversation: int | None = None,
     ) -> list[AgentRun]:
         if not conversation_ids:
             return []
+        if limit_per_conversation == 0:
+            return []
         with SessionLocal() as session:
+            if limit_per_conversation is not None:
+                ranked_runs = (
+                    select(
+                        AgentRunRecord,
+                        func.row_number()
+                        .over(
+                            partition_by=AgentRunRecord.conversation_id,
+                            order_by=AgentRunRecord.id.desc(),
+                        )
+                        .label("run_rank"),
+                    )
+                    .where(AgentRunRecord.owner_user_id == owner_user_id)
+                    .where(AgentRunRecord.conversation_id.in_(conversation_ids))
+                    .subquery()
+                )
+                run_record = aliased(AgentRunRecord, ranked_runs)
+                records = session.scalars(
+                    select(run_record)
+                    .where(ranked_runs.c.run_rank <= limit_per_conversation)
+                    .order_by(run_record.id.asc())
+                ).all()
+                return [self._run_from_record(record) for record in records]
+
             records = session.scalars(
                 select(AgentRunRecord)
                 .where(AgentRunRecord.owner_user_id == owner_user_id)
@@ -181,6 +259,38 @@ class AgentRunStore:
                 .order_by(AgentRunRecord.id.asc())
             ).all()
             return [self._run_from_record(record) for record in records]
+
+    def has_active_run_for_conversation(
+        self,
+        conversation_id: int,
+        active_statuses: set[AgentRunStatus],
+    ) -> bool:
+        with SessionLocal() as session:
+            record_id = session.scalar(
+                select(AgentRunRecord.id)
+                .where(AgentRunRecord.conversation_id == conversation_id)
+                .where(AgentRunRecord.status.in_([status.value for status in active_statuses]))
+                .limit(1)
+            )
+            return record_id is not None
+
+    def latest_active_for_conversation(
+        self,
+        *,
+        owner_user_id: int,
+        conversation_id: int,
+        active_statuses: set[AgentRunStatus],
+    ) -> AgentRun | None:
+        with SessionLocal() as session:
+            record = session.scalars(
+                select(AgentRunRecord)
+                .where(AgentRunRecord.owner_user_id == owner_user_id)
+                .where(AgentRunRecord.conversation_id == conversation_id)
+                .where(AgentRunRecord.status.in_([status.value for status in active_statuses]))
+                .order_by(AgentRunRecord.id.desc())
+                .limit(1)
+            ).first()
+            return self._run_from_record(record) if record is not None else None
 
     def save(self, run: AgentRun) -> AgentRun:
         with SessionLocal() as session:

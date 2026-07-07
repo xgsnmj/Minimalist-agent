@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import base64
+from collections.abc import Iterator
 from dataclasses import dataclass
 from enum import StrEnum
 from typing import Protocol
@@ -35,6 +36,10 @@ class ObjectBackedFile:
 class FilePreviewPayload:
     text: str | None = None
     data_url: str | None = None
+
+
+TEXT_PREVIEW_MAX_BYTES = 256 * 1024
+BINARY_INLINE_PREVIEW_MAX_BYTES = 1024 * 1024
 
 
 class ObjectBackedRecord(Protocol):
@@ -105,7 +110,6 @@ def preview_payload_for_file(
         file.content_type,
         file.filename,
     )
-    body = storage.get_bytes(bucket=file.bucket, object_key=file.object_key)
 
     if resolved_preview_type in {
         FilePreviewType.MARKDOWN,
@@ -115,9 +119,17 @@ def preview_payload_for_file(
         FilePreviewType.JSON,
         FilePreviewType.HTML,
     }:
+        body = storage.get_bytes_range(
+            bucket=file.bucket,
+            object_key=file.object_key,
+            length=TEXT_PREVIEW_MAX_BYTES,
+        )
         return FilePreviewPayload(text=body.decode("utf-8", errors="replace"))
 
     if resolved_preview_type in {FilePreviewType.IMAGE, FilePreviewType.PDF}:
+        if file.size > BINARY_INLINE_PREVIEW_MAX_BYTES:
+            return FilePreviewPayload()
+        body = storage.get_bytes(bucket=file.bucket, object_key=file.object_key)
         return FilePreviewPayload(
             data_url=(
                 f"data:{file.content_type};base64,"
@@ -130,6 +142,19 @@ def preview_payload_for_file(
 
 def read_object_bytes(*, storage: ObjectStorage, file: ObjectBackedFile) -> bytes:
     return storage.get_bytes(bucket=file.bucket, object_key=file.object_key)
+
+
+def iter_object_bytes(
+    *,
+    storage: ObjectStorage,
+    file: ObjectBackedFile,
+    chunk_size: int = 1024 * 1024,
+) -> Iterator[bytes]:
+    return storage.iter_bytes(
+        bucket=file.bucket,
+        object_key=file.object_key,
+        chunk_size=chunk_size,
+    )
 
 
 def preview_type_for_content_type(content_type: str, filename: str) -> FilePreviewType:

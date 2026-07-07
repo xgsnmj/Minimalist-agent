@@ -171,6 +171,29 @@ def test_multiple_agent_conversations_can_have_active_runs_in_parallel():
     assert first_response.json()["conversation_id"] != second_response.json()["conversation_id"]
 
 
+def test_run_list_supports_bounded_recent_loading():
+    client = TestClient(app)
+    token = approved_user_token(client)
+    run_ids = []
+    for index in range(3):
+        conversation_id = create_conversation(client, token, f"Conversation {index}")
+        response = client.post(
+            f"/conversations/{conversation_id}/runs",
+            headers={"Authorization": f"Bearer {token}"},
+            json={"message": f"Run {index}."},
+        )
+        run_ids.append(response.json()["id"])
+
+    response = client.get(
+        "/runs",
+        headers={"Authorization": f"Bearer {token}"},
+        params={"limit": 2},
+    )
+
+    assert response.status_code == 200
+    assert [run["id"] for run in response.json()] == list(reversed(run_ids[-2:]))
+
+
 def test_mock_runtime_failure_marks_background_agent_run_failed():
     client = TestClient(app)
     token = approved_user_token(client)

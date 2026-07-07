@@ -12,7 +12,8 @@ function countCurrentUserRequests(fetchMock: ReturnType<typeof vi.fn>) {
 
 function countGetRequests(fetchMock: ReturnType<typeof vi.fn>, url: string) {
   return fetchMock.mock.calls.filter(([input, init]) =>
-    String(input) === url && (init?.method ?? "GET") === "GET",
+    (String(input) === url || String(input).startsWith(`${url}?`)) &&
+    (init?.method ?? "GET") === "GET",
   ).length;
 }
 

@@ -237,12 +237,14 @@ class AgentRunLifecycle:
         )
 
     def _raise_if_conversation_has_active_run(self, conversation_id: int) -> None:
-        for run in agent_run_store.list_all():
-            if run.conversation_id == conversation_id and run.status in ACTIVE_RUN_STATUSES:
-                raise HTTPException(
-                    status_code=status.HTTP_409_CONFLICT,
-                    detail="Agent Conversation already has an active run.",
-                )
+        if agent_run_store.has_active_run_for_conversation(
+            conversation_id=conversation_id,
+            active_statuses=ACTIVE_RUN_STATUSES,
+        ):
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="Agent Conversation already has an active run.",
+            )
 
     def _append_event(
         self,

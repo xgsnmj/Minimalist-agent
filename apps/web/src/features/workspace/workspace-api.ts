@@ -133,7 +133,7 @@ export function listWorkspaceAgents() {
 }
 
 export function listConversations() {
-  return authFetch<ApiConversation[]>("/conversations");
+  return authFetch<ApiConversation[]>("/conversations?limit=50&message_limit=80");
 }
 
 export function createConversation(request: {
@@ -182,7 +182,7 @@ export function uploadRunAttachment(conversationId: string, file: File) {
 }
 
 export function listRuns() {
-  return authFetch<ApiRun[]>("/runs");
+  return authFetch<ApiRun[]>("/runs?limit=100");
 }
 
 export function startAgentRun(conversationId: string, message: string) {
