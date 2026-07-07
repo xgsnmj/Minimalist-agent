@@ -7,7 +7,13 @@ from apps.api.app.artifacts import artifact_store
 from apps.api.app.auth import local_account_store
 from apps.api.app.conversations import conversation_store
 from apps.api.app.app import app
-from apps.api.app.mcp_servers import mcp_server_store
+from apps.api.app.mcp_servers import (
+    McpConnectionType,
+    McpServerMutationRequest,
+    McpServerStore,
+    McpToolAuthorizationRequest,
+    mcp_server_store,
+)
 from apps.api.app.model_configurations import (
     ModelConfigurationMutationRequest,
     model_configuration_store,
@@ -113,6 +119,61 @@ def test_administrator_registers_remote_mcp_server_and_discovers_tools():
     assert discovery_response.json()["last_discovery_status"] == "succeeded"
     assert list_response.json()[0]["tool_name"] == "mcp.research.search"
     assert list_response.json()[0]["server_id"] == create_response.json()["id"]
+
+
+def test_mcp_server_store_persists_servers_tools_and_authorizations():
+    server = mcp_server_store.create(
+        McpServerMutationRequest(
+            name="Research MCP",
+            connection_type=McpConnectionType.SSE,
+            url="https://mcp.example.com/sse",
+            header_secret_refs={"Authorization": "secret:mcp-token"},
+            timeout_seconds=30,
+            enabled=True,
+        )
+    )
+    mcp_server_store.discover_tools(server.id)
+    authorization = mcp_server_store.authorize_tool(
+        agent_id=7,
+        request=McpToolAuthorizationRequest(
+            server_id=server.id,
+            tool_name="mcp.research.search",
+            enabled=True,
+        ),
+    )
+
+    fresh_store = McpServerStore()
+
+    assert fresh_store.get(server.id).name == "Research MCP"
+    assert [
+        tool.tool_name
+        for tool in fresh_store.list_tools(server.id)
+    ] == ["mcp.research.search", "mcp.research.fetch"]
+    assert fresh_store.list_authorizations(
+        agent_id=7,
+        server_id=server.id,
+    )[0].id == authorization.id
+    assert fresh_store.is_tool_authorized(
+        agent_id=7,
+        server_ids=[server.id],
+        tool_name="mcp.research.search",
+    )
+
+    updated = fresh_store.authorize_tool(
+        agent_id=7,
+        request=McpToolAuthorizationRequest(
+            server_id=server.id,
+            tool_name="mcp.research.search",
+            enabled=False,
+        ),
+    )
+
+    assert updated.id == authorization.id
+    assert not fresh_store.is_tool_authorized(
+        agent_id=7,
+        server_ids=[server.id],
+        tool_name="mcp.research.search",
+    )
 
 
 def test_administrator_authorizes_mcp_tool_for_agent_and_agents_sdk_exposes_it():
@@ -247,14 +308,12 @@ def test_deferred_native_mcp_registers_tool_search_tool():
             model_name="gpt-5",
             endpoint="https://api.openai.com/v1",
             credential_reference="env:TEST_MODEL_API_KEY",
-            default_parameters={
-                "openai_native_tools": {
+            native_tool_settings={
                     "mcp": {"defer_loading": True},
                     "tool_search": {
                         "description": "Find deferred MCP tools.",
                         "execution": "server",
                     },
-                }
             },
             enabled=True,
         )

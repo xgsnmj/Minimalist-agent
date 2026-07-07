@@ -111,9 +111,6 @@ _PUBLIC_TOOL_NAMES_BY_SDK_NAME.update(
     }
 )
 _SDK_TOOL_NAME_PATTERN = re.compile(r"[^A-Za-z0-9_-]+")
-_OPENAI_NATIVE_TOOLS_PARAMETER = "openai_native_tools"
-
-
 def sdk_tools_for_run(run: AgentRun, *, prefer_native: bool | None = None) -> list[Tool]:
     policy = run.capability_snapshot.capability_policy
     use_native = run_prefers_native_sdk_tools(run) if prefer_native is None else prefer_native
@@ -675,11 +672,10 @@ def _sdk_function_name(tool_name: str) -> str:
 
 def _openai_native_tool_configuration(run: AgentRun) -> dict[str, Any]:
     snapshot = run.capability_snapshot.selected_model_configuration_snapshot or {}
-    default_parameters = snapshot.get("default_parameters")
-    if not isinstance(default_parameters, dict):
+    native_tool_settings = snapshot.get("native_tool_settings")
+    if not isinstance(native_tool_settings, dict):
         return {}
-    configured_tools = default_parameters.get(_OPENAI_NATIVE_TOOLS_PARAMETER)
-    return configured_tools if isinstance(configured_tools, dict) else {}
+    return native_tool_settings
 
 
 def _is_official_openai_endpoint(endpoint: str) -> bool:

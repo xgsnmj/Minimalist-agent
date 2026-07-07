@@ -102,7 +102,8 @@ type ModelConfigurationSummary = {
   model: string;
   credentialReference: string;
   status: ModelConfigurationStatus;
-  defaultParameters: string;
+  modelSettings: string;
+  nativeTools: string;
   lastUpdated: string;
   risk: string;
 };
@@ -604,7 +605,8 @@ export function CopilotModelConfigurationsBridge({
         model: configuration.model,
         credentialReference: configuration.credentialReference,
         status: configuration.status,
-        defaultParameters: configuration.defaultParameters,
+        modelSettings: configuration.modelSettings,
+        nativeTools: configuration.nativeTools,
         lastUpdated: configuration.lastUpdated,
         risk: configuration.risk,
       })),

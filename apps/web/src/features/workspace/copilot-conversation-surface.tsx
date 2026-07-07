@@ -97,18 +97,29 @@ export function CopilotConversationSurface({
     [conversationMessages],
   );
   const liveAgentMessages = Array.isArray(agent.messages) ? agent.messages : [];
+  const liveAgentMessageFingerprint = fingerprintCopilotMessages(liveAgentMessages);
+  const liveRenderableMessages = useMemo(
+    () => cloneMessagesForRender(liveAgentMessages),
+    [liveAgentMessageFingerprint],
+  );
   const renderedAgentMessages = useMemo(
     () =>
       ensureUniqueMessageIds(
         mergeOptimisticMessages(
-          mergeOptimisticMessages(copilotMessages, liveAgentMessages),
+          mergeOptimisticMessages(copilotMessages, liveRenderableMessages),
           optimisticMessages,
         ),
       ),
-    [copilotMessages, liveAgentMessages, optimisticMessages],
+    [copilotMessages, liveRenderableMessages, optimisticMessages],
   );
   const visibleAgentMessages = isLoadingWorkspace ? [] : renderedAgentMessages;
   const showEmptyHero = !isLoadingWorkspace && visibleAgentMessages.length === 0;
+  const isRunActive = agent.isRunning || isBackendRunActive;
+  // 运行中但尚未收到任何 assistant 内容 → 模型处于思考/推理阶段
+  const isThinking = isRunActive && (
+    visibleAgentMessages.length === 0 ||
+    visibleAgentMessages[visibleAgentMessages.length - 1].role === "user"
+  );
   const copilotMessageFingerprint = useMemo(
     () => fingerprintCopilotMessages(copilotMessages),
     [copilotMessages],
@@ -321,7 +332,7 @@ export function CopilotConversationSurface({
           hasExplicitThreadId
           inputValue={inputValue}
           isConnecting={isLoadingWorkspace}
-          isRunning={agent.isRunning || isBackendRunActive}
+          isRunning={isRunActive}
           messages={renderedAgentMessages}
           welcomeScreen={false}
           onAddFile={() => fileInputRef.current?.click()}
@@ -363,6 +374,13 @@ export function CopilotConversationSurface({
                   </div>
                 ) : null}
                 {visibleAgentMessages.length > 0 ? messageView : null}
+                {isThinking ? (
+                  <div className="thinking-indicator" aria-label="模型正在思考" aria-live="polite">
+                    <span className="thinking-dot" />
+                    <span className="thinking-dot" />
+                    <span className="thinking-dot" />
+                  </div>
+                ) : null}
               </section>
               <section className="conversation-composer copilot-native-composer" aria-label="对话输入区">
                 <div className="composer-model-row">
@@ -445,6 +463,36 @@ function ensureUniqueMessageIds(messages: Message[]): Message[] {
       id: `${message.id}:duplicate-${seenCount}`,
     };
   });
+}
+
+function cloneMessagesForRender(messages: Message[]): Message[] {
+  return messages.map(cloneMessageForRender);
+}
+
+function cloneMessageForRender(message: Message): Message {
+  const cloned = { ...message } as Message & {
+    content?: unknown;
+    toolCalls?: unknown[];
+  };
+  const content = (message as { content?: unknown }).content;
+  if (Array.isArray(content)) {
+    cloned.content = content.map((part) => isRecord(part) ? { ...part } : part);
+  }
+
+  const toolCalls = (message as { toolCalls?: unknown }).toolCalls;
+  if (Array.isArray(toolCalls)) {
+    cloned.toolCalls = toolCalls.map((toolCall) => {
+      if (!isRecord(toolCall)) {
+        return toolCall;
+      }
+      return {
+        ...toolCall,
+        function: isRecord(toolCall.function) ? { ...toolCall.function } : toolCall.function,
+      };
+    });
+  }
+
+  return cloned;
 }
 
 function mergeOptimisticMessages(messages: Message[], optimisticMessages: Message[]): Message[] {

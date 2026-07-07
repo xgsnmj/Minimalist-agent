@@ -264,6 +264,7 @@ class RunAuditStore:
             agent_id=run.capability_snapshot.agent_id,
             agent_instruction_snapshot=run.capability_snapshot.agent_instruction_snapshot,
             process_visibility=run.capability_snapshot.process_visibility,
+            sdk_settings=run.capability_snapshot.sdk_settings,
             selected_model_configuration_id=run.capability_snapshot.selected_model_configuration_id,
             selected_model_configuration_snapshot=(
                 run.capability_snapshot.selected_model_configuration_snapshot

@@ -159,7 +159,7 @@ def test_sdk_tools_fall_back_when_openai_provider_uses_compatible_gateway_endpoi
             model_name="gpt-5.5",
             endpoint="https://www.packyapi.com/v1",
             credential_reference="env:TEST_MODEL_API_KEY",
-            default_parameters={
+            model_settings={
                 "max_tokens": 8192,
                 "temperature": 0.1,
             },
@@ -199,8 +199,7 @@ def test_sdk_tools_register_configured_openai_native_tools():
             model_name="gpt-5",
             endpoint="https://api.openai.com/v1",
             credential_reference="env:TEST_MODEL_API_KEY",
-            default_parameters={
-                "openai_native_tools": {
+            native_tool_settings={
                     "file_search": {
                         "vector_store_ids": ["vs_123"],
                         "max_num_results": 4,
@@ -218,7 +217,7 @@ def test_sdk_tools_register_configured_openai_native_tools():
                         "size": "1024x1024",
                     },
                 },
-                "max_tokens": 1024,
+            model_settings={"max_tokens": 1024,
             },
             enabled=True,
         )
@@ -263,8 +262,7 @@ def test_sdk_tools_apply_configured_native_search_and_shell_options():
             model_name="gpt-5",
             endpoint="https://api.openai.com/v1",
             credential_reference="env:TEST_MODEL_API_KEY",
-            default_parameters={
-                "openai_native_tools": {
+            native_tool_settings={
                     "web_search": {
                         "search_context_size": "high",
                         "external_web_access": False,
@@ -276,7 +274,6 @@ def test_sdk_tools_apply_configured_native_search_and_shell_options():
                             "network_policy": {"type": "disabled"},
                         }
                     },
-                }
             },
             enabled=True,
         )
@@ -319,13 +316,11 @@ def test_sdk_tools_do_not_register_host_defined_native_tools_without_adapters():
             model_name="gpt-5",
             endpoint="https://api.openai.com/v1",
             credential_reference="env:TEST_MODEL_API_KEY",
-            default_parameters={
-                "openai_native_tools": {
+            native_tool_settings={
                     "apply_patch": {"enabled": True},
                     "computer": {"enabled": True},
                     "custom": {"enabled": True},
                     "local_shell": {"enabled": True},
-                }
             },
             enabled=True,
         )

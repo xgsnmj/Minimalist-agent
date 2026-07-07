@@ -17,11 +17,21 @@ export default defineConfig({
         target: process.env.VITE_API_PROXY_TARGET ?? "http://127.0.0.1:8000",
         changeOrigin: true,
         rewrite: (path) => path.replace(/^\/api/, ""),
+        // SSE / streaming 响应需要关闭代理缓冲
+        configure: (proxy) => {
+          proxy.on("proxyReq", (_proxyReq, req, res) => {
+            // 对 SSE 端点禁用缓冲，保持连接活跃
+            if (req.url?.includes("/copilotkit/")) {
+              res.setHeader("X-Accel-Buffering", "no");
+            }
+          });
+        },
       },
     },
   },
   test: {
     environment: "jsdom",
+    fileParallelism: false,
     setupFiles: "./src/test-setup.ts",
     server: {
       deps: {

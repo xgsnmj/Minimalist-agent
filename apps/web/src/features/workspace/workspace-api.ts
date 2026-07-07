@@ -16,6 +16,11 @@ export type ApiAgent = {
   is_default: boolean;
   instruction: string;
   process_visibility: "minimal" | "standard" | "verbose";
+  sdk_settings: {
+    max_turns: number;
+    tool_use_behavior: "run_llm_again" | "stop_on_first_tool";
+    reset_tool_choice: boolean;
+  };
   default_model_configuration_id: number | null;
   allowed_model_configuration_ids: number[];
   capability_policy: ApiCapabilityPolicy;
@@ -28,7 +33,8 @@ export type ApiModelConfiguration = {
   model_name: string;
   endpoint: string;
   credential_reference: string;
-  default_parameters: Record<string, unknown>;
+  model_settings: Record<string, unknown>;
+  native_tool_settings: Record<string, unknown>;
   enabled: boolean;
 };
 

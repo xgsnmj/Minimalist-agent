@@ -40,7 +40,8 @@ def bootstrap_default_model_configuration() -> ModelConfiguration | None:
                 model_name=model_name,
                 endpoint=endpoint,
                 credential_reference=credential_reference,
-                default_parameters={},
+                model_settings={},
+                native_tool_settings={},
                 enabled=True,
             )
         )

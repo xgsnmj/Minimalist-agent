@@ -25,6 +25,8 @@ def create_model_configuration_for_tests(
             model_name=model_name,
             endpoint="https://api.openai.com/v1",
             credential_reference="env:TEST_MODEL_API_KEY",
+            model_settings={},
+            native_tool_settings={},
             enabled=enabled,
         )
     )

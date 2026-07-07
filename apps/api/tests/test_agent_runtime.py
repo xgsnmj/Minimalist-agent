@@ -1,5 +1,6 @@
 from types import SimpleNamespace
 
+import pytest
 from fastapi.testclient import TestClient
 
 from apps.api.app.agent_runs import agent_run_store
@@ -11,12 +12,15 @@ from apps.api.app.model_configurations import ModelConfigurationMutationRequest
 from apps.api.app.model_configurations import model_configuration_store
 from apps.api.app.run_event_log import run_event_log_store
 from apps.api.app.runtime import (
+    _model_provider_route,
+    _runner_input_for_run,
     _runtime_tool_event_from_run_item,
     _runtime_tool_events_from_run_item,
+    _use_openai_responses_for_configuration,
     runtime_model_parameters_for_configuration,
     runtime_store,
 )
-from apps.api.tests.support import use_fake_agent_runtime
+from apps.api.tests.support import configure_default_agent_model, use_fake_agent_runtime
 
 
 def setup_function():
@@ -127,9 +131,118 @@ def test_default_agent_run_uses_enabled_model_configuration_and_records_trace():
         "model_name": "gpt-5",
         "endpoint": "https://api.openai.com/v1",
         "credential_reference": "secret://models/openai-primary",
-        "default_parameters": {},
+        "model_settings": {},
+        "native_tool_settings": {},
         "enabled": True,
     }
+
+
+def test_runtime_runner_input_includes_conversation_history():
+    configure_default_agent_model()
+    client = TestClient(app)
+    token = approved_user_token(client)
+    conversation = client.post(
+        "/conversations",
+        headers={"Authorization": f"Bearer {token}"},
+        json={
+            "title": "History",
+            "agent_id": 1,
+            "initial_message": "Remember the Alpha project.",
+        },
+    ).json()
+    first_run = client.post(
+        f"/conversations/{conversation['id']}/runs",
+        headers={"Authorization": f"Bearer {token}"},
+        json={"message": "Record that Alpha ships Friday."},
+    ).json()
+    runtime_store.execute(first_run["id"])
+    second_run = client.post(
+        f"/conversations/{conversation['id']}/runs",
+        headers={"Authorization": f"Bearer {token}"},
+        json={"message": "When does Alpha ship?"},
+    ).json()
+
+    runner_input = _runner_input_for_run(agent_run_store.get(second_run["id"]))
+
+    assert runner_input == [
+        {"role": "user", "content": "Remember the Alpha project."},
+        {"role": "user", "content": "Record that Alpha ships Friday."},
+        {
+            "role": "assistant",
+            "content": "openai:gpt-5 handled Record that Alpha ships Friday.",
+        },
+        {"role": "user", "content": "When does Alpha ship?"},
+    ]
+
+
+def test_openai_official_endpoint_defaults_to_responses_provider_route():
+    runtime_store.reset()
+    configuration = model_configuration_store.create(
+        ModelConfigurationMutationRequest(
+            provider_id="openai",
+            name="OpenAI Responses",
+            model_name="gpt-5",
+            endpoint="https://api.openai.com/v1",
+            credential_reference="sk-direct",
+            enabled=True,
+        )
+    )
+
+    use_responses = _use_openai_responses_for_configuration(
+        configuration,
+        runtime_tools=[],
+    )
+    provider = runtime_store._model_provider(
+        configuration,
+        use_responses=use_responses,
+    )
+
+    assert _model_provider_route(configuration) == "openai_responses"
+    assert use_responses is True
+    assert provider._use_responses is True
+
+
+def test_openai_compatible_gateway_uses_chat_completions_provider_route():
+    runtime_store.reset()
+    configuration = model_configuration_store.create(
+        ModelConfigurationMutationRequest(
+            provider_id="openai",
+            name="OpenAI-compatible gateway",
+            model_name="gpt-5.5",
+            endpoint="https://www.packyapi.com/v1",
+            credential_reference="sk-direct",
+            enabled=True,
+        )
+    )
+
+    use_responses = _use_openai_responses_for_configuration(
+        configuration,
+        runtime_tools=[],
+    )
+    provider = runtime_store._model_provider(
+        configuration,
+        use_responses=use_responses,
+    )
+
+    assert _model_provider_route(configuration) == "openai_compatible_chat_completions"
+    assert use_responses is False
+    assert provider._use_responses is False
+
+
+def test_runtime_rejects_provider_without_sdk_adapter():
+    configuration = model_configuration_store.create(
+        ModelConfigurationMutationRequest(
+            provider_id="anthropic",
+            name="Anthropic direct",
+            model_name="claude-sonnet-4-5",
+            endpoint="https://api.anthropic.com",
+            credential_reference="sk-direct",
+            enabled=True,
+        )
+    )
+
+    with pytest.raises(RuntimeError, match="provider-specific SDK adapter"):
+        _model_provider_route(configuration)
 
 
 def test_runtime_missing_model_secret_fails_run_without_mock_fallback(monkeypatch):
@@ -191,7 +304,7 @@ def test_runtime_missing_model_secret_fails_run_without_mock_fallback(monkeypatc
     assert conversation_response["status"] == "idle"
 
 
-def test_runtime_model_parameters_filter_temperature_by_provider_model_allowlist():
+def test_runtime_model_parameters_pass_configured_model_settings():
     configuration = model_configuration_store.create(
         ModelConfigurationMutationRequest(
             provider_id="custom-openai-compatible",
@@ -199,7 +312,7 @@ def test_runtime_model_parameters_filter_temperature_by_provider_model_allowlist
             model_name="gpt-5.5",
             endpoint="https://www.packyapi.com/v1",
             credential_reference="sk-direct",
-            default_parameters={
+            model_settings={
                 "max_tokens": 8192,
                 "temperature": 0.1,
                 "top_p": 0.9,
@@ -212,11 +325,12 @@ def test_runtime_model_parameters_filter_temperature_by_provider_model_allowlist
 
     assert parameters == {
         "max_tokens": 8192,
+        "temperature": 0.1,
         "top_p": 0.9,
     }
 
 
-def test_runtime_model_parameters_ignore_openai_native_tool_configuration():
+def test_runtime_model_parameters_do_not_include_native_tool_settings():
     configuration = model_configuration_store.create(
         ModelConfigurationMutationRequest(
             provider_id="openai",
@@ -224,12 +338,12 @@ def test_runtime_model_parameters_ignore_openai_native_tool_configuration():
             model_name="gpt-5",
             endpoint="https://api.openai.com/v1",
             credential_reference="sk-direct",
-            default_parameters={
+            model_settings={
                 "max_tokens": 4096,
-                "openai_native_tools": {
-                    "file_search": {"vector_store_ids": ["vs_123"]},
-                    "web_search": {"search_context_size": "high"},
-                },
+            },
+            native_tool_settings={
+                "file_search": {"vector_store_ids": ["vs_123"]},
+                "web_search": {"search_context_size": "high"},
             },
             enabled=True,
         )

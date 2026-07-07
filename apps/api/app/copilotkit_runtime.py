@@ -129,7 +129,7 @@ def connect_copilotkit_agent(
 
 
 @router.post("/agent/{copilot_agent_id}/run")
-def run_copilotkit_agent(
+async def run_copilotkit_agent(
     copilot_agent_id: str,
     request: CopilotKitRunRequest,
     account: LocalAccount = Depends(authenticated_copilotkit_account),

@@ -22,6 +22,17 @@ class ProcessVisibility(StrEnum):
     VERBOSE = "verbose"
 
 
+class AgentToolUseBehavior(StrEnum):
+    RUN_LLM_AGAIN = "run_llm_again"
+    STOP_ON_FIRST_TOOL = "stop_on_first_tool"
+
+
+class AgentSdkSettingsResponse(BaseModel):
+    max_turns: int = Field(default=10, ge=1, le=50)
+    tool_use_behavior: AgentToolUseBehavior = AgentToolUseBehavior.RUN_LLM_AGAIN
+    reset_tool_choice: bool = True
+
+
 class AgentCapabilityPolicyResponse(BaseModel):
     mcp_server_ids: list[int]
     sandbox_enabled: bool
@@ -38,6 +49,7 @@ class AgentResponse(BaseModel):
     is_default: bool
     instruction: str
     process_visibility: ProcessVisibility
+    sdk_settings: AgentSdkSettingsResponse
     default_model_configuration_id: int | None
     allowed_model_configuration_ids: list[int]
     capability_policy: AgentCapabilityPolicyResponse
@@ -49,6 +61,7 @@ class AgentMutationRequest(BaseModel):
     icon: str = "agent"
     instruction: str = Field(min_length=1)
     process_visibility: ProcessVisibility = ProcessVisibility.STANDARD
+    sdk_settings: AgentSdkSettingsResponse = AgentSdkSettingsResponse()
     default_model_configuration_id: int | None = None
     allowed_model_configuration_ids: list[int] = []
     capability_policy: AgentCapabilityPolicyResponse = AgentCapabilityPolicyResponse(
@@ -65,6 +78,7 @@ class AgentUpdateRequest(BaseModel):
     icon: str | None = None
     instruction: str | None = Field(default=None, min_length=1)
     process_visibility: ProcessVisibility | None = None
+    sdk_settings: AgentSdkSettingsResponse | None = None
     default_model_configuration_id: int | None = None
     allowed_model_configuration_ids: list[int] | None = None
     capability_policy: AgentCapabilityPolicyResponse | None = None
@@ -74,6 +88,7 @@ class AgentRunPreparationResponse(BaseModel):
     agent_id: int
     agent_instruction_snapshot: str
     process_visibility: ProcessVisibility
+    sdk_settings: AgentSdkSettingsResponse
     default_model_configuration_id: int | None
     allowed_model_configuration_ids: list[int]
     capability_policy: AgentCapabilityPolicyResponse
@@ -88,6 +103,13 @@ class AgentCapabilityPolicy:
 
 
 @dataclass
+class AgentSdkSettings:
+    max_turns: int = 10
+    tool_use_behavior: AgentToolUseBehavior = AgentToolUseBehavior.RUN_LLM_AGAIN
+    reset_tool_choice: bool = True
+
+
+@dataclass
 class Agent:
     id: int
     name: str
@@ -97,6 +119,7 @@ class Agent:
     is_default: bool
     instruction: str
     process_visibility: ProcessVisibility
+    sdk_settings: AgentSdkSettings = field(default_factory=AgentSdkSettings)
     default_model_configuration_id: int | None = None
     allowed_model_configuration_ids: list[int] = field(default_factory=list)
     capability_policy: AgentCapabilityPolicy = field(default_factory=AgentCapabilityPolicy)
@@ -113,6 +136,7 @@ class AgentRecord(Base):
     is_default: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     instruction: Mapped[str] = mapped_column(Text, nullable=False)
     process_visibility: Mapped[str] = mapped_column(String(32), nullable=False)
+    sdk_settings: Mapped[dict] = mapped_column(JsonPayload, nullable=False, default=dict)
     default_model_configuration_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
     allowed_model_configuration_ids: Mapped[list[int]] = mapped_column(
         JsonPayload,
@@ -151,6 +175,9 @@ class AgentStore:
                 is_default=False,
                 instruction=request.instruction,
                 process_visibility=request.process_visibility.value,
+                sdk_settings=_sdk_settings_payload(
+                    sdk_settings_from_response(request.sdk_settings)
+                ),
                 default_model_configuration_id=request.default_model_configuration_id,
                 allowed_model_configuration_ids=list(request.allowed_model_configuration_ids),
                 capability_policy=_capability_policy_payload(
@@ -178,6 +205,10 @@ class AgentStore:
                 record.instruction = request.instruction
             if request.process_visibility is not None:
                 record.process_visibility = request.process_visibility.value
+            if request.sdk_settings is not None:
+                record.sdk_settings = _sdk_settings_payload(
+                    sdk_settings_from_response(request.sdk_settings)
+                )
             if "default_model_configuration_id" in request.model_fields_set:
                 record.default_model_configuration_id = request.default_model_configuration_id
             if request.allowed_model_configuration_ids is not None:
@@ -234,6 +265,7 @@ class AgentStore:
             is_default=True,
             instruction="Help the user complete work inside Minimalist Agent.",
             process_visibility=ProcessVisibility.STANDARD.value,
+            sdk_settings=_sdk_settings_payload(AgentSdkSettings()),
             default_model_configuration_id=None,
             allowed_model_configuration_ids=[],
             capability_policy=_capability_policy_payload(AgentCapabilityPolicy()),
@@ -251,6 +283,7 @@ class AgentStore:
             is_default=record.is_default,
             instruction=record.instruction,
             process_visibility=ProcessVisibility(record.process_visibility),
+            sdk_settings=_sdk_settings_from_payload(record.sdk_settings or {}),
             default_model_configuration_id=record.default_model_configuration_id,
             allowed_model_configuration_ids=list(record.allowed_model_configuration_ids or []),
             capability_policy=_capability_policy_from_payload(record.capability_policy or {}),
@@ -268,6 +301,42 @@ def capability_policy_from_response(
         sandbox_enabled=policy.sandbox_enabled,
         search_enabled=policy.search_enabled,
         page_read_enabled=policy.page_read_enabled,
+    )
+
+
+def sdk_settings_from_response(settings: AgentSdkSettingsResponse) -> AgentSdkSettings:
+    return AgentSdkSettings(
+        max_turns=settings.max_turns,
+        tool_use_behavior=settings.tool_use_behavior,
+        reset_tool_choice=settings.reset_tool_choice,
+    )
+
+
+def _sdk_settings_payload(settings: AgentSdkSettings) -> dict:
+    return {
+        "max_turns": settings.max_turns,
+        "tool_use_behavior": settings.tool_use_behavior.value,
+        "reset_tool_choice": settings.reset_tool_choice,
+    }
+
+
+def _sdk_settings_from_payload(payload: dict) -> AgentSdkSettings:
+    max_turns = payload.get("max_turns", 10)
+    try:
+        normalized_max_turns = int(max_turns)
+    except (TypeError, ValueError):
+        normalized_max_turns = 10
+    normalized_max_turns = min(max(normalized_max_turns, 1), 50)
+    tool_use_behavior = payload.get(
+        "tool_use_behavior",
+        AgentToolUseBehavior.RUN_LLM_AGAIN.value,
+    )
+    if tool_use_behavior not in {item.value for item in AgentToolUseBehavior}:
+        tool_use_behavior = AgentToolUseBehavior.RUN_LLM_AGAIN.value
+    return AgentSdkSettings(
+        max_turns=normalized_max_turns,
+        tool_use_behavior=AgentToolUseBehavior(tool_use_behavior),
+        reset_tool_choice=bool(payload.get("reset_tool_choice", True)),
     )
 
 
@@ -303,6 +372,11 @@ def to_agent_response(agent: Agent) -> AgentResponse:
         is_default=agent.is_default,
         instruction=agent.instruction,
         process_visibility=agent.process_visibility,
+        sdk_settings=AgentSdkSettingsResponse(
+            max_turns=agent.sdk_settings.max_turns,
+            tool_use_behavior=agent.sdk_settings.tool_use_behavior,
+            reset_tool_choice=agent.sdk_settings.reset_tool_choice,
+        ),
         default_model_configuration_id=agent.default_model_configuration_id,
         allowed_model_configuration_ids=agent.allowed_model_configuration_ids,
         capability_policy=AgentCapabilityPolicyResponse(
@@ -319,6 +393,11 @@ def to_agent_run_preparation_response(agent: Agent) -> AgentRunPreparationRespon
         agent_id=agent.id,
         agent_instruction_snapshot=agent.instruction,
         process_visibility=agent.process_visibility,
+        sdk_settings=AgentSdkSettingsResponse(
+            max_turns=agent.sdk_settings.max_turns,
+            tool_use_behavior=agent.sdk_settings.tool_use_behavior,
+            reset_tool_choice=agent.sdk_settings.reset_tool_choice,
+        ),
         default_model_configuration_id=agent.default_model_configuration_id,
         allowed_model_configuration_ids=list(agent.allowed_model_configuration_ids),
         capability_policy=AgentCapabilityPolicyResponse(

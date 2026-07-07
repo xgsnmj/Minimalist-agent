@@ -4285,6 +4285,299 @@ textarea {
   min-height: 38px;
 }
 
+.admin-config-page {
+  display: grid;
+  gap: 16px;
+}
+
+.config-page-head {
+  align-items: start;
+}
+
+.config-summary-strip {
+  display: grid;
+  gap: 12px;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+}
+
+.config-workbench {
+  align-items: start;
+  display: grid;
+  gap: 14px;
+  grid-template-columns: minmax(220px, 300px) minmax(0, 1fr);
+}
+
+.mcp-workbench {
+  grid-template-columns: minmax(230px, 320px) minmax(0, 1fr);
+}
+
+.config-sidebar,
+.config-editor,
+.config-section {
+  background: #ffffff;
+  border: 1px solid #ededed;
+  border-radius: 8px;
+}
+
+.config-sidebar {
+  display: grid;
+  gap: 10px;
+  padding: 10px;
+}
+
+.config-sidebar-head,
+.config-editor-head,
+.config-editor-footer,
+.config-section-head {
+  align-items: start;
+  display: flex;
+  gap: 12px;
+  justify-content: space-between;
+}
+
+.config-sidebar-head h3,
+.config-editor-head h3,
+.config-section-head h4 {
+  color: #202225;
+  font-size: 15px;
+  font-weight: 650;
+  line-height: 1.25;
+  margin: 0;
+}
+
+.config-editor-head h3 {
+  font-size: 20px;
+}
+
+.config-sidebar-head span {
+  color: #8a8a8a;
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+}
+
+.config-selector-list {
+  display: grid;
+  gap: 8px;
+}
+
+.config-selector {
+  align-items: center;
+  background: #fbfbfa;
+  border: 1px solid #ededed;
+  border-radius: 8px;
+  color: inherit;
+  cursor: pointer;
+  display: grid;
+  gap: 10px;
+  grid-template-columns: minmax(0, 1fr) auto;
+  min-height: 68px;
+  padding: 10px;
+  text-align: left;
+}
+
+.config-selector:hover,
+.config-selector.active {
+  background: #f3f8f5;
+  border-color: #cbded2;
+}
+
+.config-selector strong,
+.tool-row strong {
+  color: #202225;
+  display: block;
+  font-size: 13px;
+  line-height: 1.35;
+}
+
+.config-selector small,
+.config-editor-head p,
+.config-section-head p,
+.tool-row p,
+.tool-row span {
+  color: #6e6e6e;
+  font-size: 12px;
+  line-height: 1.5;
+  margin: 0;
+}
+
+.config-editor {
+  display: grid;
+  gap: 14px;
+  min-width: 0;
+  padding: 14px;
+}
+
+.config-callout {
+  background: #f6faf7;
+  border: 1px solid #d7e8dc;
+  border-radius: 8px;
+  display: grid;
+  gap: 4px;
+  padding: 12px;
+}
+
+.config-callout strong {
+  color: #214c32;
+  font-size: 13px;
+}
+
+.config-callout p {
+  color: #456050;
+  font-size: 13px;
+  margin: 0;
+}
+
+.config-section-grid {
+  display: grid;
+  gap: 12px;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.config-section {
+  display: grid;
+  gap: 12px;
+  min-width: 0;
+  padding: 14px;
+}
+
+.config-section-span {
+  grid-column: 1 / -1;
+}
+
+.dialog-config-section {
+  margin-top: 12px;
+}
+
+.sdk-field-grid {
+  display: grid;
+  gap: 12px;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+
+.compact-sdk-field-grid {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.config-wide-field {
+  grid-column: 1 / -1;
+}
+
+.sdk-field-grid label,
+.config-section > label,
+.native-tool-card label,
+.config-kv-list {
+  display: grid;
+  gap: 7px;
+}
+
+.sdk-field-grid label span,
+.config-section > label span,
+.native-tool-card label span {
+  color: #5f615e;
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.config-textarea {
+  min-height: 160px;
+}
+
+.sdk-toggle-cluster,
+.config-checkbox-list,
+.native-tool-grid,
+.tool-list {
+  display: grid;
+  gap: 8px;
+}
+
+.sdk-toggle-cluster {
+  align-content: start;
+}
+
+.config-checkbox-list {
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+}
+
+.compact-checkbox-list {
+  grid-template-columns: repeat(auto-fit, minmax(120px, 1fr));
+}
+
+.config-checkbox {
+  align-items: center;
+  background: #fbfbfa;
+  border: 1px solid #e8e8e4;
+  border-radius: 8px;
+  display: flex;
+  gap: 9px;
+  min-height: 38px;
+  padding: 8px 10px;
+}
+
+.config-checkbox input {
+  accent-color: #202225;
+  flex: 0 0 auto;
+}
+
+.config-checkbox span {
+  color: #202225;
+  font-size: 13px;
+  line-height: 1.35;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.native-tool-grid {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.native-tool-card {
+  background: #fbfbfa;
+  border: 1px solid #ededed;
+  border-radius: 8px;
+  display: grid;
+  gap: 10px;
+  min-width: 0;
+  padding: 12px;
+}
+
+.config-kv-list {
+  grid-template-columns: minmax(120px, auto) minmax(0, 1fr);
+}
+
+.config-kv-list span {
+  color: #777973;
+  font-size: 12px;
+}
+
+.config-kv-list strong {
+  color: #202225;
+  font-size: 12px;
+  font-weight: 600;
+  line-height: 1.45;
+  overflow-wrap: anywhere;
+}
+
+.config-editor-footer {
+  justify-content: start;
+}
+
+.inline-footer {
+  margin-top: 2px;
+}
+
+.tool-row {
+  background: #fbfbfa;
+  border: 1px solid #ededed;
+  border-radius: 8px;
+  display: grid;
+  gap: 5px;
+  padding: 10px;
+}
+
+.tool-authorization-list {
+  grid-template-columns: 1fr;
+}
+
 .route-table-wrap {
   min-width: 0;
   overflow: auto;
@@ -4359,13 +4652,52 @@ textarea {
   .audit-filter-grid,
   .provider-catalog-panel,
   .form-grid,
+  .config-summary-strip,
+  .config-workbench,
+  .config-section-grid,
+  .sdk-field-grid,
+  .compact-sdk-field-grid,
+  .native-tool-grid,
   .task-row {
     grid-template-columns: 1fr;
   }
 
   .admin-route-nav {
+    gap: 10px;
+    height: auto;
     max-height: none;
+    overflow: hidden;
+    padding: 10px;
     position: static;
+  }
+
+  .admin-route-shell {
+    height: auto;
+    min-height: 100dvh;
+    overflow: auto;
+    padding: 8px;
+  }
+
+  .admin-route-main {
+    height: auto;
+    overflow: visible;
+    padding: 12px;
+  }
+
+  .nav-list {
+    display: flex;
+    gap: 8px;
+    overflow-x: auto;
+    padding-bottom: 2px;
+  }
+
+  .nav-item {
+    flex: 0 0 min(190px, 72vw);
+    min-height: 44px;
+  }
+
+  .nav-item:hover {
+    transform: none;
   }
 }
 
@@ -4831,6 +5163,32 @@ textarea {
   padding: 0 !important;
   width: 100%;
 }
+
+/* 模型思考中指示器 */
+@keyframes thinking-bounce {
+  0%, 80%, 100% { transform: translateY(0); opacity: 0.35; }
+  40%           { transform: translateY(-6px); opacity: 1; }
+}
+
+.thinking-indicator {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  padding: 12px 16px;
+}
+
+.thinking-dot {
+  display: inline-block;
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--muted-foreground, #888);
+  animation: thinking-bounce 1.2s ease-in-out infinite;
+}
+
+.thinking-dot:nth-child(1) { animation-delay: 0s; }
+.thinking-dot:nth-child(2) { animation-delay: 0.2s; }
+.thinking-dot:nth-child(3) { animation-delay: 0.4s; }
 
 .conversation-empty-hero {
   align-content: center;

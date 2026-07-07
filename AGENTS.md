@@ -6,6 +6,12 @@ Tradeoff: these guidelines bias toward caution over speed. For trivial tasks, us
 
 ## 使用中文回复我
 
+## Highest-Priority Development Rule
+
+Do not validate feature development with mock data as the primary evidence. During development, test and verify functionality against the real local development environment, using the actual local services, database, API flows, and UI behavior wherever the feature depends on them.
+
+Mock data may be used only for narrow, isolated unit tests, and it never counts as final verification for a developed feature.
+
 ## Project-Specific Instructions
 
 ### Issue tracker

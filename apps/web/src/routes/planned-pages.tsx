@@ -57,6 +57,7 @@ import ScrollTrigger from "gsap/ScrollTrigger";
 import {
   Select,
   SelectContent,
+  SelectGroup,
   SelectItem,
   SelectTrigger,
   SelectValue,
@@ -115,20 +116,34 @@ type McpConnectionType = "SSE" | "Streamable HTTP";
 type McpServer = {
   id: number;
   name: string;
+  connectionTypeValue: ApiMcpServer["connection_type"];
   connectionType: McpConnectionType;
+  headerSecretRefs: Record<string, string>;
   credentialReference: string;
-  discoveryStatus: "Discovered" | "Pending discovery";
+  discoveryStatus: ApiMcpServer["last_discovery_status"];
+  discoveryStatusLabel: string;
   authorization: string;
   toolCount: number;
   timeoutSeconds: number;
   url: string;
+  enabled: boolean;
 };
 
 type McpToolDiscovery = {
+  id: number;
+  serverId: number;
   name: string;
   description: string;
   schemaSummary: string;
   lastDiscovered: string;
+};
+
+type McpToolAuthorizationRecord = {
+  id: number;
+  agent_id: number;
+  server_id: number;
+  tool_name: string;
+  enabled: boolean;
 };
 
 type RunAuditStatus = "running" | "completed" | "failed" | "cancelled";
@@ -178,6 +193,8 @@ type AgentLifecycleRecord = {
   instruction: string;
   processVisibility: string;
   processVisibilityValue: ApiAgent["process_visibility"];
+  sdkSettingsSummary: string;
+  sdkSettingsValue: ApiAgent["sdk_settings"];
   defaultModel: string;
   defaultModelConfigurationId: number | null;
   allowedModels: string[];
@@ -201,8 +218,10 @@ type ModelConfigurationRecord = {
   status: ModelConfigurationStatus;
   enabled: boolean;
   baseUrl: string;
-  defaultParameters: string;
-  defaultParametersValue: Record<string, unknown>;
+  modelSettings: string;
+  modelSettingsValue: Record<string, unknown>;
+  nativeTools: string;
+  nativeToolSettingsValue: Record<string, unknown>;
   lastUpdated: string;
   healthStatus: ModelHealthStatus;
   healthLabel: string;
@@ -222,6 +241,11 @@ type ApiAgent = {
   is_default: boolean;
   instruction: string;
   process_visibility: "minimal" | "standard" | "verbose";
+  sdk_settings: {
+    max_turns: number;
+    tool_use_behavior: "run_llm_again" | "stop_on_first_tool";
+    reset_tool_choice: boolean;
+  };
   default_model_configuration_id: number | null;
   allowed_model_configuration_ids: number[];
   capability_policy: {
@@ -315,7 +339,8 @@ type ApiModelConfiguration = {
   model_name: string;
   endpoint: string;
   credential_reference: string;
-  default_parameters: Record<string, unknown>;
+  model_settings: Record<string, unknown>;
+  native_tool_settings: Record<string, unknown>;
   enabled: boolean;
   health_status: ModelHealthStatus;
   last_checked_at: string | null;
@@ -604,6 +629,8 @@ function mapAgent(agent: ApiAgent): AgentLifecycleRecord {
     instruction: agent.instruction,
     processVisibility: `过程可见性：${processVisibilityLabel(agent.process_visibility)}`,
     processVisibilityValue: agent.process_visibility,
+    sdkSettingsSummary: agentSdkSettingsSummary(agent.sdk_settings),
+    sdkSettingsValue: agent.sdk_settings,
     defaultModel: agent.default_model_configuration_id ? `模型配置 #${agent.default_model_configuration_id}` : "未设置",
     defaultModelConfigurationId: agent.default_model_configuration_id,
     allowedModels: allowedModels.length > 0 ? allowedModels : ["未设置"],
@@ -669,9 +696,6 @@ function mapModelConfiguration(
   const providerName =
     providers.find((provider) => provider.id === configuration.provider_id)?.name ??
     configuration.provider_id;
-  const parameterText = Object.entries(configuration.default_parameters)
-    .map(([key, value]) => `${key} ${String(value)}`)
-    .join(", ");
   return {
     id: String(configuration.id),
     providerId: configuration.provider_id,
@@ -682,8 +706,10 @@ function mapModelConfiguration(
     status: configuration.enabled ? "enabled" : "disabled",
     enabled: configuration.enabled,
     baseUrl: configuration.endpoint,
-    defaultParameters: parameterText || "未设置",
-    defaultParametersValue: configuration.default_parameters,
+    modelSettings: settingsSummary(configuration.model_settings),
+    modelSettingsValue: configuration.model_settings,
+    nativeTools: nativeToolSettingsSummary(configuration.native_tool_settings),
+    nativeToolSettingsValue: configuration.native_tool_settings,
     lastUpdated: compactTimestamp(configuration.last_checked_at),
     healthStatus: configuration.health_status,
     healthLabel: modelHealthLabel(configuration.health_status),
@@ -701,23 +727,213 @@ function mapMcpServer(server: ApiMcpServer): McpServer {
   return {
     id: server.id,
     name: server.name,
+    connectionTypeValue: server.connection_type,
     connectionType: server.connection_type === "sse" ? "SSE" : "Streamable HTTP",
-    credentialReference: Object.keys(server.header_secret_refs).length > 0 ? "密钥引用" : "未配置",
-    discoveryStatus: server.last_discovery_status === "succeeded" ? "Discovered" : "Pending discovery",
+    headerSecretRefs: server.header_secret_refs,
+    credentialReference: Object.keys(server.header_secret_refs).length > 0
+      ? Object.entries(server.header_secret_refs)
+        .map(([key, value]) => `${key}: ${value}`)
+        .join(", ")
+      : "",
+    discoveryStatus: server.last_discovery_status,
+    discoveryStatusLabel: discoveryStatusLabel(server.last_discovery_status),
     authorization: server.enabled ? "按智能体策略授权" : "已停用",
     toolCount: 0,
     timeoutSeconds: server.timeout_seconds,
     url: server.url,
+    enabled: server.enabled,
   };
 }
 
 function mapMcpTool(tool: ApiMcpTool): McpToolDiscovery {
   return {
+    id: tool.id,
+    serverId: tool.server_id,
     name: tool.tool_name,
     description: tool.description || "后端未填写工具说明。",
     schemaSummary: Object.keys(tool.input_schema).join(", ") || "schema",
     lastDiscovered: "后端未记录",
   };
+}
+
+function scalarSettingSummary(value: unknown) {
+  if (typeof value === "boolean") {
+    return value ? "true" : "false";
+  }
+  if (value === null || value === undefined || value === "") {
+    return "未设置";
+  }
+  if (typeof value === "object") {
+    return JSON.stringify(value);
+  }
+  return String(value);
+}
+
+function settingsSummary(settings: Record<string, unknown>) {
+  const preferredKeys = [
+    "temperature",
+    "top_p",
+    "max_tokens",
+    "reasoning",
+    "verbosity",
+    "tool_choice",
+    "parallel_tool_calls",
+    "store",
+  ];
+  const lines = preferredKeys
+    .filter((key) => settings[key] !== undefined && settings[key] !== "")
+    .map((key) => `${key} ${scalarSettingSummary(settings[key])}`);
+  return lines.length > 0 ? lines.join(", ") : "使用 SDK 默认值";
+}
+
+function nativeToolSettingsSummary(settings: Record<string, unknown>) {
+  const enabledTools = [
+    settings.web_search ? "Web search" : null,
+    settings.shell ? "Shell" : null,
+    settings.file_search ? "File search" : null,
+    settings.code_interpreter ? "Code interpreter" : null,
+    settings.image_generation ? "Image generation" : null,
+    settings.mcp ? "Hosted MCP" : null,
+    settings.tool_search ? "Tool search" : null,
+  ].filter(Boolean);
+  return enabledTools.length > 0 ? enabledTools.join("、") : "未启用原生工具";
+}
+
+function agentSdkSettingsSummary(settings: ApiAgent["sdk_settings"]) {
+  const behavior = settings.tool_use_behavior === "stop_on_first_tool"
+    ? "首个工具结果即结束"
+    : "工具后继续让模型总结";
+  return `${settings.max_turns} turns · ${behavior}`;
+}
+
+function getNestedRecord(record: Record<string, unknown>, key: string) {
+  const value = record[key];
+  return value && typeof value === "object" && !Array.isArray(value)
+    ? value as Record<string, unknown>
+    : {};
+}
+
+function numericField(formData: FormData, name: string): number | undefined {
+  const raw = String(formData.get(name) ?? "").trim();
+  if (!raw) {
+    return undefined;
+  }
+  const parsed = Number.parseFloat(raw);
+  return Number.isFinite(parsed) ? parsed : undefined;
+}
+
+function integerField(formData: FormData, name: string): number | undefined {
+  const raw = String(formData.get(name) ?? "").trim();
+  if (!raw) {
+    return undefined;
+  }
+  const parsed = Number.parseInt(raw, 10);
+  return Number.isFinite(parsed) ? parsed : undefined;
+}
+
+function stringListField(formData: FormData, name: string) {
+  return String(formData.get(name) ?? "")
+    .split(",")
+    .map((item) => item.trim())
+    .filter(Boolean);
+}
+
+function buildModelSettings(formData: FormData) {
+  const settings: Record<string, unknown> = {};
+  const temperature = numericField(formData, "temperature");
+  const topP = numericField(formData, "topP");
+  const maxTokens = integerField(formData, "maxTokens");
+  const frequencyPenalty = numericField(formData, "frequencyPenalty");
+  const presencePenalty = numericField(formData, "presencePenalty");
+  const topLogprobs = integerField(formData, "topLogprobs");
+  const reasoningEffort = String(formData.get("reasoningEffort") ?? "");
+  const verbosity = String(formData.get("verbosity") ?? "");
+  const toolChoice = String(formData.get("toolChoice") ?? "");
+  const truncation = String(formData.get("truncation") ?? "");
+  const promptCacheRetention = String(formData.get("promptCacheRetention") ?? "");
+
+  if (temperature !== undefined) settings.temperature = temperature;
+  if (topP !== undefined) settings.top_p = topP;
+  if (maxTokens !== undefined) settings.max_tokens = maxTokens;
+  if (frequencyPenalty !== undefined) settings.frequency_penalty = frequencyPenalty;
+  if (presencePenalty !== undefined) settings.presence_penalty = presencePenalty;
+  if (topLogprobs !== undefined) settings.top_logprobs = topLogprobs;
+  if (reasoningEffort && reasoningEffort !== "sdk_default") {
+    settings.reasoning = { effort: reasoningEffort };
+  }
+  if (verbosity && verbosity !== "sdk_default") settings.verbosity = verbosity;
+  if (toolChoice && toolChoice !== "sdk_default") settings.tool_choice = toolChoice;
+  if (truncation && truncation !== "sdk_default") settings.truncation = truncation;
+  if (promptCacheRetention && promptCacheRetention !== "sdk_default") {
+    settings.prompt_cache_retention = promptCacheRetention;
+  }
+  if (formData.has("parallelToolCalls")) settings.parallel_tool_calls = true;
+  if (formData.has("storeResponse")) settings.store = true;
+  if (formData.has("includeUsage")) settings.include_usage = true;
+  return settings;
+}
+
+function buildNativeToolSettings(formData: FormData) {
+  const settings: Record<string, unknown> = {};
+  if (formData.has("webSearchEnabled")) {
+    settings.web_search = {
+      search_context_size: String(formData.get("webSearchContext") ?? "medium"),
+      external_web_access: formData.has("externalWebAccess"),
+    };
+  }
+  if (formData.has("shellEnabled")) {
+    settings.shell = {
+      environment: {
+        type: String(formData.get("shellEnvironment") ?? "container_auto"),
+        network_policy: {
+          type: String(formData.get("shellNetworkPolicy") ?? "disabled"),
+        },
+      },
+    };
+  }
+  if (formData.has("fileSearchEnabled")) {
+    const vectorStoreIds = stringListField(formData, "vectorStoreIds");
+    if (vectorStoreIds.length > 0) {
+      settings.file_search = {
+        vector_store_ids: vectorStoreIds,
+        max_num_results: integerField(formData, "fileSearchMaxResults"),
+        include_search_results: formData.has("includeFileSearchResults"),
+      };
+    }
+  }
+  if (formData.has("mcpNativeEnabled")) {
+    settings.mcp = {
+      defer_loading: formData.has("mcpDeferLoading"),
+    };
+    if (formData.has("toolSearchEnabled")) {
+      settings.tool_search = {
+        description: String(formData.get("toolSearchDescription") ?? "").trim() || undefined,
+        execution: String(formData.get("toolSearchExecution") ?? "server"),
+      };
+    }
+  }
+  const codeInterpreterContainer = String(formData.get("codeInterpreterContainer") ?? "").trim();
+  if (formData.has("codeInterpreterEnabled") && codeInterpreterContainer) {
+    settings.code_interpreter = {
+      container: codeInterpreterContainer,
+    };
+  }
+  if (formData.has("imageGenerationEnabled")) {
+    settings.image_generation = {};
+  }
+  return settings;
+}
+
+function buildAgentSdkSettings(formData: FormData, fallback: ApiAgent["sdk_settings"]) {
+  const maxTurns = Number.parseInt(String(formData.get("maxTurns") ?? ""), 10);
+  const toolUseBehavior = String(formData.get("toolUseBehavior") ?? fallback.tool_use_behavior);
+  return {
+    max_turns: Number.isFinite(maxTurns) ? Math.min(Math.max(maxTurns, 1), 50) : fallback.max_turns,
+    tool_use_behavior: toolUseBehavior === "stop_on_first_tool"
+      ? "stop_on_first_tool"
+      : "run_llm_again",
+    reset_tool_choice: formData.has("resetToolChoice"),
+  } satisfies ApiAgent["sdk_settings"];
 }
 
 function mapFullTrace(run: AgentRunAuditRecord, trace: ApiFullTrace): FullTraceRecord {
@@ -743,9 +959,9 @@ function mapFullTrace(run: AgentRunAuditRecord, trace: ApiFullTrace): FullTraceR
 const adminModules: AdminModule[] = [
   { route: "admin-overview", href: "/admin", title: "治理总览", meta: "待办与风险", icon: Gauge },
   { route: "account-approval", href: "/admin/account-approval", title: "账号审批", meta: "本地账号", icon: UserCheck },
-  { route: "agent-lifecycle", href: "/admin/agents", title: "智能体生命周期", meta: "策略与能力", icon: Bot },
-  { route: "model-configurations", href: "/admin/models", title: "模型配置", meta: "提供商目录", icon: Settings2 },
-  { route: "mcp-servers", href: "/admin/mcp-servers", title: "MCP 服务器", meta: "工具注册表", icon: ServerCog },
+  { route: "agent-lifecycle", href: "/admin/agents", title: "Agent 配置", meta: "运行策略", icon: Bot },
+  { route: "model-configurations", href: "/admin/models", title: "模型运行配置", meta: "ModelSettings", icon: Settings2 },
+  { route: "mcp-servers", href: "/admin/mcp-servers", title: "工具与 MCP", meta: "工具授权", icon: ServerCog },
   { route: "search-provider", href: "/admin/search-provider", title: "搜索提供方", meta: "搜索能力", icon: Search },
   { route: "page-read-provider", href: "/admin/page-read-provider", title: "页面读取提供方", meta: "页面读取能力", icon: FileText },
   { route: "sandbox-status", href: "/admin/sandbox", title: "沙箱状态", meta: "沙箱能力", icon: TerminalSquare },
@@ -1952,19 +2168,324 @@ function modelHealthLabel(status: ModelHealthStatus) {
   }
 }
 
+function modelConfigurationLabel(configuration: ModelConfigurationRecord) {
+  return `${configuration.provider} · ${configuration.model}`;
+}
+
+function modelById(configurations: ModelConfigurationRecord[], id: number | null) {
+  if (id === null) {
+    return null;
+  }
+  return configurations.find((configuration) => Number(configuration.id) === id) ?? null;
+}
+
+function selectedModelIds(formData: FormData, fallbackDefaultModelId: number | null) {
+  const selectedIds = formData
+    .getAll("allowedModelIds")
+    .map((value) => Number.parseInt(String(value), 10))
+    .filter(Number.isFinite);
+  if (fallbackDefaultModelId !== null && !selectedIds.includes(fallbackDefaultModelId)) {
+    selectedIds.unshift(fallbackDefaultModelId);
+  }
+  return selectedIds;
+}
+
+function selectedMcpServerIds(formData: FormData) {
+  return formData
+    .getAll("mcpServerIds")
+    .map((value) => Number.parseInt(String(value), 10))
+    .filter(Number.isFinite);
+}
+
+function firstHeaderSecretEntry(server: McpServer | null) {
+  if (!server) {
+    return ["Authorization", ""] as const;
+  }
+  const entry = Object.entries(server.headerSecretRefs)[0];
+  if (!entry) {
+    return ["Authorization", ""] as const;
+  }
+  return [entry[0], entry[1]] as const;
+}
+
+function ModelSettingsFields({ settings }: { settings: Record<string, unknown> }) {
+  const reasoning = getNestedRecord(settings, "reasoning");
+  const reasoningEffort = typeof reasoning.effort === "string" ? reasoning.effort : "sdk_default";
+  const verbosity = typeof settings.verbosity === "string" ? settings.verbosity : "sdk_default";
+  const toolChoice = typeof settings.tool_choice === "string" ? settings.tool_choice : "sdk_default";
+  const truncation = typeof settings.truncation === "string" ? settings.truncation : "sdk_default";
+  const promptCacheRetention = typeof settings.prompt_cache_retention === "string"
+    ? settings.prompt_cache_retention
+    : "sdk_default";
+
+  return (
+    <div className="sdk-field-grid">
+      <label>
+        <span>Temperature</span>
+        <Input name="temperature" defaultValue={String(settings.temperature ?? "")} inputMode="decimal" placeholder="SDK 默认" />
+      </label>
+      <label>
+        <span>Top P</span>
+        <Input name="topP" defaultValue={String(settings.top_p ?? "")} inputMode="decimal" placeholder="SDK 默认" />
+      </label>
+      <label>
+        <span>Max tokens</span>
+        <Input name="maxTokens" defaultValue={String(settings.max_tokens ?? "")} inputMode="numeric" placeholder="SDK 默认" />
+      </label>
+      <label>
+        <span>Reasoning effort</span>
+        <Select name="reasoningEffort" defaultValue={reasoningEffort}>
+          <SelectTrigger>
+            <SelectValue placeholder="SDK 默认" />
+          </SelectTrigger>
+          <SelectContent>
+            <SelectGroup>
+              <SelectItem value="sdk_default">SDK 默认</SelectItem>
+              <SelectItem value="low">low</SelectItem>
+              <SelectItem value="medium">medium</SelectItem>
+              <SelectItem value="high">high</SelectItem>
+            </SelectGroup>
+          </SelectContent>
+        </Select>
+      </label>
+      <label>
+        <span>Verbosity</span>
+        <Select name="verbosity" defaultValue={verbosity}>
+          <SelectTrigger>
+            <SelectValue placeholder="SDK 默认" />
+          </SelectTrigger>
+          <SelectContent>
+            <SelectGroup>
+              <SelectItem value="sdk_default">SDK 默认</SelectItem>
+              <SelectItem value="low">low</SelectItem>
+              <SelectItem value="medium">medium</SelectItem>
+              <SelectItem value="high">high</SelectItem>
+            </SelectGroup>
+          </SelectContent>
+        </Select>
+      </label>
+      <label>
+        <span>Tool choice</span>
+        <Select name="toolChoice" defaultValue={toolChoice}>
+          <SelectTrigger>
+            <SelectValue placeholder="SDK 默认" />
+          </SelectTrigger>
+          <SelectContent>
+            <SelectGroup>
+              <SelectItem value="sdk_default">SDK 默认</SelectItem>
+              <SelectItem value="auto">auto</SelectItem>
+              <SelectItem value="none">none</SelectItem>
+              <SelectItem value="required">required</SelectItem>
+            </SelectGroup>
+          </SelectContent>
+        </Select>
+      </label>
+      <label>
+        <span>Truncation</span>
+        <Select name="truncation" defaultValue={truncation}>
+          <SelectTrigger>
+            <SelectValue placeholder="SDK 默认" />
+          </SelectTrigger>
+          <SelectContent>
+            <SelectGroup>
+              <SelectItem value="sdk_default">SDK 默认</SelectItem>
+              <SelectItem value="auto">auto</SelectItem>
+              <SelectItem value="disabled">disabled</SelectItem>
+            </SelectGroup>
+          </SelectContent>
+        </Select>
+      </label>
+      <label>
+        <span>Prompt cache</span>
+        <Select name="promptCacheRetention" defaultValue={promptCacheRetention}>
+          <SelectTrigger>
+            <SelectValue placeholder="SDK 默认" />
+          </SelectTrigger>
+          <SelectContent>
+            <SelectGroup>
+              <SelectItem value="sdk_default">SDK 默认</SelectItem>
+              <SelectItem value="in_memory">in_memory</SelectItem>
+              <SelectItem value="24h">24h</SelectItem>
+            </SelectGroup>
+          </SelectContent>
+        </Select>
+      </label>
+      <label>
+        <span>Frequency penalty</span>
+        <Input name="frequencyPenalty" defaultValue={String(settings.frequency_penalty ?? "")} inputMode="decimal" placeholder="SDK 默认" />
+      </label>
+      <label>
+        <span>Presence penalty</span>
+        <Input name="presencePenalty" defaultValue={String(settings.presence_penalty ?? "")} inputMode="decimal" placeholder="SDK 默认" />
+      </label>
+      <label>
+        <span>Top logprobs</span>
+        <Input name="topLogprobs" defaultValue={String(settings.top_logprobs ?? "")} inputMode="numeric" placeholder="SDK 默认" />
+      </label>
+      <div className="sdk-toggle-cluster" aria-label="模型布尔参数">
+        <label className="config-checkbox">
+          <input defaultChecked={settings.parallel_tool_calls === true} name="parallelToolCalls" type="checkbox" />
+          <span>parallel_tool_calls</span>
+        </label>
+        <label className="config-checkbox">
+          <input defaultChecked={settings.store === true} name="storeResponse" type="checkbox" />
+          <span>store</span>
+        </label>
+        <label className="config-checkbox">
+          <input defaultChecked={settings.include_usage === true} name="includeUsage" type="checkbox" />
+          <span>include_usage</span>
+        </label>
+      </div>
+    </div>
+  );
+}
+
+function NativeToolSettingsFields({ settings }: { settings: Record<string, unknown> }) {
+  const webSearch = getNestedRecord(settings, "web_search");
+  const shell = getNestedRecord(settings, "shell");
+  const shellEnvironment = getNestedRecord(shell, "environment");
+  const shellNetworkPolicy = getNestedRecord(shellEnvironment, "network_policy");
+  const fileSearch = getNestedRecord(settings, "file_search");
+  const codeInterpreter = getNestedRecord(settings, "code_interpreter");
+  const mcp = getNestedRecord(settings, "mcp");
+  const toolSearch = getNestedRecord(settings, "tool_search");
+
+  return (
+    <div className="native-tool-grid">
+      <section className="native-tool-card">
+        <label className="config-checkbox">
+          <input defaultChecked={Boolean(settings.web_search)} name="webSearchEnabled" type="checkbox" />
+          <span>WebSearchTool</span>
+        </label>
+        <div className="sdk-field-grid compact-sdk-field-grid">
+          <label>
+            <span>Context size</span>
+            <Select name="webSearchContext" defaultValue={String(webSearch.search_context_size ?? "medium")}>
+              <SelectTrigger>
+                <SelectValue placeholder="medium" />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectGroup>
+                  <SelectItem value="low">low</SelectItem>
+                  <SelectItem value="medium">medium</SelectItem>
+                  <SelectItem value="high">high</SelectItem>
+                </SelectGroup>
+              </SelectContent>
+            </Select>
+          </label>
+          <label className="config-checkbox">
+            <input defaultChecked={webSearch.external_web_access === true} name="externalWebAccess" type="checkbox" />
+            <span>external_web_access</span>
+          </label>
+        </div>
+      </section>
+      <section className="native-tool-card">
+        <label className="config-checkbox">
+          <input defaultChecked={Boolean(settings.shell)} name="shellEnabled" type="checkbox" />
+          <span>ShellTool</span>
+        </label>
+        <div className="sdk-field-grid compact-sdk-field-grid">
+          <label>
+            <span>Environment</span>
+            <Input name="shellEnvironment" defaultValue={String(shellEnvironment.type ?? "container_auto")} />
+          </label>
+          <label>
+            <span>Network policy</span>
+            <Select name="shellNetworkPolicy" defaultValue={String(shellNetworkPolicy.type ?? "disabled")}>
+              <SelectTrigger>
+                <SelectValue placeholder="disabled" />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectGroup>
+                  <SelectItem value="disabled">disabled</SelectItem>
+                  <SelectItem value="enabled">enabled</SelectItem>
+                </SelectGroup>
+              </SelectContent>
+            </Select>
+          </label>
+        </div>
+      </section>
+      <section className="native-tool-card">
+        <label className="config-checkbox">
+          <input defaultChecked={Boolean(settings.file_search)} name="fileSearchEnabled" type="checkbox" />
+          <span>FileSearchTool</span>
+        </label>
+        <div className="sdk-field-grid compact-sdk-field-grid">
+          <label>
+            <span>Vector store IDs</span>
+            <Input
+              name="vectorStoreIds"
+              defaultValue={Array.isArray(fileSearch.vector_store_ids) ? fileSearch.vector_store_ids.join(", ") : ""}
+              placeholder="vs_123, vs_456"
+            />
+          </label>
+          <label>
+            <span>Max results</span>
+            <Input name="fileSearchMaxResults" defaultValue={String(fileSearch.max_num_results ?? "")} inputMode="numeric" />
+          </label>
+          <label className="config-checkbox">
+            <input defaultChecked={fileSearch.include_search_results === true} name="includeFileSearchResults" type="checkbox" />
+            <span>include_search_results</span>
+          </label>
+        </div>
+      </section>
+      <section className="native-tool-card">
+        <label className="config-checkbox">
+          <input defaultChecked={Boolean(settings.mcp)} name="mcpNativeEnabled" type="checkbox" />
+          <span>HostedMCPTool</span>
+        </label>
+        <div className="sdk-field-grid compact-sdk-field-grid">
+          <label className="config-checkbox">
+            <input defaultChecked={mcp.defer_loading === true} name="mcpDeferLoading" type="checkbox" />
+            <span>defer_loading</span>
+          </label>
+          <label className="config-checkbox">
+            <input defaultChecked={Boolean(settings.tool_search)} name="toolSearchEnabled" type="checkbox" />
+            <span>ToolSearchTool</span>
+          </label>
+          <label>
+            <span>Tool search description</span>
+            <Input name="toolSearchDescription" defaultValue={String(toolSearch.description ?? "")} />
+          </label>
+          <label>
+            <span>Execution</span>
+            <Input name="toolSearchExecution" defaultValue={String(toolSearch.execution ?? "server")} />
+          </label>
+        </div>
+      </section>
+      <section className="native-tool-card">
+        <label className="config-checkbox">
+          <input defaultChecked={Boolean(settings.code_interpreter)} name="codeInterpreterEnabled" type="checkbox" />
+          <span>CodeInterpreterTool</span>
+        </label>
+        <label>
+          <span>Container</span>
+          <Input name="codeInterpreterContainer" defaultValue={String(codeInterpreter.container ?? "")} placeholder="container id 或配置" />
+        </label>
+      </section>
+      <section className="native-tool-card">
+        <label className="config-checkbox">
+          <input defaultChecked={Boolean(settings.image_generation)} name="imageGenerationEnabled" type="checkbox" />
+          <span>ImageGenerationTool</span>
+        </label>
+        <p className="inline-note">启用后由 SDK 原生工具配置透传。</p>
+      </section>
+    </div>
+  );
+}
+
 function AgentLifecyclePanel() {
   const [agents, setAgents] = useState<AgentLifecycleRecord[]>([]);
   const [modelConfigurations, setModelConfigurations] = useState<ModelConfigurationRecord[]>([]);
+  const [mcpServers, setMcpServers] = useState<McpServer[]>([]);
   const [loadError, setLoadError] = useState("");
   const [saveStatus, setSaveStatus] = useState("");
   const [agentReadiness, setAgentReadiness] = useState<ApiAgentReadiness | null>(null);
   const [isLoading, setIsLoading] = useState(true);
   const [selectedAgentId, setSelectedAgentId] = useState("");
   const [isCreateDraftOpen, setIsCreateDraftOpen] = useState(false);
-  const [newAgentProcessVisibility, setNewAgentProcessVisibility] = useState<ApiAgent["process_visibility"]>("standard");
-  const [newAgentDefaultModelId, setNewAgentDefaultModelId] = useState("");
-  const selectedAgent =
-    agents.find((agent) => agent.id === selectedAgentId) ?? agents[0] ?? null;
+  const selectedAgent = agents.find((agent) => agent.id === selectedAgentId) ?? agents[0] ?? null;
+  const defaultModel = modelById(modelConfigurations, selectedAgent?.defaultModelConfigurationId ?? null);
 
   useEffect(() => {
     setAgentReadiness(null);
@@ -1979,8 +2500,9 @@ function AgentLifecyclePanel() {
       adminFetch<ApiAgent[]>("/api/admin/agents"),
       adminFetch<ApiModelConfiguration[]>("/api/admin/model-configurations"),
       adminFetch<ApiModelProvider[]>("/api/admin/model-providers"),
+      adminFetch<ApiMcpServer[]>("/api/admin/mcp-servers"),
     ])
-      .then(([agentResult, modelResult, providerResult]) => {
+      .then(([agentResult, modelResult, providerResult, serverResult]) => {
         if (!isCurrent) {
           return;
         }
@@ -1990,8 +2512,8 @@ function AgentLifecyclePanel() {
         );
         setAgents(mappedAgents);
         setModelConfigurations(mappedConfigurations);
+        setMcpServers(serverResult.map(mapMcpServer));
         setSelectedAgentId(mappedAgents[0]?.id ?? "");
-        setNewAgentDefaultModelId(String(mappedConfigurations[0]?.id ?? ""));
       })
       .catch(() => {
         if (!isCurrent) {
@@ -1999,8 +2521,9 @@ function AgentLifecyclePanel() {
         }
         setAgents([]);
         setModelConfigurations([]);
+        setMcpServers([]);
         setSelectedAgentId("");
-        setLoadError("无法加载智能体列表，请检查管理员权限或后端服务。");
+        setLoadError("无法加载 Agent 配置，请检查管理员权限或后端服务。");
       })
       .finally(() => {
         if (isCurrent) {
@@ -2013,6 +2536,17 @@ function AgentLifecyclePanel() {
     };
   }, []);
 
+  function upsertAgent(updated: ApiAgent) {
+    const mappedAgent = mapAgent(updated);
+    setAgents((currentAgents) =>
+      currentAgents.some((agent) => agent.id === mappedAgent.id)
+        ? currentAgents.map((agent) => agent.id === mappedAgent.id ? mappedAgent : agent)
+        : [...currentAgents, mappedAgent],
+    );
+    setSelectedAgentId(mappedAgent.id);
+    return mappedAgent;
+  }
+
   async function setAgentStatus(action: "disable" | "enable" | "retire") {
     if (!selectedAgent) {
       return;
@@ -2022,13 +2556,9 @@ function AgentLifecyclePanel() {
       const updated = await adminFetch<ApiAgent>(`/api/admin/agents/${selectedAgent.id}/${action}`, {
         method: "POST",
       });
-      const mappedAgent = mapAgent(updated);
-      setAgents((currentAgents) =>
-        currentAgents.map((agent) => agent.id === mappedAgent.id ? mappedAgent : agent),
-      );
-      setSelectedAgentId(mappedAgent.id);
+      upsertAgent(updated);
     } catch {
-      setLoadError("智能体状态更新失败，请稍后重试。");
+      setLoadError("Agent 状态更新失败，请稍后重试。");
     }
   }
 
@@ -2044,70 +2574,24 @@ function AgentLifecyclePanel() {
         { method: "POST" },
       );
       setAgentReadiness(result);
-      setSaveStatus(result.ready ? "智能体已就绪。" : "智能体未就绪。");
+      setSaveStatus(result.ready ? "Agent 已就绪。" : "Agent 未就绪。");
     } catch {
-      setSaveStatus("智能体就绪检查失败。");
+      setSaveStatus("Agent 就绪检查失败。");
     }
   }
 
-  function checkedModelIds(formData: FormData, fallbackDefaultModelId: number | null) {
-    const selectedIds = formData
-      .getAll("allowedModelIds")
-      .map((value) => Number.parseInt(String(value), 10))
-      .filter(Number.isFinite);
-    if (fallbackDefaultModelId !== null && !selectedIds.includes(fallbackDefaultModelId)) {
-      selectedIds.unshift(fallbackDefaultModelId);
-    }
-    return selectedIds;
-  }
-
-  async function updateAgentPolicy(event: FormEvent<HTMLFormElement>) {
+  async function updateAgentConfiguration(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     if (!selectedAgent) {
       return;
     }
     const formData = new FormData(event.currentTarget);
+    const name = String(formData.get("name") ?? "").trim();
+    const instruction = String(formData.get("instruction") ?? "").trim();
     const defaultModelRaw = String(formData.get("defaultModelId") ?? "");
     const defaultModelId = defaultModelRaw ? Number.parseInt(defaultModelRaw, 10) : null;
-    const capabilityPolicy = {
-      mcp_server_ids: selectedAgent.capabilityPolicyValue.mcp_server_ids,
-      sandbox_enabled: formData.get("sandboxEnabled") === "on",
-      search_enabled: formData.get("searchEnabled") === "on",
-      page_read_enabled: formData.get("pageReadEnabled") === "on",
-    };
-
-    setLoadError("");
-    setSaveStatus("");
-    try {
-      const updated = await adminFetch<ApiAgent>(`/api/admin/agents/${selectedAgent.id}`, {
-        method: "PATCH",
-        body: JSON.stringify({
-          default_model_configuration_id: defaultModelId,
-          allowed_model_configuration_ids: checkedModelIds(formData, defaultModelId),
-          process_visibility: String(formData.get("processVisibility") ?? selectedAgent.processVisibilityValue),
-          capability_policy: capabilityPolicy,
-        }),
-      });
-      const mappedAgent = mapAgent(updated);
-      setAgents((currentAgents) =>
-        currentAgents.map((agent) => agent.id === mappedAgent.id ? mappedAgent : agent),
-      );
-      setSelectedAgentId(mappedAgent.id);
-      setSaveStatus("智能体策略已保存。");
-    } catch {
-      setSaveStatus("智能体策略保存失败，请检查模型绑定或管理员权限。");
-    }
-  }
-
-  async function updateAgentInstruction(event: FormEvent<HTMLFormElement>) {
-    event.preventDefault();
-    if (!selectedAgent) {
-      return;
-    }
-    const formData = new FormData(event.currentTarget);
-    const instruction = String(formData.get("instruction") ?? "").trim();
-    if (!instruction) {
-      setSaveStatus("智能体说明不能为空。");
+    if (!name || !instruction) {
+      setSaveStatus("Agent 名称和 instructions 不能为空。");
       return;
     }
 
@@ -2117,18 +2601,26 @@ function AgentLifecyclePanel() {
       const updated = await adminFetch<ApiAgent>(`/api/admin/agents/${selectedAgent.id}`, {
         method: "PATCH",
         body: JSON.stringify({
+          name,
           description: String(formData.get("description") ?? "").trim(),
+          icon: String(formData.get("icon") ?? "agent").trim() || "agent",
           instruction,
+          process_visibility: String(formData.get("processVisibility") ?? selectedAgent.processVisibilityValue),
+          sdk_settings: buildAgentSdkSettings(formData, selectedAgent.sdkSettingsValue),
+          default_model_configuration_id: defaultModelId,
+          allowed_model_configuration_ids: selectedModelIds(formData, defaultModelId),
+          capability_policy: {
+            mcp_server_ids: selectedMcpServerIds(formData),
+            sandbox_enabled: formData.get("sandboxEnabled") === "on",
+            search_enabled: formData.get("searchEnabled") === "on",
+            page_read_enabled: formData.get("pageReadEnabled") === "on",
+          },
         }),
       });
-      const mappedAgent = mapAgent(updated);
-      setAgents((currentAgents) =>
-        currentAgents.map((agent) => agent.id === mappedAgent.id ? mappedAgent : agent),
-      );
-      setSelectedAgentId(mappedAgent.id);
-      setSaveStatus("智能体说明已保存。");
+      upsertAgent(updated);
+      setSaveStatus("Agent 配置已保存。");
     } catch {
-      setSaveStatus("智能体说明保存失败。");
+      setSaveStatus("Agent 配置保存失败，请检查模型绑定、MCP 引用或管理员权限。");
     }
   }
 
@@ -2138,12 +2630,18 @@ function AgentLifecyclePanel() {
     const name = String(formData.get("name") ?? "").trim();
     const instruction = String(formData.get("instruction") ?? "").trim();
     if (!name || !instruction) {
-      setSaveStatus("请填写智能体名称和说明。");
+      setSaveStatus("请填写 Agent 名称和 instructions。");
       return;
     }
 
     const defaultModelRaw = String(formData.get("defaultModelId") ?? "");
     const defaultModelId = defaultModelRaw ? Number.parseInt(defaultModelRaw, 10) : null;
+    const fallbackSdkSettings = {
+      max_turns: 10,
+      tool_use_behavior: "run_llm_again",
+      reset_tool_choice: true,
+    } satisfies ApiAgent["sdk_settings"];
+
     setLoadError("");
     setSaveStatus("");
     try {
@@ -2155,28 +2653,27 @@ function AgentLifecyclePanel() {
           icon: String(formData.get("icon") ?? "agent").trim() || "agent",
           instruction,
           process_visibility: String(formData.get("processVisibility") ?? "standard"),
+          sdk_settings: buildAgentSdkSettings(formData, fallbackSdkSettings),
           default_model_configuration_id: defaultModelId,
-          allowed_model_configuration_ids: checkedModelIds(formData, defaultModelId),
+          allowed_model_configuration_ids: selectedModelIds(formData, defaultModelId),
           capability_policy: {
-            mcp_server_ids: [],
+            mcp_server_ids: selectedMcpServerIds(formData),
             sandbox_enabled: formData.get("sandboxEnabled") === "on",
             search_enabled: formData.get("searchEnabled") === "on",
             page_read_enabled: formData.get("pageReadEnabled") === "on",
           },
         }),
       });
-      const mappedAgent = mapAgent(created);
-      setAgents((currentAgents) => [...currentAgents, mappedAgent]);
-      setSelectedAgentId(mappedAgent.id);
+      upsertAgent(created);
       setIsCreateDraftOpen(false);
-      setSaveStatus("智能体已创建。");
+      setSaveStatus("Agent 已创建。");
     } catch {
-      setSaveStatus("智能体创建失败，请检查后端返回或管理员权限。");
+      setSaveStatus("Agent 创建失败，请检查后端返回或管理员权限。");
     }
   }
 
   return (
-    <section className="route-panel" aria-label="智能体生命周期">
+    <section className="route-panel admin-config-page" aria-label="智能体配置">
       <CopilotAgentLifecycleBridge
         agents={agents}
         isCreateDraftOpen={isCreateDraftOpen}
@@ -2184,201 +2681,241 @@ function AgentLifecyclePanel() {
         setIsCreateDraftOpen={setIsCreateDraftOpen}
         setSelectedAgentId={setSelectedAgentId}
       />
-      <div className="panel-head compact-panel-head">
+      <div className="panel-head config-page-head">
         <div>
-          <p className="eyebrow">智能体清单</p>
-          <h2>先选智能体，再调整策略</h2>
+          <p className="eyebrow">OpenAI Agents SDK</p>
+          <h2>Agent 定义与运行策略</h2>
+          <p>配置 Agent identity、instructions、模型边界、Runner turns 和工具策略。</p>
           {saveStatus ? <p className="inline-note">{saveStatus}</p> : null}
         </div>
-        <Button className="primary-button" type="button" onClick={() => setIsCreateDraftOpen(true)}>创建智能体</Button>
+        <Button className="primary-button" type="button" onClick={() => setIsCreateDraftOpen(true)}>创建 Agent</Button>
       </div>
-      {isLoading ? <p className="empty-state">正在加载智能体...</p> : null}
+      {isLoading ? <p className="empty-state">正在加载 Agent 配置...</p> : null}
       {loadError ? <p className="empty-state danger-state" role="alert">{loadError}</p> : null}
-      <div className="admin-master-detail">
-        <div className="route-table-wrap">
-          <table className="route-table" aria-label="智能体列表">
-            <thead>
-              <tr>
-                <th>名称</th>
-                <th>状态</th>
-                <th>默认模型</th>
-                <th>可选模型数</th>
-                <th>能力摘要</th>
-                <th>过程可见性</th>
-                <th>操作</th>
-              </tr>
-            </thead>
-            <tbody>
-              {agents.map((agent) => (
-                <tr className={agent.id === selectedAgent?.id ? "selected-row" : ""} key={agent.id}>
-                  <td>{agent.name}</td>
-                  <td>{lifecycleStatusLabel(agent.status)}</td>
-                  <td>{agent.defaultModel}</td>
-                  <td>{agent.allowedModels.length}</td>
-                  <td>{agent.capabilitySummary}</td>
-                  <td>{agent.processVisibility}</td>
-                  <td>
-                    <Button className="secondary-button" type="button" onClick={() => setSelectedAgentId(agent.id)}>
-                      详情
-                    </Button>
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
+      <section className="config-summary-strip" aria-label="Agent 配置摘要">
+        <InfoTile title="Agent 数" value={`${agents.length} 个`} icon={Bot} />
+        <InfoTile title="已启用" value={`${agents.filter((agent) => agent.status === "enabled").length} 个`} icon={ShieldCheck} />
+        <InfoTile title="可用模型配置" value={`${modelConfigurations.filter((configuration) => configuration.enabled).length} 个`} icon={Settings2} />
+        <InfoTile title="MCP 服务器" value={`${mcpServers.filter((server) => server.enabled).length} 个`} icon={ServerCog} />
+      </section>
+      <div className="config-workbench">
+        <aside className="config-sidebar" aria-label="Agent 列表">
+          <div className="config-sidebar-head">
+            <h3>Agents</h3>
+            <span>{agents.length}</span>
+          </div>
+          <div className="config-selector-list">
+            {agents.map((agent) => (
+              <button
+                className={agent.id === selectedAgent?.id ? "config-selector active" : "config-selector"}
+                key={agent.id}
+                type="button"
+                onClick={() => setSelectedAgentId(agent.id)}
+              >
+                <span>
+                  <strong>{agent.name}</strong>
+                  <small>{agent.sdkSettingsSummary}</small>
+                </span>
+                <Badge variant={accountBadgeVariant(agent.status)}>{lifecycleStatusLabel(agent.status)}</Badge>
+              </button>
+            ))}
+          </div>
           {!isLoading && agents.length === 0 ? (
             <EmptyStateAction
-              title="暂无智能体"
+              title="暂无 Agent"
               description="创建后才能配置模型策略、能力授权和过程可见性。"
               onAction={() => setIsCreateDraftOpen(true)}
-              actionLabel="创建智能体"
+              actionLabel="创建 Agent"
             />
           ) : null}
-        </div>
+        </aside>
         {selectedAgent ? (
-          <aside className="context-panel" aria-label="智能体详情" role="region">
-            <div className="panel-head">
+          <form className="config-editor" aria-label="编辑 Agent 配置" key={selectedAgent.id} onSubmit={updateAgentConfiguration}>
+            <div className="config-editor-head">
               <div>
-                <p className="eyebrow">智能体 {selectedAgent.avatar}</p>
-                <h2>{selectedAgent.name}</h2>
-                <p>{selectedAgent.description}</p>
+                <p className="eyebrow">{selectedAgent.avatar}</p>
+                <h3>{selectedAgent.name}</h3>
+                <p>{selectedAgent.description || "未填写描述。"}</p>
               </div>
-              <Badge variant={accountBadgeVariant(selectedAgent.status)}>{lifecycleStatusLabel(selectedAgent.status)}</Badge>
-            </div>
-            <div className="button-row compact-actions">
-              <Button aria-label="启用智能体" className="secondary-button" type="button" disabled={selectedAgent.status !== "disabled"} onClick={() => setAgentStatus("enable")}>
-                启用
-              </Button>
-              <Button aria-label="停用智能体" className="secondary-button" type="button" disabled={selectedAgent.status !== "enabled"} onClick={() => setAgentStatus("disable")}>
-                停用
-              </Button>
-              <Button aria-label="归档智能体" className="secondary-button" type="button" disabled={selectedAgent.status === "retired"} onClick={() => setAgentStatus("retire")}>
-                归档
-              </Button>
-              <Button aria-label="检查智能体就绪状态" className="secondary-button" type="button" onClick={checkAgentReadiness}>
-                就绪检查
-              </Button>
+              <div className="button-row compact-actions">
+                <Button aria-label="启用智能体" className="secondary-button" type="button" disabled={selectedAgent.status !== "disabled"} onClick={() => setAgentStatus("enable")}>启用</Button>
+                <Button aria-label="停用智能体" className="secondary-button" type="button" disabled={selectedAgent.status !== "enabled"} onClick={() => setAgentStatus("disable")}>停用</Button>
+                <Button aria-label="归档智能体" className="secondary-button" type="button" disabled={selectedAgent.status === "retired"} onClick={() => setAgentStatus("retire")}>归档</Button>
+                <Button aria-label="检查智能体就绪状态" className="secondary-button" type="button" onClick={checkAgentReadiness}>就绪检查</Button>
+              </div>
             </div>
             {agentReadiness ? (
-              <section className="boundary-list readiness-list" aria-label="智能体就绪结果">
-                <h3>{agentReadiness.ready ? "已就绪" : "未就绪"}</h3>
+              <section className="config-callout" aria-label="智能体就绪结果">
+                <strong>{agentReadiness.ready ? "已就绪" : "未就绪"}</strong>
                 {agentReadiness.issues.length > 0
                   ? agentReadiness.issues.map((issue) => <p key={issue}>{issue}</p>)
                   : <p>模型和能力引用可用。</p>}
               </section>
             ) : null}
-            <Tabs defaultValue="policy">
-              <TabsList aria-label="智能体详情分组">
-                <TabsTrigger value="policy">策略</TabsTrigger>
-                <TabsTrigger value="instruction">说明</TabsTrigger>
-                <TabsTrigger value="mcp">MCP</TabsTrigger>
-              </TabsList>
-              <TabsContent value="policy">
-                <section className="detail-grid compact-detail-grid">
-                  <InfoTile title="过程可见性" value={selectedAgent.processVisibility} icon={FileSearch} />
-                  <InfoTile title="默认模型" value={selectedAgent.defaultModel} icon={Settings2} />
-                  <InfoTile title="可选模型" value={selectedAgent.allowedModels.join(", ")} icon={Bot} />
-                  <InfoTile title="能力规则" value={selectedAgent.capabilityPolicy.length.toString()} icon={ShieldCheck} />
-                </section>
-                <form className="admin-inline-form" aria-label="编辑智能体策略" key={selectedAgent.id} onSubmit={updateAgentPolicy}>
+            <div className="config-section-grid">
+              <section className="config-section">
+                <div className="config-section-head">
+                  <h4>Identity</h4>
+                  <p>Agent 的可见名称和职责边界。</p>
+                </div>
+                <div className="sdk-field-grid">
                   <label>
-                    <span>默认模型</span>
-                    <Select name="defaultModelId" defaultValue={String(selectedAgent.defaultModelConfigurationId ?? "")}>
+                    <span>名称</span>
+                    <Input name="name" defaultValue={selectedAgent.name} required />
+                  </label>
+                  <label>
+                    <span>图标标识</span>
+                    <Input name="icon" defaultValue={selectedAgent.avatar} />
+                  </label>
+                  <label className="config-wide-field">
+                    <span>描述</span>
+                    <Input name="description" defaultValue={selectedAgent.description} />
+                  </label>
+                </div>
+              </section>
+              <section className="config-section">
+                <div className="config-section-head">
+                  <h4>Instructions</h4>
+                  <p>直接进入 Agents SDK 的 Agent instructions。</p>
+                </div>
+                <label>
+                  <span>Instructions</span>
+                  <Textarea className="config-textarea" name="instruction" defaultValue={selectedAgent.instruction} required />
+                </label>
+              </section>
+              <section className="config-section">
+                <div className="config-section-head">
+                  <h4>Model policy</h4>
+                  <p>默认模型用于自动运行；允许模型用于对话侧切换。</p>
+                </div>
+                <label>
+                  <span>默认模型</span>
+                  <Select name="defaultModelId" defaultValue={String(selectedAgent.defaultModelConfigurationId ?? "")}>
+                    <SelectTrigger>
+                      <SelectValue placeholder="未设置" />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectGroup>
+                        {modelConfigurations.map((configuration) => (
+                          <SelectItem key={configuration.id} value={configuration.id}>{modelConfigurationLabel(configuration)}</SelectItem>
+                        ))}
+                      </SelectGroup>
+                    </SelectContent>
+                  </Select>
+                </label>
+                <div className="config-checkbox-list" aria-label="允许模型">
+                  {modelConfigurations.map((configuration) => (
+                    <label className="config-checkbox" key={configuration.id}>
+                      <input
+                        defaultChecked={selectedAgent.allowedModelConfigurationIds.includes(Number(configuration.id))}
+                        name="allowedModelIds"
+                        type="checkbox"
+                        value={configuration.id}
+                      />
+                      <span>{modelConfigurationLabel(configuration)}</span>
+                    </label>
+                  ))}
+                </div>
+                <p className="inline-note">当前默认模型：{defaultModel ? modelConfigurationLabel(defaultModel) : "未设置"}</p>
+              </section>
+              <section className="config-section">
+                <div className="config-section-head">
+                  <h4>SDK runtime</h4>
+                  <p>映射到 Runner.max_turns 和 Agent 工具使用行为。</p>
+                </div>
+                <div className="sdk-field-grid">
+                  <label>
+                    <span>Max turns</span>
+                    <Input name="maxTurns" defaultValue={String(selectedAgent.sdkSettingsValue.max_turns)} inputMode="numeric" />
+                  </label>
+                  <label>
+                    <span>Tool use behavior</span>
+                    <Select name="toolUseBehavior" defaultValue={selectedAgent.sdkSettingsValue.tool_use_behavior}>
                       <SelectTrigger>
-                        <SelectValue placeholder="未设置" />
+                        <SelectValue placeholder="run_llm_again" />
                       </SelectTrigger>
                       <SelectContent>
-                        {modelConfigurations.map((configuration) => (
-                          <SelectItem key={configuration.id} value={configuration.id}>
-                            {configuration.provider} · {configuration.model}
-                          </SelectItem>
-                        ))}
+                        <SelectGroup>
+                          <SelectItem value="run_llm_again">run_llm_again</SelectItem>
+                          <SelectItem value="stop_on_first_tool">stop_on_first_tool</SelectItem>
+                        </SelectGroup>
                       </SelectContent>
                     </Select>
                   </label>
-                  <fieldset className="checkbox-grid">
-                    <legend>允许模型</legend>
-                    {modelConfigurations.map((configuration) => (
-                      <label className="checkbox-row" key={configuration.id}>
-                        <input
-                          defaultChecked={selectedAgent.allowedModelConfigurationIds.includes(Number(configuration.id))}
-                          name="allowedModelIds"
-                          type="checkbox"
-                          value={configuration.id}
-                        />
-                        <span>{configuration.provider} · {configuration.model}</span>
-                      </label>
-                    ))}
-                  </fieldset>
                   <label>
                     <span>过程可见性</span>
                     <Select name="processVisibility" defaultValue={selectedAgent.processVisibilityValue}>
                       <SelectTrigger>
-                        <SelectValue placeholder="标准" />
+                        <SelectValue placeholder="standard" />
                       </SelectTrigger>
                       <SelectContent>
-                        <SelectItem value="minimal">最小</SelectItem>
-                        <SelectItem value="standard">标准</SelectItem>
-                        <SelectItem value="verbose">详细</SelectItem>
+                        <SelectGroup>
+                          <SelectItem value="minimal">minimal</SelectItem>
+                          <SelectItem value="standard">standard</SelectItem>
+                          <SelectItem value="verbose">verbose</SelectItem>
+                        </SelectGroup>
                       </SelectContent>
                     </Select>
                   </label>
-                  <fieldset className="checkbox-grid">
-                    <legend>能力策略</legend>
-                    <label className="checkbox-row">
-                      <input defaultChecked={selectedAgent.capabilityPolicyValue.search_enabled} name="searchEnabled" type="checkbox" />
-                      <span>搜索</span>
-                    </label>
-                    <label className="checkbox-row">
-                      <input defaultChecked={selectedAgent.capabilityPolicyValue.page_read_enabled} name="pageReadEnabled" type="checkbox" />
-                      <span>页面读取</span>
-                    </label>
-                    <label className="checkbox-row">
-                      <input defaultChecked={selectedAgent.capabilityPolicyValue.sandbox_enabled} name="sandboxEnabled" type="checkbox" />
-                      <span>沙箱</span>
-                    </label>
-                  </fieldset>
-                  <Button className="primary-button" type="submit">保存策略</Button>
-                </form>
-                <section className="boundary-list">
-                  <h3>能力策略</h3>
-                  {selectedAgent.capabilityPolicy.map((policy) => <p key={policy}>{policy}</p>)}
-                </section>
-              </TabsContent>
-              <TabsContent value="instruction">
-                <form className="admin-inline-form" aria-label="编辑智能体说明" key={`${selectedAgent.id}-instruction`} onSubmit={updateAgentInstruction}>
-                  <label>
-                    <span>描述</span>
-                    <Input name="description" defaultValue={selectedAgent.description} />
+                  <label className="config-checkbox">
+                    <input defaultChecked={selectedAgent.sdkSettingsValue.reset_tool_choice} name="resetToolChoice" type="checkbox" />
+                    <span>reset_tool_choice</span>
                   </label>
-                  <label>
-                    <span>智能体说明</span>
-                    <Textarea name="instruction" defaultValue={selectedAgent.instruction} required />
+                </div>
+              </section>
+              <section className="config-section config-section-span">
+                <div className="config-section-head">
+                  <h4>Capability policy</h4>
+                  <p>控制运行时挂载哪些工具能力；MCP 具体工具授权在工具页面完成。</p>
+                </div>
+                <div className="config-checkbox-list compact-checkbox-list" aria-label="能力策略">
+                  <label className="config-checkbox">
+                    <input defaultChecked={selectedAgent.capabilityPolicyValue.search_enabled} name="searchEnabled" type="checkbox" />
+                    <span>搜索</span>
                   </label>
-                  <Button className="primary-button" type="submit">保存说明</Button>
-                </form>
-              </TabsContent>
-              <TabsContent value="mcp">
-                <section className="boundary-list">
-                  <h3>MCP 工具授权</h3>
-                  {selectedAgent.mcpToolAuthorization.map((tool) => <p key={tool}>{tool}</p>)}
-                </section>
-              </TabsContent>
-            </Tabs>
-          </aside>
+                  <label className="config-checkbox">
+                    <input defaultChecked={selectedAgent.capabilityPolicyValue.page_read_enabled} name="pageReadEnabled" type="checkbox" />
+                    <span>页面读取</span>
+                  </label>
+                  <label className="config-checkbox">
+                    <input defaultChecked={selectedAgent.capabilityPolicyValue.sandbox_enabled} name="sandboxEnabled" type="checkbox" />
+                    <span>沙箱</span>
+                  </label>
+                </div>
+                <div className="config-checkbox-list" aria-label="MCP 服务器">
+                  {mcpServers.map((server) => (
+                    <label className="config-checkbox" key={server.id}>
+                      <input
+                        defaultChecked={selectedAgent.capabilityPolicyValue.mcp_server_ids.includes(server.id)}
+                        name="mcpServerIds"
+                        type="checkbox"
+                        value={server.id}
+                      />
+                      <span>{server.name} · {server.connectionType}</span>
+                    </label>
+                  ))}
+                  {mcpServers.length === 0 ? <p className="inline-note">暂无 MCP 服务器。</p> : null}
+                </div>
+              </section>
+            </div>
+            <div className="config-editor-footer">
+              <Button className="primary-button" type="submit">保存 Agent 配置</Button>
+              <a className="secondary-button" href="/admin/mcp-servers">配置 MCP 工具授权</a>
+            </div>
+          </form>
         ) : null}
       </div>
       {isCreateDraftOpen ? (
-        <AdminDialog eyebrow="后端创建" title="创建智能体" onClose={() => setIsCreateDraftOpen(false)}>
-          <form className="admin-dialog-form" aria-label="创建智能体" onSubmit={createAgent}>
+        <AdminDialog eyebrow="后端创建" title="创建 Agent" onClose={() => setIsCreateDraftOpen(false)}>
+          <form className="admin-dialog-form" aria-label="创建 Agent" onSubmit={createAgent}>
             <div className="form-grid">
               <label>
-                智能体名称
-                <Input name="name" placeholder="支持智能体" required />
+                Agent 名称
+                <Input name="name" placeholder="Support Agent" required />
               </label>
               <label>
                 描述
-                <Input name="description" placeholder="说明这个智能体的职责边界" />
+                <Input name="description" placeholder="说明这个 Agent 的职责边界" />
               </label>
               <label>
                 图标标识
@@ -2386,45 +2923,49 @@ function AgentLifecyclePanel() {
               </label>
               <label>
                 过程可见性
-                <input type="hidden" name="processVisibility" value={newAgentProcessVisibility} />
-                <Select value={newAgentProcessVisibility} onValueChange={(value) => setNewAgentProcessVisibility(value as ApiAgent["process_visibility"])}>
+                <Select name="processVisibility" defaultValue="standard">
                   <SelectTrigger>
-                    <SelectValue placeholder="标准" />
+                    <SelectValue placeholder="standard" />
                   </SelectTrigger>
                   <SelectContent>
-                    <SelectItem value="minimal">最小</SelectItem>
-                    <SelectItem value="standard">标准</SelectItem>
-                    <SelectItem value="verbose">详细</SelectItem>
+                    <SelectGroup>
+                      <SelectItem value="minimal">minimal</SelectItem>
+                      <SelectItem value="standard">standard</SelectItem>
+                      <SelectItem value="verbose">verbose</SelectItem>
+                    </SelectGroup>
                   </SelectContent>
                 </Select>
               </label>
               <label>
                 默认模型
-                <input type="hidden" name="defaultModelId" value={newAgentDefaultModelId} />
-                <Select value={newAgentDefaultModelId} onValueChange={setNewAgentDefaultModelId}>
+                <Select name="defaultModelId" defaultValue={String(modelConfigurations[0]?.id ?? "")}>
                   <SelectTrigger>
                     <SelectValue placeholder="未设置" />
                   </SelectTrigger>
                   <SelectContent>
-                    {modelConfigurations.map((configuration) => (
-                      <SelectItem key={configuration.id} value={configuration.id}>
-                        {configuration.provider} · {configuration.model}
-                      </SelectItem>
-                    ))}
+                    <SelectGroup>
+                      {modelConfigurations.map((configuration) => (
+                        <SelectItem key={configuration.id} value={configuration.id}>{modelConfigurationLabel(configuration)}</SelectItem>
+                      ))}
+                    </SelectGroup>
                   </SelectContent>
                 </Select>
               </label>
               <fieldset className="checkbox-grid form-grid-span">
                 <legend>允许模型</legend>
-                {modelConfigurations.map((configuration) => (
+                {modelConfigurations.map((configuration, index) => (
                   <label className="checkbox-row" key={configuration.id}>
-                    <input
-                      defaultChecked={configuration.id === newAgentDefaultModelId}
-                      name="allowedModelIds"
-                      type="checkbox"
-                      value={configuration.id}
-                    />
-                    <span>{configuration.provider} · {configuration.model}</span>
+                    <input defaultChecked={index === 0} name="allowedModelIds" type="checkbox" value={configuration.id} />
+                    <span>{modelConfigurationLabel(configuration)}</span>
+                  </label>
+                ))}
+              </fieldset>
+              <fieldset className="checkbox-grid form-grid-span">
+                <legend>MCP 服务器</legend>
+                {mcpServers.map((server) => (
+                  <label className="checkbox-row" key={server.id}>
+                    <input name="mcpServerIds" type="checkbox" value={server.id} />
+                    <span>{server.name} · {server.connectionType}</span>
                   </label>
                 ))}
               </fieldset>
@@ -2443,13 +2984,38 @@ function AgentLifecyclePanel() {
                   <span>沙箱</span>
                 </label>
               </fieldset>
+              <fieldset className="checkbox-grid form-grid-span">
+                <legend>SDK runtime</legend>
+                <label>
+                  Max turns
+                  <Input name="maxTurns" defaultValue="10" inputMode="numeric" />
+                </label>
+                <label>
+                  Tool use behavior
+                  <Select name="toolUseBehavior" defaultValue="run_llm_again">
+                    <SelectTrigger>
+                      <SelectValue placeholder="run_llm_again" />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectGroup>
+                        <SelectItem value="run_llm_again">run_llm_again</SelectItem>
+                        <SelectItem value="stop_on_first_tool">stop_on_first_tool</SelectItem>
+                      </SelectGroup>
+                    </SelectContent>
+                  </Select>
+                </label>
+                <label className="checkbox-row">
+                  <input defaultChecked name="resetToolChoice" type="checkbox" />
+                  <span>reset_tool_choice</span>
+                </label>
+              </fieldset>
               <label className="form-grid-span">
-                智能体说明
-                <Textarea name="instruction" placeholder="输入智能体运行时说明" required />
+                Instructions
+                <Textarea name="instruction" placeholder="输入 Agent 运行时 instructions" required />
               </label>
             </div>
             <div className="button-row compact-actions">
-              <Button className="primary-button" type="submit">保存智能体</Button>
+              <Button className="primary-button" type="submit">保存 Agent</Button>
               <Button className="secondary-button" type="button" onClick={() => setIsCreateDraftOpen(false)}>取消</Button>
             </div>
           </form>
@@ -2473,6 +3039,7 @@ function ModelConfigurationsPanel() {
     configurations.find((configuration) => configuration.id === selectedConfigurationId) ??
     configurations[0] ??
     null;
+  const selectedProvider = providerCatalog.find((provider) => provider.id === newModelProviderId) ?? providerCatalog[0] ?? null;
 
   useEffect(() => {
     let isCurrent = true;
@@ -2515,11 +3082,25 @@ function ModelConfigurationsPanel() {
     };
   }, []);
 
+  function upsertModelConfiguration(configuration: ApiModelConfiguration) {
+    const mappedConfiguration = mapModelConfiguration(configuration, providerCatalog);
+    setConfigurations((currentConfigurations) =>
+      currentConfigurations.some((currentConfiguration) => currentConfiguration.id === mappedConfiguration.id)
+        ? currentConfigurations.map((currentConfiguration) =>
+          currentConfiguration.id === mappedConfiguration.id ? mappedConfiguration : currentConfiguration,
+        )
+        : [...currentConfigurations, mappedConfiguration],
+    );
+    setSelectedConfigurationId(mappedConfiguration.id);
+    return mappedConfiguration;
+  }
+
   async function createModelConfiguration(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     const formData = new FormData(event.currentTarget);
     const providerId = String(formData.get("providerId") ?? "").trim();
     const modelName = String(formData.get("modelName") ?? "").trim();
+    const displayName = String(formData.get("name") ?? "").trim() || modelName;
     const endpoint = String(formData.get("endpoint") ?? "").trim();
     const apiKey = String(formData.get("apiKey") ?? "").trim();
     if (!providerId || !modelName || !endpoint || !apiKey) {
@@ -2527,7 +3108,6 @@ function ModelConfigurationsPanel() {
       return;
     }
 
-    const temperature = Number.parseFloat(String(formData.get("temperature") ?? "0.3"));
     setLoadError("");
     setSaveStatus("");
     try {
@@ -2535,23 +3115,20 @@ function ModelConfigurationsPanel() {
         method: "POST",
         body: JSON.stringify({
           provider_id: providerId,
-          name: modelName,
+          name: displayName,
           model_name: modelName,
           endpoint,
           credential_reference: apiKey,
-          default_parameters: {
-            temperature: Number.isFinite(temperature) ? temperature : 0.3,
-          },
+          model_settings: buildModelSettings(formData),
+          native_tool_settings: buildNativeToolSettings(formData),
           enabled: true,
         }),
       });
-      const mappedConfiguration = mapModelConfiguration(created, providerCatalog);
-      setConfigurations((currentConfigurations) => [...currentConfigurations, mappedConfiguration]);
-      setSelectedConfigurationId(mappedConfiguration.id);
+      upsertModelConfiguration(created);
       setIsCreateDraftOpen(false);
-      setSaveStatus("模型配置已创建。");
+      setSaveStatus("模型运行配置已创建。");
     } catch {
-      setSaveStatus("模型配置创建失败，请检查后端返回或管理员权限。");
+      setSaveStatus("模型运行配置创建失败，请检查后端返回或管理员权限。");
     }
   }
 
@@ -2563,25 +3140,12 @@ function ModelConfigurationsPanel() {
 
     const formData = new FormData(event.currentTarget);
     const modelName = String(formData.get("modelName") ?? "").trim();
+    const displayName = String(formData.get("name") ?? "").trim() || modelName;
     const endpoint = String(formData.get("endpoint") ?? "").trim();
     const apiKey = String(formData.get("apiKey") ?? "").trim();
     if (!modelName || !endpoint || !apiKey) {
-      setSaveStatus("模型名称、基础 URL 和 API Key 不能为空。");
+      setSaveStatus("配置名称、模型名称、基础 URL 和 API Key 不能为空。");
       return;
-    }
-
-    const temperature = Number.parseFloat(String(formData.get("temperature") ?? ""));
-    const maxTokens = Number.parseInt(String(formData.get("maxTokens") ?? ""), 10);
-    const defaultParameters: Record<string, unknown> = {
-      ...selectedConfiguration.defaultParametersValue,
-    };
-    if (Number.isFinite(temperature)) {
-      defaultParameters.temperature = temperature;
-    }
-    if (Number.isFinite(maxTokens)) {
-      defaultParameters.max_tokens = maxTokens;
-    } else {
-      delete defaultParameters.max_tokens;
     }
 
     setLoadError("");
@@ -2592,24 +3156,19 @@ function ModelConfigurationsPanel() {
         {
           method: "PATCH",
           body: JSON.stringify({
+            name: displayName,
             model_name: modelName,
-            name: modelName,
             endpoint,
             credential_reference: apiKey,
-            default_parameters: defaultParameters,
+            model_settings: buildModelSettings(formData),
+            native_tool_settings: buildNativeToolSettings(formData),
           }),
         },
       );
-      const mappedConfiguration = mapModelConfiguration(updated, providerCatalog);
-      setConfigurations((currentConfigurations) =>
-        currentConfigurations.map((configuration) =>
-          configuration.id === mappedConfiguration.id ? mappedConfiguration : configuration,
-        ),
-      );
-      setSelectedConfigurationId(mappedConfiguration.id);
-      setSaveStatus("模型配置已保存。");
+      upsertModelConfiguration(updated);
+      setSaveStatus("模型运行配置已保存。");
     } catch {
-      setSaveStatus("模型配置保存失败，请检查后端返回或管理员权限。");
+      setSaveStatus("模型运行配置保存失败，请检查后端返回或管理员权限。");
     }
   }
 
@@ -2624,16 +3183,10 @@ function ModelConfigurationsPanel() {
           body: JSON.stringify({ enabled }),
         },
       );
-      const mappedConfiguration = mapModelConfiguration(updated, providerCatalog);
-      setConfigurations((currentConfigurations) =>
-        currentConfigurations.map((currentConfiguration) =>
-          currentConfiguration.id === mappedConfiguration.id ? mappedConfiguration : currentConfiguration,
-        ),
-      );
-      setSelectedConfigurationId(mappedConfiguration.id);
-      setSaveStatus(enabled ? "模型配置已启用。" : "模型配置已停用。");
+      upsertModelConfiguration(updated);
+      setSaveStatus(enabled ? "模型运行配置已启用。" : "模型运行配置已停用。");
     } catch {
-      setSaveStatus("模型配置状态更新失败。");
+      setSaveStatus("模型运行配置状态更新失败。");
     }
   }
 
@@ -2645,13 +3198,7 @@ function ModelConfigurationsPanel() {
         `/api/admin/model-configurations/${configuration.id}/health-check`,
         { method: "POST" },
       );
-      const mappedConfiguration = mapModelConfiguration(result.configuration, providerCatalog);
-      setConfigurations((currentConfigurations) =>
-        currentConfigurations.map((currentConfiguration) =>
-          currentConfiguration.id === mappedConfiguration.id ? mappedConfiguration : currentConfiguration,
-        ),
-      );
-      setSelectedConfigurationId(mappedConfiguration.id);
+      upsertModelConfiguration(result.configuration);
       setSaveStatus(result.message);
     } catch {
       setSaveStatus("模型健康检查失败。");
@@ -2678,14 +3225,14 @@ function ModelConfigurationsPanel() {
           ? remainingConfigurations[0]?.id ?? ""
           : currentConfigurationId,
       );
-      setSaveStatus("模型配置已删除。");
+      setSaveStatus("模型运行配置已删除。");
     } catch {
-      setSaveStatus("模型配置删除失败，请先从智能体策略中移除引用。");
+      setSaveStatus("模型运行配置删除失败，请先从 Agent 策略中移除引用。");
     }
   }
 
   return (
-    <section className="route-panel" aria-label="模型配置">
+    <section className="route-panel admin-config-page" aria-label="模型运行配置">
       <CopilotModelConfigurationsBridge
         configurations={configurations}
         isCreateDraftOpen={isCreateDraftOpen}
@@ -2694,126 +3241,126 @@ function ModelConfigurationsPanel() {
         setIsCreateDraftOpen={setIsCreateDraftOpen}
         setSelectedConfigurationId={setSelectedConfigurationId}
       />
-      <div className="button-row">
-        <Button className="primary-button" type="button" onClick={() => setIsCreateDraftOpen(true)}>
-          创建模型配置
-        </Button>
+      <div className="panel-head config-page-head">
+        <div>
+          <p className="eyebrow">Agents SDK ModelSettings</p>
+          <h2>模型运行配置</h2>
+          <p>配置模型提供商、凭据、ModelSettings 和 OpenAI 原生工具。</p>
+          {saveStatus ? <p className="inline-note">{saveStatus}</p> : null}
+        </div>
+        <Button className="primary-button" type="button" onClick={() => setIsCreateDraftOpen(true)}>创建模型配置</Button>
       </div>
-      {saveStatus ? <p className="inline-note">{saveStatus}</p> : null}
-      {isLoading ? <p className="empty-state">正在加载模型配置...</p> : null}
+      {isLoading ? <p className="empty-state">正在加载模型运行配置...</p> : null}
       {loadError ? <p className="empty-state danger-state" role="alert">{loadError}</p> : null}
-      <div className="admin-master-detail">
-        <div className="route-table-wrap">
-          <table className="route-table" aria-label="模型配置列表">
-            <thead>
-              <tr>
-                <th>提供商</th>
-                <th>模型</th>
-                <th>凭据</th>
-                <th>状态</th>
-                <th>健康</th>
-                <th>默认参数</th>
-                <th>更新时间</th>
-                <th>操作</th>
-              </tr>
-            </thead>
-            <tbody>
-              {configurations.map((configuration) => (
-                <tr className={configuration.id === selectedConfiguration?.id ? "selected-row" : ""} key={configuration.id}>
-                  <td>{configuration.provider}</td>
-                  <td>{configuration.model}</td>
-                  <td>{credentialStatus(configuration.credentialReference)}</td>
-                  <td>{modelStatusLabel(configuration.status)}</td>
-                  <td>{configuration.healthLabel}</td>
-                  <td>{configuration.defaultParameters}</td>
-                  <td>{configuration.lastUpdated}</td>
-                  <td>
-                    <div className="table-actions">
-                      <Button className="secondary-button" type="button" onClick={() => setSelectedConfigurationId(configuration.id)}>
-                        详情
-                      </Button>
-                      <Button className="secondary-button" type="button" onClick={() => setModelConfigurationEnabled(configuration, !configuration.enabled)}>
-                        {configuration.enabled ? "停用" : "启用"}
-                      </Button>
-                      <Button className="secondary-button" type="button" onClick={() => checkModelConfigurationHealth(configuration)}>
-                        健康检查
-                      </Button>
-                      <Button aria-label={`删除 ${configuration.model}`} className="danger-button" type="button" onClick={() => deleteModelConfiguration(configuration)}>
-                        删除
-                      </Button>
-                    </div>
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
+      <section className="config-summary-strip" aria-label="模型配置摘要">
+        <InfoTile title="配置总数" value={`${configurations.length} 个`} icon={Settings2} />
+        <InfoTile title="已启用" value={`${configurations.filter((configuration) => configuration.enabled).length} 个`} icon={ShieldCheck} />
+        <InfoTile title="健康" value={`${configurations.filter((configuration) => configuration.healthStatus === "healthy").length} 个`} icon={Gauge} />
+        <InfoTile title="原生工具" value={`${configurations.filter((configuration) => configuration.nativeTools !== "未启用原生工具").length} 个`} icon={TerminalSquare} />
+      </section>
+      <div className="config-workbench">
+        <aside className="config-sidebar" aria-label="模型配置列表">
+          <div className="config-sidebar-head">
+            <h3>Models</h3>
+            <span>{configurations.length}</span>
+          </div>
+          <div className="config-selector-list">
+            {configurations.map((configuration) => (
+              <button
+                className={configuration.id === selectedConfiguration?.id ? "config-selector active" : "config-selector"}
+                key={configuration.id}
+                type="button"
+                onClick={() => setSelectedConfigurationId(configuration.id)}
+              >
+                <span>
+                  <strong>{configuration.model}</strong>
+                  <small>{configuration.provider} · {configuration.healthLabel}</small>
+                </span>
+                <Badge variant={accountBadgeVariant(configuration.status)}>{modelStatusLabel(configuration.status)}</Badge>
+              </button>
+            ))}
+          </div>
           {!isLoading && configurations.length === 0 ? (
             <EmptyStateAction
               title="暂无模型配置"
-              description="先创建一个可用模型配置，再把它授权给智能体。"
+              description="先创建一个可用模型配置，再把它授权给 Agent。"
               onAction={() => setIsCreateDraftOpen(true)}
               actionLabel="创建模型配置"
             />
           ) : null}
-        </div>
+        </aside>
         {selectedConfiguration ? (
-          <aside className="context-panel" aria-label="模型配置详情" role="region">
-            <div className="panel-head">
+          <form className="config-editor" aria-label="编辑模型配置" key={selectedConfiguration.id} onSubmit={updateModelConfiguration}>
+            <div className="config-editor-head">
               <div>
                 <p className="eyebrow">{selectedConfiguration.provider}</p>
-                <h2>{selectedConfiguration.model}</h2>
+                <h3>{selectedConfiguration.model}</h3>
                 <p>{selectedConfiguration.baseUrl}</p>
               </div>
-              <Badge variant={accountBadgeVariant(selectedConfiguration.status)}>{modelStatusLabel(selectedConfiguration.status)}</Badge>
-            </div>
-            <section className="detail-grid compact-detail-grid">
-              <InfoTile title="凭据" value={credentialStatus(selectedConfiguration.credentialReference)} icon={LockKeyhole} />
-              <InfoTile title="默认参数" value={selectedConfiguration.defaultParameters} icon={Settings2} />
-              <InfoTile title="最近检查" value={selectedConfiguration.lastCheckedAt} icon={Activity} />
-              <InfoTile title="配置状态" value={modelStatusLabel(selectedConfiguration.status)} icon={ShieldCheck} />
-              <InfoTile title="健康状态" value={selectedConfiguration.healthLabel} icon={Gauge} />
-            </section>
-            <section className="boundary-list">
-              <h3>配置风险</h3>
-                <p>{selectedConfiguration.risk}</p>
-              </section>
-            <form className="admin-inline-form" aria-label="编辑模型配置" key={selectedConfiguration.id} onSubmit={updateModelConfiguration}>
-              <label>
-                <span>模型名称</span>
-                <Input name="modelName" defaultValue={selectedConfiguration.model} required />
-              </label>
-              <label>
-                <span>基础 URL</span>
-                <Input name="endpoint" defaultValue={selectedConfiguration.baseUrl} required />
-              </label>
-              <label>
-                <span>API Key</span>
-                <SecretTextInput name="apiKey" defaultValue={selectedConfiguration.credentialReference} placeholder="sk-..." required />
-              </label>
-              <div className="form-grid compact-form-grid">
-                <label>
-                  <span>Temperature</span>
-                  <Input name="temperature" defaultValue={String(selectedConfiguration.defaultParametersValue.temperature ?? "")} inputMode="decimal" />
-                </label>
-                <label>
-                  <span>Max tokens</span>
-                  <Input name="maxTokens" defaultValue={String(selectedConfiguration.defaultParametersValue.max_tokens ?? selectedConfiguration.defaultParametersValue.max_output_tokens ?? "")} inputMode="numeric" />
-                </label>
-              </div>
               <div className="button-row compact-actions">
-                <Button className="primary-button" type="submit">保存</Button>
                 <Button className="secondary-button" type="button" onClick={() => setModelConfigurationEnabled(selectedConfiguration, !selectedConfiguration.enabled)}>
                   {selectedConfiguration.enabled ? "停用" : "启用"}
                 </Button>
-                <Button className="secondary-button" type="button" onClick={() => checkModelConfigurationHealth(selectedConfiguration)}>
-                  健康检查
-                </Button>
-                <Button className="danger-button" type="button" onClick={() => deleteModelConfiguration(selectedConfiguration)}>
-                  删除
-                </Button>
+                <Button className="secondary-button" type="button" onClick={() => checkModelConfigurationHealth(selectedConfiguration)}>健康检查</Button>
+                <Button aria-label={`删除 ${selectedConfiguration.model}`} className="danger-button" type="button" onClick={() => deleteModelConfiguration(selectedConfiguration)}>删除</Button>
               </div>
-            </form>
-          </aside>
+            </div>
+            <div className="config-section-grid">
+              <section className="config-section config-section-span">
+                <div className="config-section-head">
+                  <h4>Provider</h4>
+                  <p>运行时使用这里的 endpoint 与 credential_reference 解析 API Key。</p>
+                </div>
+                <div className="sdk-field-grid">
+                  <label>
+                    <span>配置名称</span>
+                    <Input name="name" defaultValue={selectedConfiguration.name} required />
+                  </label>
+                  <label>
+                    <span>模型名称</span>
+                    <Input name="modelName" defaultValue={selectedConfiguration.model} required />
+                  </label>
+                  <label className="config-wide-field">
+                    <span>Base URL</span>
+                    <Input name="endpoint" defaultValue={selectedConfiguration.baseUrl} required />
+                  </label>
+                  <label className="config-wide-field">
+                    <span>API Key</span>
+                    <SecretTextInput name="apiKey" defaultValue={selectedConfiguration.credentialReference} placeholder="sk-..." required />
+                  </label>
+                </div>
+              </section>
+              <section className="config-section config-section-span">
+                <div className="config-section-head">
+                  <h4>ModelSettings</h4>
+                  <p>这些字段会直接构造 Agents SDK ModelSettings。</p>
+                </div>
+                <ModelSettingsFields settings={selectedConfiguration.modelSettingsValue} />
+              </section>
+              <section className="config-section config-section-span">
+                <div className="config-section-head">
+                  <h4>OpenAI native tools</h4>
+                  <p>仅在官方 OpenAI endpoint 下作为 SDK 原生工具挂载。</p>
+                </div>
+                <NativeToolSettingsFields settings={selectedConfiguration.nativeToolSettingsValue} />
+              </section>
+              <section className="config-section">
+                <div className="config-section-head">
+                  <h4>Health</h4>
+                  <p>{selectedConfiguration.risk}</p>
+                </div>
+                <div className="config-kv-list">
+                  <span>状态</span><strong>{selectedConfiguration.healthLabel}</strong>
+                  <span>最近检查</span><strong>{selectedConfiguration.lastCheckedAt}</strong>
+                  <span>ModelSettings</span><strong>{selectedConfiguration.modelSettings}</strong>
+                  <span>原生工具</span><strong>{selectedConfiguration.nativeTools}</strong>
+                </div>
+              </section>
+            </div>
+            <div className="config-editor-footer">
+              <Button className="primary-button" type="submit">保存模型配置</Button>
+            </div>
+          </form>
         ) : null}
       </div>
       {isCreateDraftOpen ? (
@@ -2821,7 +3368,7 @@ function ModelConfigurationsPanel() {
           <form className="admin-dialog-form" aria-label="创建模型配置" onSubmit={createModelConfiguration}>
             <div className="provider-grid compact-provider-grid" aria-label="模型提供商目录">
               {(providerCatalog.length > 0 ? providerCatalog : [{ id: "openai", name: "OpenAI", endpoint_template: "https://api.openai.com/v1", recommended_models: [] }]).map((provider) => (
-                <span className="provider-chip" key={provider.id}>{provider.name}</span>
+                <button className="provider-chip" key={provider.id} type="button" onClick={() => setNewModelProviderId(provider.id)}>{provider.name}</button>
               ))}
             </div>
             <div className="form-grid">
@@ -2833,31 +3380,45 @@ function ModelConfigurationsPanel() {
                     <SelectValue placeholder="OpenAI" />
                   </SelectTrigger>
                   <SelectContent>
-                    {(providerCatalog.length > 0 ? providerCatalog : [{ id: "openai", name: "OpenAI", endpoint_template: "https://api.openai.com/v1", recommended_models: [] }]).map((provider) => (
-                      <SelectItem key={provider.id} value={provider.id}>
-                        {provider.name}
-                      </SelectItem>
-                    ))}
+                    <SelectGroup>
+                      {(providerCatalog.length > 0 ? providerCatalog : [{ id: "openai", name: "OpenAI", endpoint_template: "https://api.openai.com/v1", recommended_models: [] }]).map((provider) => (
+                        <SelectItem key={provider.id} value={provider.id}>{provider.name}</SelectItem>
+                      ))}
+                    </SelectGroup>
                   </SelectContent>
                 </Select>
               </label>
               <label>
-                基础 URL
-                <Input name="endpoint" placeholder="https://provider.example/v1" required />
+                配置名称
+                <Input name="name" placeholder="production-openai" />
+              </label>
+              <label>
+                Base URL
+                <Input name="endpoint" defaultValue={selectedProvider?.endpoint_template ?? "https://api.openai.com/v1"} required />
               </label>
               <label>
                 模型名称
-                <Input name="modelName" placeholder="model-name" required />
+                <Input name="modelName" placeholder={selectedProvider?.recommended_models[0] ?? "model-name"} required />
               </label>
-              <label>
+              <label className="form-grid-span">
                 API Key
                 <SecretTextInput name="apiKey" placeholder="sk-..." required />
               </label>
-              <label>
-                温度
-                <Input name="temperature" defaultValue="0.3" inputMode="decimal" />
-              </label>
             </div>
+            <section className="config-section dialog-config-section">
+              <div className="config-section-head">
+                <h4>ModelSettings</h4>
+                <p>留空字段会使用 SDK 默认值。</p>
+              </div>
+              <ModelSettingsFields settings={{ temperature: 0.3, top_p: 0.9, parallel_tool_calls: true, store: false }} />
+            </section>
+            <section className="config-section dialog-config-section">
+              <div className="config-section-head">
+                <h4>OpenAI native tools</h4>
+                <p>按需启用 WebSearchTool、FileSearchTool、Hosted MCP 等原生工具。</p>
+              </div>
+              <NativeToolSettingsFields settings={{}} />
+            </section>
             <div className="button-row compact-actions">
               <Button className="primary-button" type="submit">保存模型配置</Button>
               <Button className="secondary-button" type="button" onClick={() => setIsCreateDraftOpen(false)}>取消</Button>
@@ -2873,15 +3434,17 @@ function McpServersPanel() {
   const [servers, setServers] = useState<McpServer[]>([]);
   const [tools, setTools] = useState<McpToolDiscovery[]>([]);
   const [agents, setAgents] = useState<AgentLifecycleRecord[]>([]);
-  const [selectedServerName, setSelectedServerName] = useState<string | null>(null);
-  const [authorizationAgent, setAuthorizationAgent] = useState("Default Agent");
+  const [authorizations, setAuthorizations] = useState<McpToolAuthorizationRecord[]>([]);
+  const [selectedServerId, setSelectedServerId] = useState<number | null>(null);
+  const [selectedAgentId, setSelectedAgentId] = useState("");
   const [loadError, setLoadError] = useState("");
   const [saveStatus, setSaveStatus] = useState("");
   const [isLoading, setIsLoading] = useState(true);
   const [isConfigurationDraftOpen, setIsConfigurationDraftOpen] = useState(false);
   const [newMcpConnectionType, setNewMcpConnectionType] = useState<ApiMcpServer["connection_type"]>("sse");
-  const selectedServer = servers.find((server) => server.name === selectedServerName) ?? null;
-  const selectedAuthorizationAgent = agents.find((agent) => agent.name === authorizationAgent) ?? agents[0] ?? null;
+  const selectedServer = servers.find((server) => server.id === selectedServerId) ?? servers[0] ?? null;
+  const selectedAuthorizationAgent = agents.find((agent) => agent.id === selectedAgentId) ?? agents[0] ?? null;
+  const [headerName, headerSecretReference] = firstHeaderSecretEntry(selectedServer);
 
   useEffect(() => {
     let isCurrent = true;
@@ -2900,8 +3463,8 @@ function McpServersPanel() {
         const mappedAgents = agentResult.map(mapAgent);
         setServers(mappedServers);
         setAgents(mappedAgents);
-        setSelectedServerName(mappedServers[0]?.name ?? null);
-        setAuthorizationAgent(mappedAgents[0]?.name ?? "Default Agent");
+        setSelectedServerId(mappedServers[0]?.id ?? null);
+        setSelectedAgentId(mappedAgents[0]?.id ?? "");
       })
       .catch(() => {
         if (!isCurrent) {
@@ -2909,8 +3472,9 @@ function McpServersPanel() {
         }
         setServers([]);
         setAgents([]);
-        setSelectedServerName(null);
-        setLoadError("无法加载 MCP 服务器，请检查管理员权限或后端服务。");
+        setSelectedServerId(null);
+        setSelectedAgentId("");
+        setLoadError("无法加载 MCP 工具配置，请检查管理员权限或后端服务。");
       })
       .finally(() => {
         if (isCurrent) {
@@ -2947,8 +3511,44 @@ function McpServersPanel() {
     };
   }, [selectedServer?.id]);
 
-  function openConfigurationDraft(serverName: string | null) {
-    setSelectedServerName(serverName);
+  useEffect(() => {
+    if (!selectedServer || !selectedAuthorizationAgent) {
+      setAuthorizations([]);
+      return;
+    }
+
+    let isCurrent = true;
+    adminFetch<McpToolAuthorizationRecord[]>(
+      `/api/admin/agents/${selectedAuthorizationAgent.id}/mcp-tool-authorizations?server_id=${selectedServer.id}`,
+    )
+      .then((result) => {
+        if (isCurrent) {
+          setAuthorizations(result);
+        }
+      })
+      .catch(() => {
+        if (isCurrent) {
+          setAuthorizations([]);
+        }
+      });
+
+    return () => {
+      isCurrent = false;
+    };
+  }, [selectedServer?.id, selectedAuthorizationAgent?.id]);
+
+  function upsertServer(server: ApiMcpServer) {
+    const mappedServer = mapMcpServer(server);
+    setServers((currentServers) =>
+      currentServers.some((currentServer) => currentServer.id === mappedServer.id)
+        ? currentServers.map((currentServer) => currentServer.id === mappedServer.id ? mappedServer : currentServer)
+        : [...currentServers, mappedServer],
+    );
+    setSelectedServerId(mappedServer.id);
+    return mappedServer;
+  }
+
+  function openConfigurationDraft() {
     setIsConfigurationDraftOpen(true);
   }
 
@@ -2958,7 +3558,7 @@ function McpServersPanel() {
     const name = String(formData.get("name") ?? "").trim();
     const url = String(formData.get("url") ?? "").trim();
     const credentialReference = String(formData.get("credentialReference") ?? "").trim();
-    const headerName = String(formData.get("headerName") ?? "Authorization").trim() || "Authorization";
+    const headerNameValue = String(formData.get("headerName") ?? "Authorization").trim() || "Authorization";
     if (!name || !url) {
       setSaveStatus("请填写 MCP 服务器名称和 URL。");
       return;
@@ -2973,18 +3573,71 @@ function McpServersPanel() {
           name,
           connection_type: String(formData.get("connectionType") ?? "sse"),
           url,
-          header_secret_refs: credentialReference ? { [headerName]: credentialReference } : {},
+          header_secret_refs: credentialReference ? { [headerNameValue]: credentialReference } : {},
           timeout_seconds: parseAdminInteger(String(formData.get("timeoutSeconds") ?? "30"), 30),
           enabled: true,
         }),
       });
-      const mappedServer = mapMcpServer(created);
-      setServers((currentServers) => [...currentServers, mappedServer]);
-      setSelectedServerName(mappedServer.name);
+      upsertServer(created);
       setIsConfigurationDraftOpen(false);
       setSaveStatus("MCP 服务器已创建。");
     } catch {
       setSaveStatus("MCP 服务器创建失败，请检查 URL、凭据引用或管理员权限。");
+    }
+  }
+
+  async function updateSelectedMcpServer(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    if (!selectedServer) {
+      return;
+    }
+    const formData = new FormData(event.currentTarget);
+    const name = String(formData.get("name") ?? "").trim();
+    const url = String(formData.get("url") ?? "").trim();
+    const credentialReference = String(formData.get("credentialReference") ?? "").trim();
+    const headerNameValue = String(formData.get("headerName") ?? "Authorization").trim() || "Authorization";
+    if (!name || !url) {
+      setSaveStatus("请填写 MCP 服务器名称和 URL。");
+      return;
+    }
+
+    setLoadError("");
+    setSaveStatus("");
+    try {
+      const updated = await adminFetch<ApiMcpServer>(`/api/admin/mcp-servers/${selectedServer.id}`, {
+        method: "PATCH",
+        body: JSON.stringify({
+          name,
+          connection_type: String(formData.get("connectionType") ?? selectedServer.connectionTypeValue),
+          url,
+          header_secret_refs: credentialReference ? { [headerNameValue]: credentialReference } : {},
+          timeout_seconds: parseAdminInteger(String(formData.get("timeoutSeconds") ?? String(selectedServer.timeoutSeconds)), selectedServer.timeoutSeconds),
+          enabled: formData.get("enabled") === "on",
+        }),
+      });
+      upsertServer(updated);
+      setSaveStatus("MCP 服务器配置已保存。");
+    } catch {
+      setSaveStatus("MCP 服务器配置保存失败。");
+    }
+  }
+
+  async function deleteSelectedMcpServer() {
+    if (!selectedServer || !window.confirm(`确定删除 MCP 服务器“${selectedServer.name}”吗？`)) {
+      return;
+    }
+    setLoadError("");
+    setSaveStatus("");
+    try {
+      await adminFetch<ApiMcpServer>(`/api/admin/mcp-servers/${selectedServer.id}`, { method: "DELETE" });
+      const remainingServers = servers.filter((server) => server.id !== selectedServer.id);
+      setServers(remainingServers);
+      setSelectedServerId(remainingServers[0]?.id ?? null);
+      setTools([]);
+      setAuthorizations([]);
+      setSaveStatus("MCP 服务器已删除。");
+    } catch {
+      setSaveStatus("MCP 服务器删除失败。");
     }
   }
 
@@ -2995,11 +3648,7 @@ function McpServersPanel() {
       const updated = await adminFetch<ApiMcpServer>(`/api/admin/mcp-servers/${server.id}/discover`, {
         method: "POST",
       });
-      const mappedServer = mapMcpServer(updated);
-      setServers((currentServers) =>
-        currentServers.map((currentServer) => currentServer.id === mappedServer.id ? mappedServer : currentServer),
-      );
-      setSelectedServerName(mappedServer.name);
+      const mappedServer = upsertServer(updated);
       const discoveredTools = await adminFetch<ApiMcpTool[]>(`/api/admin/mcp-servers/${mappedServer.id}/tools`);
       setTools(discoveredTools.map(mapMcpTool));
       setSaveStatus("工具发现已完成。");
@@ -3008,168 +3657,233 @@ function McpServersPanel() {
     }
   }
 
-  async function saveToolAuthorization() {
-    if (!selectedServer || !selectedAuthorizationAgent || tools.length === 0) {
+  async function saveToolAuthorization(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    if (!selectedServer || !selectedAuthorizationAgent) {
       return;
     }
+    const formData = new FormData(event.currentTarget);
+    const selectedToolNames = new Set(formData.getAll("toolNames").map(String));
 
     setLoadError("");
     setSaveStatus("");
     try {
-      await Promise.all(tools.map((tool) =>
-        adminFetch(`/api/admin/agents/${selectedAuthorizationAgent.id}/mcp-tool-authorizations`, {
+      const saved = await Promise.all(tools.map((tool) =>
+        adminFetch<McpToolAuthorizationRecord>(`/api/admin/agents/${selectedAuthorizationAgent.id}/mcp-tool-authorizations`, {
           method: "POST",
           body: JSON.stringify({
             server_id: selectedServer.id,
             tool_name: tool.name,
-            enabled: true,
+            enabled: selectedToolNames.has(tool.name),
           }),
         }),
       ));
+      setAuthorizations(saved);
       setSaveStatus("MCP 工具授权已保存。");
     } catch {
-      setSaveStatus("MCP 工具授权保存失败，请确认工具已完成发现。");
+      setSaveStatus("MCP 工具授权保存失败，请确认工具已完成发现。 ");
     }
   }
 
+  const authorizedToolNames = new Set(
+    authorizations.filter((authorization) => authorization.enabled).map((authorization) => authorization.tool_name),
+  );
+
   return (
-    <section className="route-panel" aria-label="MCP 服务器">
+    <section className="route-panel admin-config-page" aria-label="工具与 MCP">
       <CopilotMcpServersBridge
-        authorizationAgent={authorizationAgent}
+        authorizationAgent={selectedAuthorizationAgent?.name ?? ""}
         isConfigurationDraftOpen={isConfigurationDraftOpen}
-        selectedServerName={selectedServerName}
+        selectedServerName={selectedServer?.name ?? null}
         servers={servers}
-        setAuthorizationAgent={setAuthorizationAgent}
+        setAuthorizationAgent={(value) => {
+          const nextAgent = agents.find((agent) => agent.name === value);
+          setSelectedAgentId(nextAgent?.id ?? "");
+        }}
         setIsConfigurationDraftOpen={setIsConfigurationDraftOpen}
-        setSelectedServerName={setSelectedServerName}
+        setSelectedServerName={(value) => {
+          const nextServer = servers.find((server) => server.name === value);
+          setSelectedServerId(nextServer?.id ?? null);
+        }}
       />
-      <div className="panel-head">
+      <div className="panel-head config-page-head">
         <div>
-          <p className="eyebrow">智能体工具网关</p>
-          <h2>远程 MCP 注册表</h2>
-          <p>仅支持 SSE 或 Streamable HTTP；stdio MCP 服务器不在当前 MVP 范围内。</p>
+          <p className="eyebrow">Agents SDK tools</p>
+          <h2>工具与 MCP</h2>
+          <p>注册远程 MCP Server，发现工具，并按 Agent 授权可调用工具。</p>
+          {saveStatus ? <p className="inline-note">{saveStatus}</p> : null}
         </div>
-        <Button className="primary-button" type="button" onClick={() => openConfigurationDraft(null)}>
-          创建 MCP 服务器
-        </Button>
+        <Button className="primary-button" type="button" onClick={openConfigurationDraft}>创建 MCP 服务器</Button>
       </div>
-      {isLoading ? <p className="empty-state">正在加载 MCP 服务器...</p> : null}
+      {isLoading ? <p className="empty-state">正在加载 MCP 工具配置...</p> : null}
       {loadError ? <p className="empty-state danger-state" role="alert">{loadError}</p> : null}
-      {saveStatus ? <p className="inline-note">{saveStatus}</p> : null}
-      <div className="route-table-wrap">
-        <table className="route-table" aria-label="MCP 服务器列表">
-          <thead>
-            <tr>
-              <th>名称</th>
-              <th>连接类型</th>
-              <th>URL</th>
-              <th>凭据</th>
-              <th>发现状态</th>
-              <th>授权对象</th>
-              <th>操作</th>
-            </tr>
-          </thead>
-          <tbody>
+      <section className="config-summary-strip" aria-label="MCP 配置摘要">
+        <InfoTile title="服务器" value={`${servers.length} 个`} icon={ServerCog} />
+        <InfoTile title="已启用" value={`${servers.filter((server) => server.enabled).length} 个`} icon={ShieldCheck} />
+        <InfoTile title="当前工具" value={`${tools.length} 个`} icon={Workflow} />
+        <InfoTile title="授权工具" value={`${authorizedToolNames.size} 个`} icon={UserCheck} />
+      </section>
+      <div className="config-workbench mcp-workbench">
+        <aside className="config-sidebar" aria-label="MCP 服务器列表">
+          <div className="config-sidebar-head">
+            <h3>MCP servers</h3>
+            <span>{servers.length}</span>
+          </div>
+          <div className="config-selector-list">
             {servers.map((server) => (
-              <tr
-                className={server.name === selectedServerName ? "selected-row" : ""}
-                key={server.name}
+              <button
+                className={server.id === selectedServer?.id ? "config-selector active" : "config-selector"}
+                key={server.id}
+                type="button"
+                onClick={() => setSelectedServerId(server.id)}
               >
-                <td>{server.name}</td>
-                <td>{server.connectionType}</td>
-                <td>{server.url}</td>
-                <td>{credentialStatus(server.credentialReference)}</td>
-                <td>{discoveryStatusLabel(server.discoveryStatus)}</td>
-                <td>{server.authorization}</td>
-                <td>
-                  <div className="table-actions">
-                    <Button className="secondary-button" type="button" onClick={() => setSelectedServerName(server.name)}>
-                      详情
-                    </Button>
-                    <Button className="secondary-button" type="button" onClick={() => discoverSelectedServerTools(server)}>
-                      发现工具
-                    </Button>
-                  </div>
-                </td>
-              </tr>
+                <span>
+                  <strong>{server.name}</strong>
+                  <small>{server.connectionType} · {server.discoveryStatusLabel}</small>
+                </span>
+                <Badge variant={server.enabled ? "default" : "secondary"}>{server.enabled ? "启用" : "停用"}</Badge>
+              </button>
             ))}
-          </tbody>
-        </table>
-        {!isLoading && servers.length === 0 ? (
-          <EmptyStateAction
-            title="暂无 MCP 服务器"
-            description="先注册一个远程 SSE 或 Streamable HTTP 服务器，之后才能发现工具和授权智能体。"
-            onAction={() => openConfigurationDraft(null)}
-            actionLabel="创建 MCP 服务器"
-          />
+          </div>
+          {!isLoading && servers.length === 0 ? (
+            <EmptyStateAction
+              title="暂无 MCP 服务器"
+              description="注册远程 SSE 或 Streamable HTTP 服务器后，才能发现工具和授权 Agent。"
+              onAction={openConfigurationDraft}
+              actionLabel="创建 MCP 服务器"
+            />
+          ) : null}
+        </aside>
+        {selectedServer ? (
+          <div className="config-editor" aria-label="MCP 服务器配置">
+            <div className="config-editor-head">
+              <div>
+                <p className="eyebrow">{selectedServer.connectionType}</p>
+                <h3>{selectedServer.name}</h3>
+                <p>{selectedServer.url}</p>
+              </div>
+              <div className="button-row compact-actions">
+                <Button className="secondary-button" type="button" onClick={() => discoverSelectedServerTools(selectedServer)}>发现工具</Button>
+                <Button className="danger-button" type="button" onClick={deleteSelectedMcpServer}>删除</Button>
+              </div>
+            </div>
+            <div className="config-section-grid">
+              <form className="config-section config-section-span" aria-label="编辑 MCP 服务器" key={selectedServer.id} onSubmit={updateSelectedMcpServer}>
+                <div className="config-section-head">
+                  <h4>Server registry</h4>
+                  <p>当前只开放远程 HTTP(S) MCP Server，不开放本机 stdio 配置。</p>
+                </div>
+                <div className="sdk-field-grid">
+                  <label>
+                    <span>名称</span>
+                    <Input name="name" defaultValue={selectedServer.name} required />
+                  </label>
+                  <label>
+                    <span>连接类型</span>
+                    <Select name="connectionType" defaultValue={selectedServer.connectionTypeValue}>
+                      <SelectTrigger>
+                        <SelectValue placeholder="SSE" />
+                      </SelectTrigger>
+                      <SelectContent>
+                        <SelectGroup>
+                          <SelectItem value="sse">SSE</SelectItem>
+                          <SelectItem value="streamable_http">Streamable HTTP</SelectItem>
+                        </SelectGroup>
+                      </SelectContent>
+                    </Select>
+                  </label>
+                  <label className="config-wide-field">
+                    <span>URL</span>
+                    <Input name="url" defaultValue={selectedServer.url} required />
+                  </label>
+                  <label>
+                    <span>凭据 Header</span>
+                    <Input name="headerName" defaultValue={headerName} />
+                  </label>
+                  <label>
+                    <span>凭据引用</span>
+                    <Input name="credentialReference" defaultValue={headerSecretReference} placeholder="secret/mcp-server" />
+                  </label>
+                  <label>
+                    <span>超时秒数</span>
+                    <Input name="timeoutSeconds" defaultValue={String(selectedServer.timeoutSeconds)} inputMode="numeric" />
+                  </label>
+                  <label className="config-checkbox">
+                    <input defaultChecked={selectedServer.enabled} name="enabled" type="checkbox" />
+                    <span>启用服务器</span>
+                  </label>
+                </div>
+                <div className="config-editor-footer inline-footer">
+                  <Button className="primary-button" type="submit">保存服务器</Button>
+                </div>
+              </form>
+              <section className="config-section">
+                <div className="config-section-head">
+                  <h4>Discovered tools</h4>
+                  <p>发现结果会作为 Agent 授权候选。</p>
+                </div>
+                <div className="tool-list" aria-label="工具发现结果">
+                  {tools.map((tool) => (
+                    <article className="tool-row" key={tool.id}>
+                      <strong>{tool.name}</strong>
+                      <p>{tool.description}</p>
+                      <span>{tool.schemaSummary}</span>
+                    </article>
+                  ))}
+                  {tools.length === 0 ? (
+                    <EmptyStateAction
+                      title="当前服务器暂无工具"
+                      description="执行工具发现后，这里会显示 MCP Server 暴露的工具。"
+                      onAction={() => discoverSelectedServerTools(selectedServer)}
+                      actionLabel="发现工具"
+                    />
+                  ) : null}
+                </div>
+              </section>
+              <form className="config-section" aria-label="MCP 工具授权" onSubmit={saveToolAuthorization}>
+                <div className="config-section-head">
+                  <h4>Authorization</h4>
+                  <p>选择 Agent 后，只授权勾选工具；未勾选工具会保存为禁用。</p>
+                </div>
+                <label>
+                  <span>Agent</span>
+                  <Select value={selectedAuthorizationAgent?.id ?? ""} onValueChange={setSelectedAgentId}>
+                    <SelectTrigger aria-label="智能体">
+                      <SelectValue placeholder="选择 Agent" />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectGroup>
+                        {agents.map((agent) => (
+                          <SelectItem key={agent.id} value={agent.id}>{agent.name}</SelectItem>
+                        ))}
+                      </SelectGroup>
+                    </SelectContent>
+                  </Select>
+                </label>
+                <div className="config-checkbox-list tool-authorization-list" aria-label="可授权工具">
+                  {tools.map((tool) => (
+                    <label className="config-checkbox" key={tool.id}>
+                      <input defaultChecked={authorizedToolNames.has(tool.name)} name="toolNames" type="checkbox" value={tool.name} />
+                      <span>{tool.name}</span>
+                    </label>
+                  ))}
+                  {tools.length === 0 ? <p className="inline-note">暂无可授权工具。</p> : null}
+                </div>
+                <div className="config-editor-footer inline-footer">
+                  <Button className="primary-button" type="submit" disabled={tools.length === 0 || !selectedAuthorizationAgent}>保存授权</Button>
+                </div>
+              </form>
+            </div>
+          </div>
         ) : null}
       </div>
-      {servers.length > 0 ? (
-        <div className="admin-workbench-grid">
-          <section className="sub-panel stack" aria-labelledby="mcp-discovery-title">
-            <div>
-              <p className="eyebrow">工具发现</p>
-              <h3 id="mcp-discovery-title">工具发现结果</h3>
-            </div>
-            <div className="task-list">
-              {tools.map((tool) => (
-                <article className="task-row static-task-row" key={tool.name}>
-                  <div>
-                    <strong>{tool.name}</strong>
-                    <p>{tool.description}</p>
-                  </div>
-                  <span className="audit-chip">{tool.schemaSummary}</span>
-                </article>
-              ))}
-            </div>
-            {tools.length === 0 ? (
-              <EmptyStateAction
-                title="当前服务器暂无已发现工具"
-                description="点击当前服务器的发现工具按钮，后端会执行工具发现并返回授权候选。"
-                onAction={() => {
-                  if (selectedServer) {
-                    void discoverSelectedServerTools(selectedServer);
-                  }
-                }}
-                actionLabel="发现工具"
-              />
-            ) : null}
-          </section>
-          <section className="sub-panel stack" aria-label="MCP 工具授权">
-            <div>
-              <p className="eyebrow">授权面板</p>
-              <h3>MCP 工具授权</h3>
-            </div>
-            <label>
-              <span>智能体</span>
-              <Select value={authorizationAgent} onValueChange={setAuthorizationAgent}>
-                <SelectTrigger aria-label="智能体">
-                  <SelectValue placeholder="选择智能体" />
-                </SelectTrigger>
-                <SelectContent>
-                  {agents.map((agent) => (
-                    <SelectItem key={agent.id} value={agent.name}>{agent.name}</SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
-            </label>
-            <div className="card-field-list" aria-label="已授权工具">
-              {tools.length > 0 ? tools.map((tool) => (
-                <span className="card-field" key={tool.name}>{tool.name}</span>
-              )) : <span className="card-field muted-field">暂无可授权工具</span>}
-            </div>
-            <p>授权只保存工具选择，不暴露 MCP 凭据明文。</p>
-            <Button className="secondary-button" type="button" disabled={tools.length === 0 || !selectedAuthorizationAgent} onClick={saveToolAuthorization}>保存授权</Button>
-          </section>
-        </div>
-      ) : null}
       {isConfigurationDraftOpen ? (
         <AdminDialog eyebrow="后端创建" title="创建 MCP 服务器" onClose={() => setIsConfigurationDraftOpen(false)}>
           <form className="admin-dialog-form" aria-label="创建 MCP 服务器" onSubmit={createMcpServer}>
             <div className="form-grid">
               <label>
                 <span>名称</span>
-                <Input name="name" placeholder="MCP 服务器名称" required />
+                <Input name="name" placeholder="Research MCP" required />
               </label>
               <label>
                 <span>URL</span>
@@ -3183,8 +3897,10 @@ function McpServersPanel() {
                     <SelectValue placeholder="SSE" />
                   </SelectTrigger>
                   <SelectContent>
-                    <SelectItem value="sse">SSE</SelectItem>
-                    <SelectItem value="streamable_http">Streamable HTTP</SelectItem>
+                    <SelectGroup>
+                      <SelectItem value="sse">SSE</SelectItem>
+                      <SelectItem value="streamable_http">Streamable HTTP</SelectItem>
+                    </SelectGroup>
                   </SelectContent>
                 </Select>
               </label>
@@ -3197,8 +3913,8 @@ function McpServersPanel() {
                 <Input name="credentialReference" placeholder="secret/mcp-server" />
               </label>
               <label>
-                <span>超时</span>
-                <Input name="timeoutSeconds" placeholder="30s" defaultValue="30" inputMode="numeric" />
+                <span>超时秒数</span>
+                <Input name="timeoutSeconds" placeholder="30" defaultValue="30" inputMode="numeric" />
               </label>
             </div>
             <div className="button-row compact-actions">
@@ -4083,11 +4799,14 @@ function runStatusLabel(status: RunAuditStatus | RunAuditStatusFilter) {
 
 function discoveryStatusLabel(status: McpServer["discoveryStatus"]) {
   switch (status) {
-    case "Discovered":
+    case "succeeded":
       return "已发现";
-    case "Pending discovery":
+    case "failed":
+      return "发现失败";
+    case "not_run":
       return "待发现";
   }
+  return "待发现";
 }
 
 function accountBadgeVariant(status: string) {

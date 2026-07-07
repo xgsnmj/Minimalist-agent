@@ -80,7 +80,8 @@ def test_administrator_can_create_edit_enable_and_disable_model_configuration():
             "model_name": "gpt-5",
             "endpoint": "https://api.openai.com/v1",
             "credential_reference": "sk-openai-admin",
-            "default_parameters": {"temperature": 0.2},
+            "model_settings": {"temperature": 0.2},
+            "native_tool_settings": {"web_search": {"search_context_size": "medium"}},
             "enabled": True,
         },
     )
@@ -99,7 +100,8 @@ def test_administrator_can_create_edit_enable_and_disable_model_configuration():
         json={
             "name": "OpenAI GPT-5 Primary",
             "model_name": "gpt-5",
-            "default_parameters": {"temperature": 0.1, "max_output_tokens": 4096},
+            "model_settings": {"temperature": 0.1, "max_output_tokens": 4096},
+            "native_tool_settings": {"web_search": {"search_context_size": "high"}},
             "enabled": False,
         },
     )
@@ -112,9 +114,12 @@ def test_administrator_can_create_edit_enable_and_disable_model_configuration():
     assert update_response.json()["name"] == "OpenAI GPT-5 Primary"
     assert update_response.json()["enabled"] is False
     assert list_response.status_code == 200
-    assert list_response.json()[0]["default_parameters"] == {
+    assert list_response.json()[0]["model_settings"] == {
         "temperature": 0.1,
         "max_output_tokens": 4096,
+    }
+    assert list_response.json()[0]["native_tool_settings"] == {
+        "web_search": {"search_context_size": "high"},
     }
     assert "api_key" not in list_response.json()[0]
     audit_events = admin_audit_store.list_events()
@@ -255,7 +260,7 @@ def test_model_configuration_store_persists_configurations_across_store_instance
             model_name="gpt-5.5",
             endpoint="https://api.openai.com/v1",
             credential_reference="env:OPENAI_API_KEY",
-            default_parameters={"temperature": 0.2},
+            model_settings={"temperature": 0.2},
             enabled=True,
         )
     )
@@ -263,7 +268,7 @@ def test_model_configuration_store_persists_configurations_across_store_instance
     fresh_store = ModelConfigurationStore()
 
     assert fresh_store.get(created.id).model_name == "gpt-5.5"
-    assert fresh_store.list_configurations()[0].default_parameters == {"temperature": 0.2}
+    assert fresh_store.list_configurations()[0].model_settings == {"temperature": 0.2}
 
 
 def test_administrator_can_check_model_configuration_health(monkeypatch):
@@ -347,7 +352,7 @@ def test_model_configuration_health_check_request_is_small_and_filters_temperatu
             model_name="gpt-5.5",
             endpoint="https://www.packyapi.com/v1",
             credential_reference="sk-direct",
-            default_parameters={
+            model_settings={
                 "max_tokens": 8192,
                 "temperature": 0.1,
                 "extra_headers": {"X-Test": "1"},

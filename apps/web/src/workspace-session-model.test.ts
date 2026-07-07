@@ -24,6 +24,11 @@ describe("WorkspaceSessionModel", () => {
         is_default: true,
         name: "Default Agent",
         process_visibility: "standard",
+        sdk_settings: {
+          max_turns: 10,
+          reset_tool_choice: true,
+          tool_use_behavior: "run_llm_again",
+        },
         status: "enabled",
       },
       deleted: false,

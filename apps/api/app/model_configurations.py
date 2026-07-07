@@ -138,7 +138,8 @@ class ModelConfigurationMutationRequest(BaseModel):
     endpoint: str = Field(min_length=1)
     credential_reference: str | None = Field(default=None, min_length=1)
     api_key: str | None = Field(default=None, exclude=True)
-    default_parameters: dict[str, Any] = {}
+    model_settings: dict[str, Any] = Field(default_factory=dict)
+    native_tool_settings: dict[str, Any] = Field(default_factory=dict)
     enabled: bool = True
 
 
@@ -149,7 +150,8 @@ class ModelConfigurationUpdateRequest(BaseModel):
     endpoint: str | None = Field(default=None, min_length=1)
     credential_reference: str | None = Field(default=None, min_length=1)
     api_key: str | None = Field(default=None, exclude=True)
-    default_parameters: dict[str, Any] | None = None
+    model_settings: dict[str, Any] | None = None
+    native_tool_settings: dict[str, Any] | None = None
     enabled: bool | None = None
 
 
@@ -160,7 +162,8 @@ class ModelConfigurationResponse(BaseModel):
     model_name: str
     endpoint: str
     credential_reference: str
-    default_parameters: dict[str, Any]
+    model_settings: dict[str, Any]
+    native_tool_settings: dict[str, Any]
     enabled: bool
     health_status: ModelHealthStatus
     last_checked_at: str | None = None
@@ -182,7 +185,8 @@ class ModelConfiguration:
     model_name: str
     endpoint: str
     credential_reference: str
-    default_parameters: dict[str, Any] = field(default_factory=dict)
+    model_settings: dict[str, Any] = field(default_factory=dict)
+    native_tool_settings: dict[str, Any] = field(default_factory=dict)
     enabled: bool = True
     health_status: ModelHealthStatus = ModelHealthStatus.NOT_CHECKED
     last_checked_at: str | None = None
@@ -198,7 +202,12 @@ class ModelConfigurationRecord(Base):
     model_name: Mapped[str] = mapped_column(String(255), nullable=False)
     endpoint: Mapped[str] = mapped_column(String(1024), nullable=False)
     credential_reference: Mapped[str] = mapped_column(String(512), nullable=False)
-    default_parameters: Mapped[dict[str, Any]] = mapped_column(
+    model_settings: Mapped[dict[str, Any]] = mapped_column(
+        JsonPayload,
+        nullable=False,
+        default=dict,
+    )
+    native_tool_settings: Mapped[dict[str, Any]] = mapped_column(
         JsonPayload,
         nullable=False,
         default=dict,
@@ -256,7 +265,8 @@ class ModelConfigurationStore:
                 model_name=request.model_name,
                 endpoint=request.endpoint,
                 credential_reference=credential_reference,
-                default_parameters=dict(request.default_parameters),
+                model_settings=dict(request.model_settings),
+                native_tool_settings=dict(request.native_tool_settings),
                 enabled=request.enabled,
                 health_status=ModelHealthStatus.NOT_CHECKED.value,
                 created_at=now,
@@ -285,8 +295,10 @@ class ModelConfigurationStore:
             credential_reference = self._credential_reference_for_update(request)
             if credential_reference is not None:
                 record.credential_reference = credential_reference
-            if request.default_parameters is not None:
-                record.default_parameters = dict(request.default_parameters)
+            if request.model_settings is not None:
+                record.model_settings = dict(request.model_settings)
+            if request.native_tool_settings is not None:
+                record.native_tool_settings = dict(request.native_tool_settings)
             if request.enabled is not None:
                 record.enabled = request.enabled
             record.updated_at = _utc_now()
@@ -384,7 +396,8 @@ class ModelConfigurationStore:
             model_name=record.model_name,
             endpoint=record.endpoint,
             credential_reference=record.credential_reference,
-            default_parameters=dict(record.default_parameters or {}),
+            model_settings=dict(record.model_settings or {}),
+            native_tool_settings=dict(record.native_tool_settings or {}),
             enabled=record.enabled,
             health_status=ModelHealthStatus(record.health_status),
             last_checked_at=record.last_checked_at,
@@ -416,7 +429,8 @@ def to_model_configuration_response(
         model_name=configuration.model_name,
         endpoint=configuration.endpoint,
         credential_reference=configuration.credential_reference,
-        default_parameters=configuration.default_parameters,
+        model_settings=configuration.model_settings,
+        native_tool_settings=configuration.native_tool_settings,
         enabled=configuration.enabled,
         health_status=configuration.health_status,
         last_checked_at=configuration.last_checked_at,

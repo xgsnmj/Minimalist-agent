@@ -1,7 +1,8 @@
 /// <reference types="@testing-library/jest-dom/vitest" />
 import * as matchers from "@testing-library/jest-dom/matchers";
+import { cleanup } from "@testing-library/react";
 import type { ReactNode } from "react";
-import { beforeEach, expect, vi } from "vitest";
+import { afterEach, beforeEach, expect, vi } from "vitest";
 
 import { resetWorkspaceUiStore } from "./features/workspace/workspace-ui-store";
 
@@ -33,6 +34,11 @@ type TestAgent = {
   is_default: boolean;
   instruction: string;
   process_visibility: string;
+  sdk_settings: {
+    max_turns: number;
+    tool_use_behavior: "run_llm_again" | "stop_on_first_tool";
+    reset_tool_choice: boolean;
+  };
   default_model_configuration_id: number | null;
   allowed_model_configuration_ids: number[];
   capability_policy: {
@@ -50,7 +56,8 @@ type TestModelConfiguration = {
   model_name: string;
   endpoint: string;
   credential_reference: string;
-  default_parameters: Record<string, unknown>;
+  model_settings: Record<string, unknown>;
+  native_tool_settings: Record<string, unknown>;
   enabled: boolean;
   health_status: "not_checked" | "healthy" | "unhealthy";
   last_checked_at: string | null;
@@ -195,6 +202,11 @@ beforeEach(() => {
       is_default: true,
       instruction: "在遵守已授权能力边界的前提下，帮助用户完成工作区任务。",
       process_visibility: "standard",
+      sdk_settings: {
+        max_turns: 10,
+        tool_use_behavior: "run_llm_again",
+        reset_tool_choice: true,
+      },
       default_model_configuration_id: 1,
       allowed_model_configuration_ids: [1, 2],
       capability_policy: {
@@ -213,6 +225,11 @@ beforeEach(() => {
       is_default: false,
       instruction: "收集候选资料、读取已批准页面，并产出简明研究笔记。",
       process_visibility: "minimal",
+      sdk_settings: {
+        max_turns: 8,
+        tool_use_behavior: "run_llm_again",
+        reset_tool_choice: true,
+      },
       default_model_configuration_id: 2,
       allowed_model_configuration_ids: [2, 1],
       capability_policy: {
@@ -274,7 +291,19 @@ beforeEach(() => {
       model_name: "gpt-5.5",
       endpoint: "https://api.openai.com/v1",
       credential_reference: "sk-openai-primary",
-      default_parameters: { temperature: 0.3 },
+      model_settings: {
+        temperature: 0.3,
+        max_tokens: 4096,
+        reasoning: { effort: "medium" },
+        verbosity: "medium",
+        tool_choice: "auto",
+        parallel_tool_calls: true,
+        store: false,
+      },
+      native_tool_settings: {
+        web_search: { search_context_size: "medium" },
+        shell: { environment: { type: "container_auto", network_policy: { type: "disabled" } } },
+      },
       enabled: true,
       health_status: "healthy",
       last_checked_at: "2026-07-05T08:30:00+00:00",
@@ -287,7 +316,8 @@ beforeEach(() => {
       model_name: "deepseek-reasoner",
       endpoint: "https://api.deepseek.com",
       credential_reference: "sk-deepseek-main",
-      default_parameters: { temperature: 0.2 },
+      model_settings: { temperature: 0.2, max_tokens: 8192, tool_choice: "auto" },
+      native_tool_settings: {},
       enabled: true,
       health_status: "not_checked",
       last_checked_at: null,
@@ -300,7 +330,8 @@ beforeEach(() => {
       model_name: "gateway-default",
       endpoint: "https://models.internal.example/v1",
       credential_reference: "",
-      default_parameters: { temperature: 0.4 },
+      model_settings: { temperature: 0.4, max_tokens: 2048 },
+      native_tool_settings: {},
       enabled: false,
       health_status: "unhealthy",
       last_checked_at: "2026-07-05T08:20:00+00:00",
@@ -663,7 +694,8 @@ beforeEach(() => {
       }
       if (url === "/api/admin/agents" && method === "POST") {
         const body = requestJson(init);
-        const created = {
+        const sdkSettings = requestRecord(body.sdk_settings);
+        const created: TestAgent = {
           id: agents.length + 1,
           name: String(body.name),
           description: String(body.description ?? ""),
@@ -672,6 +704,15 @@ beforeEach(() => {
           is_default: false,
           instruction: String(body.instruction),
           process_visibility: String(body.process_visibility ?? "standard"),
+          sdk_settings: {
+            max_turns: typeof sdkSettings.max_turns === "number" ? sdkSettings.max_turns : 10,
+            reset_tool_choice: typeof sdkSettings.reset_tool_choice === "boolean"
+              ? sdkSettings.reset_tool_choice
+              : true,
+            tool_use_behavior: sdkSettings.tool_use_behavior === "stop_on_first_tool"
+              ? "stop_on_first_tool"
+              : "run_llm_again",
+          },
           default_model_configuration_id: typeof body.default_model_configuration_id === "number"
             ? body.default_model_configuration_id
             : null,
@@ -743,7 +784,8 @@ beforeEach(() => {
           model_name: String(body.model_name),
           endpoint: String(body.endpoint),
           credential_reference: credentialReference,
-          default_parameters: requestRecord(body.default_parameters),
+          model_settings: requestRecord(body.model_settings),
+          native_tool_settings: requestRecord(body.native_tool_settings),
           enabled: typeof body.enabled === "boolean" ? body.enabled : true,
           health_status: "not_checked" as const,
           last_checked_at: null,
@@ -765,9 +807,12 @@ beforeEach(() => {
           ...modelConfigurations[index],
           ...patch,
           credential_reference: String(body.credential_reference ?? body.api_key ?? modelConfigurations[index].credential_reference),
-          default_parameters: patch.default_parameters
-            ? requestRecord(patch.default_parameters)
-            : modelConfigurations[index].default_parameters,
+          model_settings: patch.model_settings
+            ? requestRecord(patch.model_settings)
+            : modelConfigurations[index].model_settings,
+          native_tool_settings: patch.native_tool_settings
+            ? requestRecord(patch.native_tool_settings)
+            : modelConfigurations[index].native_tool_settings,
         } as TestModelConfiguration;
         return jsonResponse(modelConfigurations[index]);
       }
@@ -1146,6 +1191,13 @@ beforeEach(() => {
   );
 });
 
+afterEach(() => {
+  cleanup();
+  vi.unstubAllGlobals();
+  window.localStorage.clear();
+  window.history.pushState({}, "", "/");
+});
+
 vi.mock("@copilotkit/react-core/v2", async () => {
   const React = await import("react");
   const RenderCustomMessagesContext = React.createContext<any[]>([]);
@@ -1213,11 +1265,11 @@ vi.mock("@copilotkit/react-core/v2", async () => {
     if (event.type === "TEXT_MESSAGE_CONTENT") {
       const messageId = String(event.messageId);
       const delta = typeof event.delta === "string" ? event.delta : "";
-      agent.setMessages(agent.messages.map((message: any) =>
-        message.id === messageId
-          ? { ...message, content: `${typeof message.content === "string" ? message.content : ""}${delta}` }
-          : message,
-      ));
+      const message = agent.messages.find((item: any) => item.id === messageId);
+      if (message) {
+        message.content = `${typeof message.content === "string" ? message.content : ""}${delta}`;
+        agent.setMessages(agent.messages);
+      }
       return undefined;
     }
 
@@ -1232,11 +1284,11 @@ vi.mock("@copilotkit/react-core/v2", async () => {
     if (event.type === "REASONING_MESSAGE_CONTENT") {
       const messageId = String(event.messageId);
       const delta = typeof event.delta === "string" ? event.delta : "";
-      agent.setMessages(agent.messages.map((message: any) =>
-        message.id === messageId
-          ? { ...message, content: `${typeof message.content === "string" ? message.content : ""}${delta}` }
-          : message,
-      ));
+      const message = agent.messages.find((item: any) => item.id === messageId);
+      if (message) {
+        message.content = `${typeof message.content === "string" ? message.content : ""}${delta}`;
+        agent.setMessages(agent.messages);
+      }
       return undefined;
     }
 
@@ -1417,6 +1469,23 @@ vi.mock("@copilotkit/react-core/v2", async () => {
         }
         return null;
       }
+      const MemoizedMessageRow = React.useMemo(
+        () =>
+          React.memo(
+            ({ message }: any) =>
+              React.createElement(
+                "article",
+                { className: `message-row ${message.role}` },
+                React.createElement("span", { className: "message-role" }, message.role === "user" ? "你" : "Assistant"),
+                React.createElement("p", { className: "message-content" }, contentText(message.content)),
+              ),
+            (previous: any, next: any) =>
+              previous.message.id === next.message.id &&
+              previous.message.role === next.message.role &&
+              contentText(previous.message.content) === contentText(next.message.content),
+          ),
+        [],
+      );
       const messageView = React.createElement(
         "section",
         { "aria-label": "CopilotKit 消息列表" },
@@ -1425,12 +1494,7 @@ vi.mock("@copilotkit/react-core/v2", async () => {
             React.Fragment,
             { key: message.id },
             renderCustomMessage(message, "before", index),
-            React.createElement(
-              "article",
-              { className: `message-row ${message.role}` },
-              React.createElement("span", { className: "message-role" }, message.role === "user" ? "你" : "Assistant"),
-              React.createElement("p", { className: "message-content" }, contentText(message.content)),
-            ),
+            React.createElement(MemoizedMessageRow, { message }),
             renderCustomMessage(message, "after", index),
           ),
         ),
@@ -1516,18 +1580,28 @@ vi.mock("@copilotkit/react-core/v2", async () => {
     useAgent: ({ agentId = "default" } = {}) => {
       const [messages, setMessages] = React.useState<any[]>([]);
       const [isRunning, setIsRunning] = React.useState(false);
+      const [, forceUpdate] = React.useReducer((count: number) => count + 1, 0);
       const agentRef = React.useRef<any>(null);
       if (!agentRef.current) {
+        const subscribers = new Set<any>();
+        const notify = (eventName: "onMessagesChanged" | "onRunFinalized" | "onRunInitialized", nextMessages: any[]) => {
+          subscribers.forEach((subscriber) => {
+            subscriber?.[eventName]?.({ messages: nextMessages });
+          });
+        };
         const setAgentMessages = (nextMessages: any[] | ((currentMessages: any[]) => any[])) => {
           const currentAgentMessages = agentRef.current?.messages ?? [];
           const resolvedMessages = typeof nextMessages === "function"
             ? nextMessages(currentAgentMessages)
             : nextMessages;
           if (JSON.stringify(currentAgentMessages) === JSON.stringify(resolvedMessages)) {
+            notify("onMessagesChanged", resolvedMessages);
+            forceUpdate();
             setMessages((currentMessages) => currentMessages);
             return;
           }
           agentRef.current.messages = resolvedMessages;
+          notify("onMessagesChanged", resolvedMessages);
           setMessages((currentMessages) => {
             if (JSON.stringify(currentMessages) === JSON.stringify(resolvedMessages)) {
               return currentMessages;
@@ -1536,17 +1610,34 @@ vi.mock("@copilotkit/react-core/v2", async () => {
           });
         };
         agentRef.current = {
-          abortRun: () => setIsRunning(false),
+          abortRun: () => {
+            setIsRunning(false);
+            notify("onRunFinalized", agentRef.current?.messages ?? []);
+          },
           addMessage: (message: any) => setAgentMessages((currentMessages) => [...currentMessages, message]),
           agentId,
+          __notify: notify,
           messages: [],
           setMessages: setAgentMessages,
+          subscribe: (subscriber: any) => {
+            subscribers.add(subscriber);
+            return {
+              unsubscribe: () => subscribers.delete(subscriber),
+            };
+          },
         };
       }
       agentRef.current.agentId = agentId;
       agentRef.current.isRunning = isRunning;
       agentRef.current.messages = messages;
-      agentRef.current.__setIsRunning = setIsRunning;
+      agentRef.current.__setIsRunning = (nextRunning: boolean) => {
+        setIsRunning(nextRunning);
+        if (nextRunning) {
+          agentRef.current?.__notify?.("onRunInitialized", agentRef.current?.messages ?? []);
+        } else {
+          agentRef.current?.__notify?.("onRunFinalized", agentRef.current?.messages ?? []);
+        }
+      };
       return { agent: agentRef.current };
     },
     useAttachments: ({ config }: any = {}) => {

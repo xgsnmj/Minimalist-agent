@@ -27,6 +27,7 @@ from apps.api.app.mcp_servers import (
     McpDiscoveredToolResponse,
     McpServerMutationRequest,
     McpServerResponse,
+    McpServerUpdateRequest,
     McpToolAuthorizationRequest,
     McpToolAuthorizationResponse,
     mcp_server_store,
@@ -198,6 +199,25 @@ def authorize_agent_mcp_tool(
     )
 
 
+@router.get(
+    "/agents/{agent_id}/mcp-tool-authorizations",
+    response_model=list[McpToolAuthorizationResponse],
+)
+def list_agent_mcp_tool_authorizations(
+    agent_id: int,
+    server_id: int | None = None,
+    _administrator: LocalAccount = Depends(current_administrator),
+) -> list[McpToolAuthorizationResponse]:
+    agent_store.get(agent_id)
+    return [
+        to_mcp_tool_authorization_response(authorization)
+        for authorization in mcp_server_store.list_authorizations(
+            agent_id=agent_id,
+            server_id=server_id,
+        )
+    ]
+
+
 @router.get("/model-providers", response_model=list[ModelProviderCatalogEntry])
 def list_model_providers(
     _administrator: LocalAccount = Depends(current_administrator),
@@ -331,6 +351,29 @@ def create_mcp_server(
     _administrator: LocalAccount = Depends(current_administrator),
 ) -> McpServerResponse:
     return to_mcp_server_response(mcp_server_store.create(request))
+
+
+@router.patch(
+    "/mcp-servers/{server_id}",
+    response_model=McpServerResponse,
+)
+def update_mcp_server(
+    server_id: int,
+    request: McpServerUpdateRequest,
+    _administrator: LocalAccount = Depends(current_administrator),
+) -> McpServerResponse:
+    return to_mcp_server_response(mcp_server_store.update(server_id, request))
+
+
+@router.delete(
+    "/mcp-servers/{server_id}",
+    response_model=McpServerResponse,
+)
+def delete_mcp_server(
+    server_id: int,
+    _administrator: LocalAccount = Depends(current_administrator),
+) -> McpServerResponse:
+    return to_mcp_server_response(mcp_server_store.delete(server_id))
 
 
 @router.post(

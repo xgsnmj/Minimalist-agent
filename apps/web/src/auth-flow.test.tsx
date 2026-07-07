@@ -120,10 +120,10 @@ describe("Local Account access flow", () => {
     expect(await screen.findByRole("heading", { name: "治理总览" })).toBeInTheDocument();
     expect(countCurrentUserRequests(fetchMock)).toBe(1);
 
-    await user.click(screen.getByRole("link", { name: /智能体生命周期/ }));
+    await user.click(screen.getByRole("link", { name: /Agent 配置/ }));
 
     expect(window.location.pathname).toBe("/admin/agents");
-    expect(await screen.findByRole("heading", { name: "智能体生命周期" })).toBeInTheDocument();
+    expect(await screen.findByRole("heading", { name: "Agent 配置" })).toBeInTheDocument();
     expect(countCurrentUserRequests(fetchMock)).toBe(1);
   });
 

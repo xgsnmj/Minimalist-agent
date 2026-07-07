@@ -7,7 +7,7 @@ from pydantic import BaseModel, Field
 from sqlalchemy import Boolean, Integer, String, Text, func, select
 from sqlalchemy.orm import Mapped, aliased, mapped_column
 
-from apps.api.app.agents import Agent, AgentCapabilityPolicyResponse
+from apps.api.app.agents import Agent, AgentCapabilityPolicyResponse, AgentSdkSettingsResponse
 from apps.api.app.database import Base, JsonPayload, SessionLocal, engine
 from apps.api.app.model_configurations import model_configuration_store
 from apps.api.app.run_event_log import RunEvent
@@ -35,6 +35,7 @@ class RunCapabilitySnapshotResponse(BaseModel):
     agent_id: int
     agent_instruction_snapshot: str
     process_visibility: str
+    sdk_settings: AgentSdkSettingsResponse
     selected_model_configuration_id: int | None
     selected_model_configuration_snapshot: dict[str, object] | None = None
     default_model_configuration_id: int | None
@@ -61,6 +62,7 @@ class RunCapabilitySnapshot:
     agent_id: int
     agent_instruction_snapshot: str
     process_visibility: str
+    sdk_settings: AgentSdkSettingsResponse
     selected_model_configuration_id: int | None
     selected_model_configuration_snapshot: dict[str, object] | None
     default_model_configuration_id: int | None
@@ -355,6 +357,11 @@ def capability_snapshot_for_agent(
         agent_id=agent.id,
         agent_instruction_snapshot=agent.instruction,
         process_visibility=agent.process_visibility,
+        sdk_settings=AgentSdkSettingsResponse(
+            max_turns=agent.sdk_settings.max_turns,
+            tool_use_behavior=agent.sdk_settings.tool_use_behavior,
+            reset_tool_choice=agent.sdk_settings.reset_tool_choice,
+        ),
         selected_model_configuration_id=selected_model_configuration_id,
         selected_model_configuration_snapshot=selected_model_snapshot,
         default_model_configuration_id=agent.default_model_configuration_id,
@@ -378,6 +385,7 @@ def to_agent_run_response(run: AgentRun) -> AgentRunResponse:
             agent_id=run.capability_snapshot.agent_id,
             agent_instruction_snapshot=run.capability_snapshot.agent_instruction_snapshot,
             process_visibility=run.capability_snapshot.process_visibility,
+            sdk_settings=run.capability_snapshot.sdk_settings,
             selected_model_configuration_id=run.capability_snapshot.selected_model_configuration_id,
             selected_model_configuration_snapshot=(
                 run.capability_snapshot.selected_model_configuration_snapshot
@@ -409,7 +417,8 @@ def _selected_model_configuration_snapshot(
         "model_name": configuration.model_name,
         "endpoint": configuration.endpoint,
         "credential_reference": configuration.credential_reference,
-        "default_parameters": dict(configuration.default_parameters),
+        "model_settings": dict(configuration.model_settings),
+        "native_tool_settings": dict(configuration.native_tool_settings),
         "enabled": configuration.enabled,
     }
 
@@ -419,6 +428,7 @@ def _capability_snapshot_payload(snapshot: RunCapabilitySnapshot) -> dict[str, o
         "agent_id": snapshot.agent_id,
         "agent_instruction_snapshot": snapshot.agent_instruction_snapshot,
         "process_visibility": snapshot.process_visibility,
+        "sdk_settings": snapshot.sdk_settings.model_dump(mode="json"),
         "selected_model_configuration_id": snapshot.selected_model_configuration_id,
         "selected_model_configuration_snapshot": snapshot.selected_model_configuration_snapshot,
         "default_model_configuration_id": snapshot.default_model_configuration_id,
@@ -432,6 +442,9 @@ def _capability_snapshot_from_payload(payload: dict[str, object]) -> RunCapabili
         agent_id=int(payload["agent_id"]),
         agent_instruction_snapshot=str(payload["agent_instruction_snapshot"]),
         process_visibility=str(payload["process_visibility"]),
+        sdk_settings=AgentSdkSettingsResponse.model_validate(
+            payload.get("sdk_settings", {})
+        ),
         selected_model_configuration_id=payload.get("selected_model_configuration_id"),
         selected_model_configuration_snapshot=payload.get(
             "selected_model_configuration_snapshot"

@@ -45,6 +45,7 @@ from apps.api.app import artifacts as _artifacts  # noqa: E402,F401
 from apps.api.app import auth as _auth  # noqa: E402,F401
 from apps.api.app import conversations as _conversations  # noqa: E402,F401
 from apps.api.app import agent_runs as _agent_runs  # noqa: E402,F401
+from apps.api.app import mcp_servers as _mcp_servers  # noqa: E402,F401
 from apps.api.app import model_configurations as _model_configurations  # noqa: E402,F401
 from apps.api.app import run_attachments as _run_attachments  # noqa: E402,F401
 from apps.api.app import run_event_log as _run_event_log  # noqa: E402,F401

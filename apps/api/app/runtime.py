@@ -7,6 +7,7 @@ import os
 import re
 import time
 from typing import Any
+from urllib.parse import urlparse
 
 from agents import Agent, Model, ModelProvider, ModelSettings, ModelTracing, OpenAIProvider, Runner, RunConfig
 from agents.items import ModelResponse, MessageOutputItem, ReasoningItem, ToolCallItem
@@ -26,6 +27,7 @@ from openai.types.responses import (
 from apps.api.app.agent_run_execution import agent_run_execution
 from apps.api.app.agent_runs import AgentRunStatus, agent_run_store
 from apps.api.app.agents import agent_store
+from apps.api.app.conversations import conversation_store
 from apps.api.app.model_configurations import ModelConfiguration, model_configuration_store
 from apps.api.app.runtime_tools import (
     capability_for_tool_name,
@@ -55,9 +57,21 @@ _MODEL_PARAMETER_KEY_MAP = {
     "extra_body": "extra_body",
     "extra_headers": "extra_headers",
     "extra_args": "extra_args",
+    "metadata": "metadata",
+    "prompt_cache_retention": "prompt_cache_retention",
+    "include_usage": "include_usage",
 }
 
-_TEMPERATURE_PARAMETER_ALLOWLIST: set[tuple[str, str]] = set()
+_OPENAI_COMPATIBLE_PROVIDER_IDS = {
+    "bytedance-doubao",
+    "custom-openai-compatible",
+    "deepseek",
+    "moonshot-kimi",
+    "openai",
+    "openrouter",
+    "qwen-dashscope",
+    "zhipu-glm",
+}
 
 
 @dataclass
@@ -255,11 +269,16 @@ class RuntimeStore:
         model_name = model_configuration.model_name
         try:
             runtime_tools = sdk_tools_for_run(run)
+            use_responses = _use_openai_responses_for_configuration(
+                model_configuration,
+                runtime_tools=runtime_tools,
+            )
             model_provider = self._model_provider(
                 model_configuration,
-                use_responses=tools_require_openai_responses(runtime_tools),
+                use_responses=use_responses,
             )
             model_settings = _model_settings_for_configuration(model_configuration)
+            runner_input = _runner_input_for_run(run)
         except Exception as exc:
             agent_run_execution.apply_runtime_failure(
                 run_id=run.id,
@@ -278,6 +297,8 @@ class RuntimeStore:
             instructions=agent.instruction,
             model=model_name,
             tools=runtime_tools,
+            tool_use_behavior=run.capability_snapshot.sdk_settings.tool_use_behavior.value,
+            reset_tool_choice=run.capability_snapshot.sdk_settings.reset_tool_choice,
         )
         run_config = RunConfig(
             model_provider=model_provider,
@@ -292,11 +313,18 @@ class RuntimeStore:
                 "provider_id": provider_id,
                 "model_name": model_name,
                 "endpoint": model_configuration.endpoint,
+                "max_turns": str(run.capability_snapshot.sdk_settings.max_turns),
+                "tool_use_behavior": run.capability_snapshot.sdk_settings.tool_use_behavior.value,
             },
         )
 
         try:
-            result = Runner.run_sync(runtime_agent, run.user_message, run_config=run_config)
+            result = Runner.run_sync(
+                runtime_agent,
+                runner_input,
+                max_turns=run.capability_snapshot.sdk_settings.max_turns,
+                run_config=run_config,
+            )
         except Exception as exc:
             agent_run_execution.apply_runtime_failure(
                 run_id=run.id,
@@ -319,6 +347,7 @@ class RuntimeStore:
         trace["agent_id"] = agent.id
         trace["model_configuration_id"] = model_configuration.id
         trace["model_configuration_snapshot"] = _model_configuration_snapshot(model_configuration)
+        trace["agent_sdk_settings"] = run.capability_snapshot.sdk_settings.model_dump(mode="json")
         trace["provider_id"] = provider_id
         trace["model_name"] = model_name
         trace["endpoint"] = model_configuration.endpoint
@@ -375,11 +404,16 @@ class RuntimeStore:
         model_name = model_configuration.model_name
         try:
             runtime_tools = sdk_tools_for_run(run)
+            use_responses = _use_openai_responses_for_configuration(
+                model_configuration,
+                runtime_tools=runtime_tools,
+            )
             model_provider = self._model_provider(
                 model_configuration,
-                use_responses=tools_require_openai_responses(runtime_tools),
+                use_responses=use_responses,
             )
             model_settings = _model_settings_for_configuration(model_configuration)
+            runner_input = _runner_input_for_run(run)
         except Exception as exc:
             failed_run = agent_run_execution.apply_runtime_failure(
                 run_id=run.id,
@@ -407,6 +441,8 @@ class RuntimeStore:
             instructions=agent.instruction,
             model=model_name,
             tools=runtime_tools,
+            tool_use_behavior=run.capability_snapshot.sdk_settings.tool_use_behavior.value,
+            reset_tool_choice=run.capability_snapshot.sdk_settings.reset_tool_choice,
         )
         run_config = RunConfig(
             model_provider=model_provider,
@@ -421,13 +457,20 @@ class RuntimeStore:
                 "provider_id": provider_id,
                 "model_name": model_name,
                 "endpoint": model_configuration.endpoint,
+                "max_turns": str(run.capability_snapshot.sdk_settings.max_turns),
+                "tool_use_behavior": run.capability_snapshot.sdk_settings.tool_use_behavior.value,
             },
         )
 
         assistant_chunks: list[str] = []
         pending_tool_calls: dict[str, dict[str, object]] = {}
         try:
-            result = Runner.run_streamed(runtime_agent, run.user_message, run_config=run_config)
+            result = Runner.run_streamed(
+                runtime_agent,
+                runner_input,
+                max_turns=run.capability_snapshot.sdk_settings.max_turns,
+                run_config=run_config,
+            )
             async for event in result.stream_events():
                 if event.type == "run_item_stream_event":
                     tool_events = _runtime_tool_events_from_run_item(
@@ -486,6 +529,7 @@ class RuntimeStore:
         trace["agent_id"] = agent.id
         trace["model_configuration_id"] = model_configuration.id
         trace["model_configuration_snapshot"] = _model_configuration_snapshot(model_configuration)
+        trace["agent_sdk_settings"] = run.capability_snapshot.sdk_settings.model_dump(mode="json")
         trace["provider_id"] = provider_id
         trace["model_name"] = model_name
         trace["endpoint"] = model_configuration.endpoint
@@ -534,10 +578,15 @@ class RuntimeStore:
     ) -> ModelProvider:
         if self._model_provider_factory is not None:
             return self._model_provider_factory(configuration)
+        route = _model_provider_route(configuration)
+        if use_responses and route != "openai_responses":
+            raise RuntimeError(
+                "OpenAI Responses-only SDK tools require the official OpenAI endpoint."
+            )
         return OpenAIProvider(
             api_key=resolve_model_api_key(configuration.credential_reference),
             base_url=configuration.endpoint,
-            use_responses=use_responses,
+            use_responses=(route == "openai_responses" or use_responses),
         )
 
 
@@ -548,6 +597,65 @@ def _resolve_model_configuration(configuration_id: int | None):
     if not configuration.enabled:
         raise RuntimeError("Model Configuration is disabled.")
     return configuration
+
+
+def _runner_input_for_run(run) -> str | list[dict[str, str]]:
+    conversation = conversation_store.get_for_user(
+        owner_user_id=run.owner_user_id,
+        conversation_id=run.conversation_id,
+    )
+    messages: list[dict[str, str]] = []
+    for message in conversation.messages:
+        if message.role not in {"user", "assistant"}:
+            continue
+        if not message.content:
+            continue
+        messages.append({"role": message.role, "content": message.content})
+
+    if (
+        not messages
+        or messages[-1]["role"] != "user"
+        or messages[-1]["content"] != run.user_message
+    ):
+        messages.append({"role": "user", "content": run.user_message})
+    return messages or run.user_message
+
+
+def _use_openai_responses_for_configuration(
+    configuration: ModelConfiguration,
+    *,
+    runtime_tools: list[Any],
+) -> bool:
+    requires_responses = tools_require_openai_responses(runtime_tools)
+    if requires_responses and not _is_official_openai_configuration(configuration):
+        raise RuntimeError(
+            "OpenAI hosted SDK tools require the official OpenAI Responses endpoint."
+        )
+    return _is_official_openai_configuration(configuration) or requires_responses
+
+
+def _model_provider_route(configuration: ModelConfiguration) -> str:
+    provider_id = configuration.provider_id.strip().lower()
+    if _is_official_openai_configuration(configuration):
+        return "openai_responses"
+    if provider_id in _OPENAI_COMPATIBLE_PROVIDER_IDS:
+        return "openai_compatible_chat_completions"
+    raise RuntimeError(
+        f"Model Provider '{configuration.provider_id}' is not supported by the "
+        "Agents SDK runtime yet. Use an OpenAI-compatible endpoint or add a "
+        "provider-specific SDK adapter."
+    )
+
+
+def _is_official_openai_configuration(configuration: ModelConfiguration) -> bool:
+    return (
+        configuration.provider_id.strip().lower() == "openai"
+        and _is_official_openai_endpoint(configuration.endpoint)
+    )
+
+
+def _is_official_openai_endpoint(endpoint: str) -> bool:
+    return urlparse(endpoint.strip()).hostname == "api.openai.com"
 
 
 def _runtime_tool_event_from_run_item(
@@ -955,6 +1063,7 @@ def _trace_fallback(run) -> dict[str, object]:
             "run_id": run.id,
             "conversation_id": run.conversation_id,
             "agent_id": run.capability_snapshot.agent_id,
+            "agent_sdk_settings": run.capability_snapshot.sdk_settings.model_dump(mode="json"),
             "model_configuration_id": run.capability_snapshot.selected_model_configuration_id,
             "model_configuration_snapshot": (
                 run.capability_snapshot.selected_model_configuration_snapshot
@@ -971,7 +1080,8 @@ def _model_configuration_snapshot(configuration: ModelConfiguration) -> dict[str
         "model_name": configuration.model_name,
         "endpoint": configuration.endpoint,
         "credential_reference": configuration.credential_reference,
-        "default_parameters": dict(configuration.default_parameters),
+        "model_settings": dict(configuration.model_settings),
+        "native_tool_settings": dict(configuration.native_tool_settings),
         "enabled": configuration.enabled,
     }
 
@@ -1047,9 +1157,17 @@ def _credential_environment_candidates(credential_reference: str) -> list[str]:
 
 def _model_settings_for_configuration(configuration: ModelConfiguration) -> ModelSettings:
     parameters = runtime_model_parameters_for_configuration(configuration)
+    configured_metadata = parameters.pop("metadata", None)
+    metadata = {"provider_id": configuration.provider_id}
+    if isinstance(configured_metadata, dict):
+        metadata.update({
+            str(key): str(value)
+            for key, value in configured_metadata.items()
+            if value is not None
+        })
     model_settings_kwargs: dict[str, Any] = {
         "include_usage": True,
-        "metadata": {"provider_id": configuration.provider_id},
+        "metadata": metadata,
     }
 
     for source_key, target_key in _MODEL_PARAMETER_KEY_MAP.items():
@@ -1065,19 +1183,10 @@ def runtime_model_parameters_for_configuration(
 ) -> dict[str, Any]:
     parameters = {
         key: value
-        for key, value in configuration.default_parameters.items()
-        if key != "temperature" and key in _MODEL_PARAMETER_KEY_MAP and value is not None
+        for key, value in configuration.model_settings.items()
+        if key in _MODEL_PARAMETER_KEY_MAP and value is not None
     }
-    temperature = configuration.default_parameters.get("temperature")
-    if temperature is not None and _allows_temperature(configuration):
-        parameters["temperature"] = temperature
     return parameters
-
-
-def _allows_temperature(configuration: ModelConfiguration) -> bool:
-    provider_id = configuration.provider_id.strip().lower()
-    model_name = configuration.model_name.strip().lower()
-    return (provider_id, model_name) in _TEMPERATURE_PARAMETER_ALLOWLIST
 
 
 runtime_store = RuntimeStore()
