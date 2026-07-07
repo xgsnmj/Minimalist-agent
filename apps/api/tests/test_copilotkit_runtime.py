@@ -106,6 +106,29 @@ def ag_ui_events(response_text: str, event_type: str) -> list[dict]:
     return events
 
 
+def test_copilotkit_run_started_input_omits_null_optional_fields():
+    client = TestClient(app)
+    token = approved_user_token(client)
+    conversation_id = create_conversation(client, token)
+
+    response = client.post(
+        "/copilotkit/agent/default/run",
+        headers={
+            "Authorization": f"Bearer {token}",
+            "Accept": "text/event-stream",
+        },
+        json=copilot_run_payload(thread_id=str(conversation_id)),
+    )
+
+    run_started = ag_ui_events(response.text, "RUN_STARTED")[0]
+
+    assert response.status_code == 200
+    assert run_started["input"]["tools"] == []
+    assert run_started["input"]["context"] == []
+    assert "parentRunId" not in run_started["input"]
+    assert "resume" not in run_started["input"]
+
+
 def test_copilotkit_runtime_info_exposes_enabled_backend_agents():
     client = TestClient(app)
     token = approved_user_token(client)

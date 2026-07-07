@@ -314,7 +314,7 @@ def _run_started_event(request: CopilotKitRunRequest) -> dict[str, Any]:
         "type": "RUN_STARTED",
         "threadId": request.threadId,
         "runId": request.runId,
-        "input": request.model_dump(mode="json"),
+        "input": request.model_dump(mode="json", exclude_none=True),
     }
     if request.parentRunId is not None:
         event["parentRunId"] = request.parentRunId
