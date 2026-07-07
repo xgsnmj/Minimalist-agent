@@ -1,8 +1,12 @@
 from agents import (
+    ApplyPatchTool,
     CodeInterpreterTool,
+    ComputerTool,
+    CustomTool,
     FileSearchTool,
     FunctionTool,
     ImageGenerationTool,
+    LocalShellTool,
     ShellTool,
     WebSearchTool,
 )
@@ -207,6 +211,107 @@ def test_sdk_tools_register_configured_openai_native_tools():
     assert isinstance(tools[2], ImageGenerationTool)
     assert tools[2].tool_config["quality"] == "low"
     assert tools_require_openai_responses(tools) is True
+
+
+def test_sdk_tools_apply_configured_native_search_and_shell_options():
+    client = TestClient(app)
+    token = approved_user_token(client)
+    model_configuration = model_configuration_store.create(
+        ModelConfigurationMutationRequest(
+            provider_id="openai",
+            name="Native capability tools",
+            model_name="gpt-5",
+            endpoint="https://api.openai.com/v1",
+            credential_reference="env:TEST_MODEL_API_KEY",
+            default_parameters={
+                "openai_native_tools": {
+                    "web_search": {
+                        "search_context_size": "high",
+                        "external_web_access": False,
+                    },
+                    "shell": {
+                        "environment": {
+                            "type": "container_auto",
+                            "memory_limit": "4g",
+                            "network_policy": {"type": "disabled"},
+                        }
+                    },
+                }
+            },
+            enabled=True,
+        )
+    )
+    agent_store.update(
+        1,
+        AgentUpdateRequest(
+            default_model_configuration_id=model_configuration.id,
+            allowed_model_configuration_ids=[model_configuration.id],
+            capability_policy=AgentCapabilityPolicyResponse(
+                mcp_server_ids=[],
+                sandbox_enabled=True,
+                search_enabled=True,
+                page_read_enabled=False,
+            ),
+        ),
+    )
+    run_id = create_run(client, token)
+
+    tools = sdk_tools_for_run(agent_run_store.get(run_id))
+
+    assert isinstance(tools[0], WebSearchTool)
+    assert tools[0].search_context_size == "high"
+    assert tools[0].external_web_access is False
+    assert isinstance(tools[1], ShellTool)
+    assert tools[1].environment == {
+        "type": "container_auto",
+        "memory_limit": "4g",
+        "network_policy": {"type": "disabled"},
+    }
+
+
+def test_sdk_tools_do_not_register_host_defined_native_tools_without_adapters():
+    client = TestClient(app)
+    token = approved_user_token(client)
+    model_configuration = model_configuration_store.create(
+        ModelConfigurationMutationRequest(
+            provider_id="openai",
+            name="Host-defined tools",
+            model_name="gpt-5",
+            endpoint="https://api.openai.com/v1",
+            credential_reference="env:TEST_MODEL_API_KEY",
+            default_parameters={
+                "openai_native_tools": {
+                    "apply_patch": {"enabled": True},
+                    "computer": {"enabled": True},
+                    "custom": {"enabled": True},
+                    "local_shell": {"enabled": True},
+                }
+            },
+            enabled=True,
+        )
+    )
+    agent_store.update(
+        1,
+        AgentUpdateRequest(
+            default_model_configuration_id=model_configuration.id,
+            allowed_model_configuration_ids=[model_configuration.id],
+            capability_policy=AgentCapabilityPolicyResponse(
+                mcp_server_ids=[],
+                sandbox_enabled=False,
+                search_enabled=False,
+                page_read_enabled=False,
+            ),
+        ),
+    )
+    run_id = create_run(client, token)
+
+    tools = sdk_tools_for_run(agent_run_store.get(run_id))
+
+    assert tools == []
+    assert not any(
+        isinstance(tool, (ApplyPatchTool, ComputerTool, CustomTool, LocalShellTool))
+        for tool in tools
+    )
 
 
 def test_runtime_tool_safe_payload_removes_sensitive_keys_recursively():
