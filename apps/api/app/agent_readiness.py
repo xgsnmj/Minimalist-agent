@@ -107,7 +107,6 @@ def candidate_agent_for_update(agent: Agent, request: AgentUpdateRequest) -> Age
         allowed_model_configuration_ids=list(agent.allowed_model_configuration_ids),
         capability_policy=AgentCapabilityPolicy(
             mcp_server_ids=list(agent.capability_policy.mcp_server_ids),
-            sandbox_enabled=agent.capability_policy.sandbox_enabled,
             search_enabled=agent.capability_policy.search_enabled,
             page_read_enabled=agent.capability_policy.page_read_enabled,
         ),

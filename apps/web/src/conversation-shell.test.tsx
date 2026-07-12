@@ -287,7 +287,6 @@ describe("Agent Conversation workspace", () => {
                   allowed_model_configuration_ids: [],
                   capability_policy: {
                     mcp_server_ids: [],
-                    sandbox_enabled: false,
                     search_enabled: false,
                     page_read_enabled: false,
                   },

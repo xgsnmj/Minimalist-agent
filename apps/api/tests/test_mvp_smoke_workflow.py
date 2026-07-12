@@ -10,8 +10,7 @@ from apps.api.app.model_configurations import model_configuration_store
 from apps.api.app.run_attachments import run_attachment_store
 from apps.api.app.run_event_log import run_event_log_store
 from apps.api.app.runtime import runtime_store
-from apps.api.app.sandbox_runtime import sandbox_runtime_store
-from apps.api.tests.support import invoke_sdk_tool_for_tests, use_fake_agent_runtime
+from apps.api.tests.support import use_fake_agent_runtime
 from apps.worker.app.celery_app import process_agent_run
 
 
@@ -27,7 +26,6 @@ def setup_function():
     artifact_store.reset_for_tests()
     run_attachment_store.reset_for_tests()
     run_event_log_store.reset_for_tests()
-    sandbox_runtime_store.reset()
     runtime_store.reset()
     use_fake_agent_runtime()
 
@@ -110,14 +108,13 @@ def test_full_local_mvp_conversation_smoke_workflow():
             "allowed_model_configuration_ids": [model_id],
             "capability_policy": {
                 "mcp_server_ids": [],
-                "sandbox_enabled": True,
                 "search_enabled": True,
                 "page_read_enabled": True,
             },
         },
     )
     assert agent_response.status_code == 200
-    assert agent_response.json()["capability_policy"]["sandbox_enabled"] is True
+    assert "sandbox_enabled" not in agent_response.json()["capability_policy"]
 
     conversation_response = client.post(
         "/conversations",
@@ -195,42 +192,13 @@ def test_full_local_mvp_conversation_smoke_workflow():
     assert "event: message.completed" in resumed_events_response.text
     assert "openai:gpt-5 handled Summarize the MVP workflow." in resumed_events_response.text
 
-    tool_call = invoke_sdk_tool_for_tests(
-        run_id=run_id,
-        tool_name="sandbox.exec",
-        payload={
-            "command": "python generate_report.py",
-            "artifact_filename": "mvp-report.md",
-            "artifact_body": "# MVP Report\n\nSmoke workflow complete.",
-            "api_key": "do-not-leak",
-        },
-    )
-    assert tool_call["tool_name"] == "sandbox.exec"
-    assert tool_call["status"] == "completed"
-    assert "api_key" not in tool_call["safe_input"]
-    artifact = tool_call["safe_output"]["artifact"]
-    assert artifact["filename"] == "mvp-report.md"
-    assert artifact["preview_type"] == "markdown"
-
-    artifact_preview_response = client.get(
-        f"/artifacts/{artifact['artifact_id']}/preview",
-        headers=authorization(user_token),
-    )
-    assert artifact_preview_response.status_code == 200
-    assert artifact_preview_response.json()["preview_type"] == "markdown"
-    assert artifact_preview_response.json()["text"] == "# MVP Report\n\nSmoke workflow complete."
-
     refreshed_conversation_response = client.get(
         f"/conversations/{conversation_id}",
         headers=authorization(user_token),
     )
     assert refreshed_conversation_response.status_code == 200
     assert refreshed_conversation_response.json()["status"] == "idle"
-    assert refreshed_conversation_response.json()["messages"][-1]["artifact_reference"] == {
-        "artifact_id": artifact["artifact_id"],
-        "filename": "mvp-report.md",
-        "preview_type": "markdown",
-    }
+    assert refreshed_conversation_response.json()["messages"][-1].get("artifact_reference") is None
 
     cancellation_conversation_response = client.post(
         "/conversations",
@@ -272,7 +240,7 @@ def test_full_local_mvp_conversation_smoke_workflow():
     )
     assert run_audit_response.status_code == 200
     assert run_audit_response.json()["retention"]["full_trace_retention_days"] == 90
-    assert run_audit_response.json()["storage"]["artifact_count"] == 1
+    assert run_audit_response.json()["storage"]["artifact_count"] == 0
     assert run_audit_response.json()["runs"][0]["id"] == run_id
 
     run_audit_detail_response = client.get(
@@ -280,11 +248,11 @@ def test_full_local_mvp_conversation_smoke_workflow():
         headers=authorization(admin_token),
     )
     assert run_audit_detail_response.status_code == 200
-    assert run_audit_detail_response.json()["tool_calls"][0]["tool_name"] == "sandbox.exec"
-    assert run_audit_detail_response.json()["artifacts"][0]["filename"] == "mvp-report.md"
-    assert run_audit_detail_response.json()["capability_snapshot"]["capability_policy"][
-        "sandbox_enabled"
-    ] is True
+    assert run_audit_detail_response.json()["tool_calls"] == []
+    assert run_audit_detail_response.json()["artifacts"] == []
+    assert "sandbox_enabled" not in run_audit_detail_response.json()["capability_snapshot"][
+        "capability_policy"
+    ]
 
     full_trace_response = client.get(
         f"/admin/run-audit/{run_id}/full-trace",

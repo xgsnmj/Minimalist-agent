@@ -7,7 +7,6 @@ from agents import (
     FunctionTool,
     ImageGenerationTool,
     LocalShellTool,
-    ShellTool,
     WebSearchTool,
 )
 from fastapi.testclient import TestClient
@@ -99,7 +98,6 @@ def test_sdk_tools_are_registered_from_run_capability_snapshot():
         AgentUpdateRequest(
             capability_policy=AgentCapabilityPolicyResponse(
                 mcp_server_ids=[],
-                sandbox_enabled=True,
                 search_enabled=True,
                 page_read_enabled=False,
             )
@@ -112,10 +110,9 @@ def test_sdk_tools_are_registered_from_run_capability_snapshot():
         for tool in sdk_tools_for_run(agent_run_store.get(run_id))
     ]
 
-    assert tool_names == ["search.web", "sandbox.exec"]
+    assert tool_names == ["search.web"]
     tools = sdk_tools_for_run(agent_run_store.get(run_id))
     assert isinstance(tools[0], WebSearchTool)
-    assert isinstance(tools[1], ShellTool)
     assert tools_require_openai_responses(tools) is True
 
 
@@ -133,7 +130,6 @@ def test_sdk_tools_fall_back_to_function_tools_for_openai_compatible_providers()
             allowed_model_configuration_ids=[model_id],
             capability_policy=AgentCapabilityPolicyResponse(
                 mcp_server_ids=[],
-                sandbox_enabled=True,
                 search_enabled=True,
                 page_read_enabled=True,
             ),
@@ -144,7 +140,7 @@ def test_sdk_tools_fall_back_to_function_tools_for_openai_compatible_providers()
     tools = sdk_tools_for_run(agent_run_store.get(run_id))
     tool_names = [public_tool_name_for_sdk_name(tool.name) for tool in tools]
 
-    assert tool_names == ["search.web", "page.read", "sandbox.exec"]
+    assert tool_names == ["search.web", "page.read"]
     assert all(isinstance(tool, FunctionTool) for tool in tools)
     assert tools_require_openai_responses(tools) is False
 
@@ -173,7 +169,6 @@ def test_sdk_tools_fall_back_when_openai_provider_uses_compatible_gateway_endpoi
             allowed_model_configuration_ids=[model_configuration.id],
             capability_policy=AgentCapabilityPolicyResponse(
                 mcp_server_ids=[],
-                sandbox_enabled=True,
                 search_enabled=True,
                 page_read_enabled=True,
             ),
@@ -184,7 +179,7 @@ def test_sdk_tools_fall_back_when_openai_provider_uses_compatible_gateway_endpoi
     tools = sdk_tools_for_run(agent_run_store.get(run_id))
     tool_names = [public_tool_name_for_sdk_name(tool.name) for tool in tools]
 
-    assert tool_names == ["search.web", "page.read", "sandbox.exec"]
+    assert tool_names == ["search.web", "page.read"]
     assert all(isinstance(tool, FunctionTool) for tool in tools)
     assert tools_require_openai_responses(tools) is False
 
@@ -229,7 +224,6 @@ def test_sdk_tools_register_configured_openai_native_tools():
             allowed_model_configuration_ids=[model_configuration.id],
             capability_policy=AgentCapabilityPolicyResponse(
                 mcp_server_ids=[],
-                sandbox_enabled=False,
                 search_enabled=False,
                 page_read_enabled=False,
             ),
@@ -252,7 +246,7 @@ def test_sdk_tools_register_configured_openai_native_tools():
     assert tools_require_openai_responses(tools) is True
 
 
-def test_sdk_tools_apply_configured_native_search_and_shell_options():
+def test_sdk_tools_apply_configured_native_search_options():
     client = TestClient(app)
     token = approved_user_token(client)
     model_configuration = model_configuration_store.create(
@@ -285,7 +279,6 @@ def test_sdk_tools_apply_configured_native_search_and_shell_options():
             allowed_model_configuration_ids=[model_configuration.id],
             capability_policy=AgentCapabilityPolicyResponse(
                 mcp_server_ids=[],
-                sandbox_enabled=True,
                 search_enabled=True,
                 page_read_enabled=False,
             ),
@@ -298,12 +291,7 @@ def test_sdk_tools_apply_configured_native_search_and_shell_options():
     assert isinstance(tools[0], WebSearchTool)
     assert tools[0].search_context_size == "high"
     assert tools[0].external_web_access is False
-    assert isinstance(tools[1], ShellTool)
-    assert tools[1].environment == {
-        "type": "container_auto",
-        "memory_limit": "4g",
-        "network_policy": {"type": "disabled"},
-    }
+    assert len(tools) == 1
 
 
 def test_sdk_tools_do_not_register_host_defined_native_tools_without_adapters():
@@ -332,7 +320,6 @@ def test_sdk_tools_do_not_register_host_defined_native_tools_without_adapters():
             allowed_model_configuration_ids=[model_configuration.id],
             capability_policy=AgentCapabilityPolicyResponse(
                 mcp_server_ids=[],
-                sandbox_enabled=False,
                 search_enabled=False,
                 page_read_enabled=False,
             ),

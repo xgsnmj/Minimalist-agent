@@ -368,7 +368,6 @@ def capability_snapshot_for_agent(
         allowed_model_configuration_ids=list(agent.allowed_model_configuration_ids),
         capability_policy=AgentCapabilityPolicyResponse(
             mcp_server_ids=list(agent.capability_policy.mcp_server_ids),
-            sandbox_enabled=agent.capability_policy.sandbox_enabled,
             search_enabled=agent.capability_policy.search_enabled,
             page_read_enabled=agent.capability_policy.page_read_enabled,
         ),

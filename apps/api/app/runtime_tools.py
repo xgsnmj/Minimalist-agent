@@ -13,7 +13,6 @@ from agents import (
     FunctionTool,
     HostedMCPTool,
     ImageGenerationTool,
-    ShellTool,
     Tool,
     ToolSearchTool,
     WebSearchTool,
@@ -28,7 +27,6 @@ from apps.api.app.page_read_providers import (
     page_read_provider_store,
     to_page_read_execution_response,
 )
-from apps.api.app.sandbox_runtime import sandbox_runtime_store
 from apps.api.app.search_providers import (
     search_provider_store,
     to_search_execution_response,
@@ -77,7 +75,6 @@ SENSITIVE_INPUT_KEYS = {
 _STATIC_SDK_TOOL_NAMES = {
     "search.web": "search_web",
     "page.read": "page_read",
-    "sandbox.exec": "sandbox_exec",
 }
 _PUBLIC_TOOL_NAMES_BY_SDK_NAME = {
     sdk_name: public_name for public_name, sdk_name in _STATIC_SDK_TOOL_NAMES.items()
@@ -93,6 +90,8 @@ _PUBLIC_TOOL_NAMES_BY_SDK_NAME.update(
         "computer_use_preview": "computer.use",
         "computer_call": "computer.use",
         "custom_tool_call": "custom.tool",
+        "exec_command": "sandbox.exec",
+        "write_stdin": "sandbox.write_stdin",
         "local_shell": "shell.local",
         "local_shell_call": "shell.local",
         "apply_patch": "apply_patch",
@@ -119,8 +118,6 @@ def sdk_tools_for_run(run: AgentRun, *, prefer_native: bool | None = None) -> li
         tools.append(_native_search_tool(run) if use_native else _search_tool(run))
     if policy.page_read_enabled:
         tools.append(_page_read_tool(run))
-    if policy.sandbox_enabled:
-        tools.append(_native_sandbox_tool(run) if use_native else _sandbox_tool(run))
     tools.extend(_mcp_tools(run, prefer_native=use_native))
     if use_native:
         tools.extend(_configured_openai_native_tools(run))
@@ -165,7 +162,7 @@ def capability_for_tool_name(tool_name: str) -> RuntimeToolCapability | str:
         return RuntimeToolCapability.SEARCH
     if public_name == "page.read":
         return RuntimeToolCapability.PAGE_READ
-    if public_name == "sandbox.exec":
+    if public_name.startswith("sandbox."):
         return RuntimeToolCapability.SANDBOX
     if public_name == "mcp" or public_name.startswith("mcp."):
         return RuntimeToolCapability.MCP
@@ -302,92 +299,6 @@ def _page_read_tool(run: AgentRun) -> FunctionTool:
             "additionalProperties": False,
         },
         invoke=invoke,
-    )
-
-
-def _sandbox_tool(run: AgentRun) -> FunctionTool:
-    async def invoke(_ctx, input_json: str) -> str:
-        safe_input = _safe_tool_input(input_json)
-        if not run.capability_snapshot.capability_policy.sandbox_enabled:
-            return _tool_failure_payload(
-                run=run,
-                tool_name="sandbox.exec",
-                capability=RuntimeToolCapability.SANDBOX,
-                safe_input=safe_input,
-                provenance=_sandbox_provenance(),
-                error_summary="Tool is not authorized for this Agent Run.",
-            )
-        try:
-            execution = sandbox_runtime_store.execute(
-                run_id=run.id,
-                conversation_id=run.conversation_id,
-                command=str(safe_input.get("command", "")),
-                artifact_filename=(
-                    str(safe_input["artifact_filename"])
-                    if safe_input.get("artifact_filename") is not None
-                    else None
-                ),
-                artifact_body=(
-                    str(safe_input["artifact_body"])
-                    if safe_input.get("artifact_body") is not None
-                    else None
-                ),
-            )
-            safe_output = {
-                "summary": execution.summary,
-                "stdout": execution.stdout,
-                "artifact": (
-                    {
-                        "artifact_id": execution.artifact.artifact_id,
-                        "filename": execution.artifact.filename,
-                        "preview_type": execution.artifact.preview_type,
-                    }
-                    if execution.artifact is not None
-                    else None
-                ),
-            }
-            return _tool_success_payload(
-                run=run,
-                tool_name="sandbox.exec",
-                capability=RuntimeToolCapability.SANDBOX,
-                safe_input=safe_input,
-                safe_output=safe_output,
-                provenance=_sandbox_provenance(),
-            )
-        except Exception as exc:
-            return _tool_failure_payload(
-                run=run,
-                tool_name="sandbox.exec",
-                capability=RuntimeToolCapability.SANDBOX,
-                safe_input=safe_input,
-                provenance=_sandbox_provenance(),
-                error_summary=_error_summary(exc),
-            )
-
-    return _function_tool(
-        public_name="sandbox.exec",
-        sdk_name="sandbox_exec",
-        description="Run a command in the configured Agents SDK sandbox.",
-        params_json_schema={
-            "type": "object",
-            "properties": {
-                "command": {"type": "string"},
-                "artifact_filename": {"anyOf": [{"type": "string"}, {"type": "null"}]},
-                "artifact_body": {"anyOf": [{"type": "string"}, {"type": "null"}]},
-            },
-            "required": ["command"],
-            "additionalProperties": False,
-        },
-        invoke=invoke,
-        strict_json_schema=False,
-    )
-
-
-def _native_sandbox_tool(run: AgentRun) -> ShellTool:
-    config = _tool_config_record(_openai_native_tool_configuration(run).get("shell")) or {}
-    return ShellTool(
-        name="sandbox_exec",
-        environment=_native_shell_environment(config.get("environment")),
     )
 
 
@@ -649,13 +560,6 @@ def _page_read_provenance() -> dict[str, str]:
     }
 
 
-def _sandbox_provenance() -> dict[str, str]:
-    return {
-        "gateway": "openai_agents_sdk",
-        "provider": sandbox_runtime_store.provider,
-    }
-
-
 def _mcp_provenance(server_id: int | None) -> dict[str, str]:
     provenance = {"gateway": "openai_agents_sdk", "provider": "mcp"}
     if server_id is not None:
@@ -712,18 +616,6 @@ def _optional_string(value: Any) -> str | None:
 
 def _search_context_size(value: Any) -> str:
     return value if value in {"low", "medium", "high"} else "medium"
-
-
-def _native_shell_environment(value: Any) -> dict[str, Any]:
-    if isinstance(value, dict) and value.get("type") in {
-        "container_auto",
-        "container_reference",
-    }:
-        return value
-    return {
-        "type": "container_auto",
-        "network_policy": {"type": "disabled"},
-    }
 
 
 def _web_search_filters(value: Any) -> WebSearchFilters | None:

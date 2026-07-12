@@ -1,32 +1,30 @@
+from types import SimpleNamespace
+
 from fastapi.testclient import TestClient
+
+from agents import FunctionTool
+from agents.sandbox import SandboxAgent
 
 from apps.api.app.agent_runs import agent_run_store
 from apps.api.app.agents import agent_store
-from apps.api.app.artifacts import artifact_store
 from apps.api.app.auth import local_account_store
 from apps.api.app.conversations import conversation_store
 from apps.api.app.app import app
-from apps.api.app.model_configurations import model_configuration_store
-from apps.api.app.run_attachments import run_attachment_store
-from apps.api.app.run_event_log import run_event_log_store
-from apps.api.app.runtime_tools import public_tool_name_for_sdk_name, sdk_tools_for_run
-from apps.api.app.sandbox_runtime import sandbox_runtime_store
-from apps.api.tests.support import (
-    configure_default_agent_model,
-    create_model_configuration_for_tests,
-    invoke_sdk_tool_for_tests,
+from apps.api.app.model_configurations import (
+    ModelConfigurationMutationRequest,
+    model_configuration_store,
 )
-
-
-class FailingObjectStorage:
-    def put_bytes(self, **_kwargs):
-        raise RuntimeError("minio write failed")
-
-    def get_bytes(self, **_kwargs):
-        raise RuntimeError("minio read failed")
-
-    def reset(self) -> None:
-        return None
+from apps.api.app.run_event_log import run_event_log_store
+from apps.api.app.runtime import (
+    SandboxCapabilityProfile,
+    SandboxRuntimeType,
+    _runtime_agent,
+    _sandbox_capabilities_for_profile,
+    _sandbox_run_config_for_configuration,
+    _sandbox_runtime_type_for_configuration,
+)
+from apps.api.app.runtime_tools import capability_for_tool_name, public_tool_name_for_sdk_name
+from apps.api.tests.support import configure_default_agent_model
 
 
 def setup_function():
@@ -35,25 +33,8 @@ def setup_function():
     model_configuration_store.reset()
     conversation_store.reset()
     agent_run_store.reset()
-    artifact_store.reset_for_tests()
-    run_attachment_store.reset_for_tests()
     run_event_log_store.reset_for_tests()
-    sandbox_runtime_store.reset()
     configure_default_agent_model()
-
-
-def administrator_token(client: TestClient) -> str:
-    local_account_store.bootstrap_administrator(
-        username="admin",
-        password="correct horse battery staple",
-    )
-    return client.post(
-        "/auth/login",
-        json={
-            "login": "admin",
-            "password": "correct horse battery staple",
-        },
-    ).json()["access_token"]
 
 
 def approved_user_token(client: TestClient) -> str:
@@ -75,217 +56,165 @@ def approved_user_token(client: TestClient) -> str:
     ).json()["access_token"]
 
 
-def create_sandbox_run(
-    client: TestClient,
-    admin_token: str,
-    user_token: str,
-    *,
-    sandbox_enabled: bool,
-) -> tuple[int, int]:
-    model_id = create_model_configuration_for_tests()
-    agent = client.post(
-        "/admin/agents",
-        headers={"Authorization": f"Bearer {admin_token}"},
-        json={
-            "name": "Sandbox Agent",
-            "description": "Uses Sandbox Capability.",
-            "icon": "terminal",
-            "instruction": "Use sandbox execution only through the Agents SDK sandbox tool.",
-            "default_model_configuration_id": model_id,
-            "allowed_model_configuration_ids": [model_id],
-            "capability_policy": {
-                "mcp_server_ids": [],
-                "sandbox_enabled": sandbox_enabled,
-                "search_enabled": False,
-                "page_read_enabled": False,
-            },
-        },
-    ).json()
+def create_run(client: TestClient, token: str) -> int:
     conversation = client.post(
         "/conversations",
-        headers={"Authorization": f"Bearer {user_token}"},
+        headers={"Authorization": f"Bearer {token}"},
         json={
-            "title": "Sandbox run",
-            "agent_id": agent["id"],
+            "title": "SandboxAgent run",
+            "agent_id": 1,
             "initial_message": "Start this conversation.",
         },
     ).json()
-    run = client.post(
+    return client.post(
         f"/conversations/{conversation['id']}/runs",
-        headers={"Authorization": f"Bearer {user_token}"},
-        json={"message": "Run the sandbox task."},
-    ).json()
-    return conversation["id"], run["id"]
+        headers={"Authorization": f"Bearer {token}"},
+        json={"message": "Use the sandbox runtime."},
+    ).json()["id"]
 
 
-def test_authorized_sandbox_execution_records_tool_call_and_creates_artifact_preview():
+def test_runtime_uses_sandbox_agent_with_default_capabilities():
     client = TestClient(app)
-    admin_token = administrator_token(client)
-    user_token = approved_user_token(client)
-    conversation_id, run_id = create_sandbox_run(
-        client,
-        admin_token,
-        user_token,
-        sandbox_enabled=True,
+    token = approved_user_token(client)
+    run_id = create_run(client, token)
+    run = agent_run_store.get(run_id)
+    agent = agent_store.get(run.capability_snapshot.agent_id)
+
+    runtime_agent = _runtime_agent(
+        agent=agent,
+        model_name="gpt-5",
+        runtime_tools=[],
+        run=run,
     )
 
-    run = agent_run_store.get(run_id)
-    assert [public_tool_name_for_sdk_name(tool.name) for tool in sdk_tools_for_run(run)] == [
-        "sandbox.exec"
+    assert isinstance(runtime_agent, SandboxAgent)
+    assert [capability.type for capability in runtime_agent.capabilities] == [
+        "filesystem",
+        "shell",
+        "compaction",
     ]
 
-    sandbox_call = invoke_sdk_tool_for_tests(
-        run_id=run_id,
-        tool_name="sandbox.exec",
-        payload={
-            "command": "python analyze.py",
-            "artifact_filename": "sandbox-report.md",
-            "artifact_body": "# Sandbox Report\n\nGenerated inside SDK sandbox.",
-            "api_key": "do-not-leak",
-        },
-    )
-    conversation_response = client.get(
-        f"/conversations/{conversation_id}",
-        headers={"Authorization": f"Bearer {user_token}"},
-    )
-    stream_response = client.get(
-        f"/runs/{run_id}/events",
-        headers={
-            "Authorization": f"Bearer {user_token}",
-            "Accept": "text/event-stream",
-        },
+
+def test_chat_function_profile_registers_all_chat_compatible_sandbox_tools():
+    fake_session = SimpleNamespace(supports_pty=lambda: True)
+    capabilities = _sandbox_capabilities_for_profile(SandboxCapabilityProfile.CHAT_FUNCTIONS)
+    tools = []
+    for capability in capabilities or []:
+        capability.bind(fake_session)
+        tools.extend(capability.tools())
+
+    tool_names = [tool.name for tool in tools]
+
+    assert tool_names == ["view_image", "exec_command", "write_stdin"]
+    assert all(isinstance(tool, FunctionTool) for tool in tools)
+    assert "apply_patch" not in tool_names
+
+
+def test_sandbox_runtime_defaults_to_local():
+    configuration = model_configuration_store.create(
+        ModelConfigurationMutationRequest(
+            provider_id="openai",
+            name="Local sandbox",
+            model_name="gpt-5",
+            endpoint="https://api.openai.com/v1",
+            credential_reference="sk-direct",
+            enabled=True,
+        )
     )
 
-    assert sandbox_call["tool_name"] == "sandbox.exec"
-    assert sandbox_call["capability"] == "sandbox"
-    assert sandbox_call["status"] == "completed"
-    assert sandbox_call["safe_input"] == {
-        "command": "python analyze.py",
-        "artifact_filename": "sandbox-report.md",
-        "artifact_body": "# Sandbox Report\n\nGenerated inside SDK sandbox.",
+    run_config = _sandbox_run_config_for_configuration(configuration)
+
+    assert _sandbox_runtime_type_for_configuration(configuration) == SandboxRuntimeType.LOCAL
+    assert run_config.client.backend_id == "unix_local"
+    assert run_config.options is None
+
+
+def test_docker_sandbox_runtime_uses_local_docker_from_environment(monkeypatch):
+    captured: dict[str, object] = {}
+
+    def fake_from_env(**kwargs):
+        captured["from_env_kwargs"] = kwargs
+        return SimpleNamespace()
+
+    import docker
+
+    monkeypatch.setattr(docker, "from_env", fake_from_env)
+    configuration = model_configuration_store.create(
+        ModelConfigurationMutationRequest(
+            provider_id="openai",
+            name="Docker sandbox",
+            model_name="gpt-5",
+            endpoint="https://api.openai.com/v1",
+            credential_reference="sk-direct",
+            native_tool_settings={
+                "sandbox_agent": {
+                    "runtime": {
+                        "type": "docker",
+                        "image": "minimalist-agent-sandbox:py314",
+                        "exposed_ports": [3000, "5173"],
+                    }
+                }
+            },
+            enabled=True,
+        )
+    )
+
+    run_config = _sandbox_run_config_for_configuration(configuration)
+
+    assert _sandbox_runtime_type_for_configuration(configuration) == SandboxRuntimeType.DOCKER
+    assert captured["from_env_kwargs"] == {}
+    assert run_config.client.backend_id == "docker"
+    assert run_config.options.image == "minimalist-agent-sandbox:py314"
+    assert run_config.options.exposed_ports == (3000, 5173)
+
+
+def test_docker_sandbox_runtime_supports_remote_ssh_docker(monkeypatch):
+    captured: dict[str, object] = {}
+
+    def fake_docker_client(**kwargs):
+        captured["docker_client_kwargs"] = kwargs
+        return SimpleNamespace()
+
+    import docker
+
+    monkeypatch.setattr(docker, "DockerClient", fake_docker_client)
+    configuration = model_configuration_store.create(
+        ModelConfigurationMutationRequest(
+            provider_id="openai",
+            name="Remote Docker sandbox",
+            model_name="gpt-5",
+            endpoint="https://api.openai.com/v1",
+            credential_reference="sk-direct",
+            native_tool_settings={
+                "sandbox_agent": {
+                    "runtime": {
+                        "type": "docker",
+                        "docker_host": "ssh://docker-agent@example.com",
+                        "image": "minimalist-agent-sandbox:py314",
+                        "timeout": 45,
+                        "version": "1.45",
+                    }
+                }
+            },
+            enabled=True,
+        )
+    )
+
+    run_config = _sandbox_run_config_for_configuration(configuration)
+
+    assert captured["docker_client_kwargs"] == {
+        "base_url": "ssh://docker-agent@example.com",
+        "timeout": 45,
+        "use_ssh_client": True,
+        "version": "1.45",
     }
-    assert sandbox_call["safe_output"]["summary"] == (
-        "OpenAI Agents SDK sandbox completed python analyze.py."
-    )
-    assert sandbox_call["safe_output"]["artifact"]["filename"] == "sandbox-report.md"
-    assert sandbox_call["safe_output"]["artifact"]["preview_type"] == "markdown"
-    assert sandbox_call["provenance"] == {
-        "gateway": "openai_agents_sdk",
-        "provider": "openai_agents_sdk_sandbox",
-    }
-    artifact_id = sandbox_call["safe_output"]["artifact"]["artifact_id"]
-    preview_response = client.get(
-        f"/artifacts/{artifact_id}/preview",
-        headers={"Authorization": f"Bearer {user_token}"},
-    )
-
-    assert preview_response.status_code == 200
-    assert preview_response.json()["preview_type"] == "markdown"
-    assert preview_response.json()["text"].startswith("# Sandbox Report")
-    assert conversation_response.json()["messages"][-1]["artifact_reference"] == {
-        "artifact_id": artifact_id,
-        "filename": "sandbox-report.md",
-        "preview_type": "markdown",
-    }
-    assert '"api_key"' not in stream_response.text
-    assert '"provider":"openai_agents_sdk_sandbox"' in stream_response.text
-    assert '"tool_name":"sandbox.exec"' in stream_response.text
+    assert run_config.client.backend_id == "docker"
+    assert run_config.options.image == "minimalist-agent-sandbox:py314"
+    assert run_config.options.exposed_ports == ()
 
 
-def test_unauthorized_sandbox_execution_is_blocked_and_audited_safely():
-    client = TestClient(app)
-    admin_token = administrator_token(client)
-    user_token = approved_user_token(client)
-    _conversation_id, run_id = create_sandbox_run(
-        client,
-        admin_token,
-        user_token,
-        sandbox_enabled=False,
-    )
-
-    removed_gateway_response = client.post(
-        f"/runs/{run_id}/tool-calls",
-        headers={"Authorization": f"Bearer {user_token}"},
-        json={"tool_name": "sandbox.exec", "input": {"command": "python blocked.py"}},
-    )
-    stream_response = client.get(
-        f"/runs/{run_id}/events",
-        headers={
-            "Authorization": f"Bearer {user_token}",
-            "Accept": "text/event-stream",
-        },
-    )
-
-    assert removed_gateway_response.status_code == 404
-    assert sdk_tools_for_run(agent_run_store.get(run_id)) == []
-    assert '"authorization"' not in stream_response.text
-    assert '"tool_name":"sandbox.exec"' not in stream_response.text
-
-
-def test_sandbox_capability_does_not_expose_host_docker_boundary():
-    client = TestClient(app)
-    admin_token = administrator_token(client)
-    user_token = approved_user_token(client)
-    _conversation_id, run_id = create_sandbox_run(
-        client,
-        admin_token,
-        user_token,
-        sandbox_enabled=True,
-    )
-
-    sandbox_call = invoke_sdk_tool_for_tests(
-        run_id=run_id,
-        tool_name="sandbox.exec",
-        payload={
-            "command": "docker run unsafe-image",
-            "artifact_filename": None,
-            "artifact_body": None,
-        },
-    )
-
-    assert sandbox_call["status"] == "failed"
-    assert sandbox_call["error_summary"] == (
-        "Sandbox Capability uses OpenAI Agents SDK sandbox, not host Docker."
-    )
-
-
-def test_sandbox_storage_failure_is_recorded_as_safe_tool_failure(monkeypatch):
-    from apps.api.app import artifacts
-
-    monkeypatch.setattr(artifacts, "object_storage", FailingObjectStorage())
-    client = TestClient(app, raise_server_exceptions=False)
-    admin_token = administrator_token(client)
-    user_token = approved_user_token(client)
-    _conversation_id, run_id = create_sandbox_run(
-        client,
-        admin_token,
-        user_token,
-        sandbox_enabled=True,
-    )
-
-    sandbox_call = invoke_sdk_tool_for_tests(
-        run_id=run_id,
-        tool_name="sandbox.exec",
-        payload={
-            "command": "python write_artifact.py",
-            "artifact_filename": "storage-failure.md",
-            "artifact_body": "# Storage failure",
-            "api_key": "do-not-leak",
-        },
-    )
-    stream_response = client.get(
-        f"/runs/{run_id}/events",
-        headers={
-            "Authorization": f"Bearer {user_token}",
-            "Accept": "text/event-stream",
-        },
-    )
-
-    assert sandbox_call["status"] == "failed"
-    assert sandbox_call["error_summary"] == "minio write failed"
-    assert sandbox_call["provenance"] == {
-        "gateway": "openai_agents_sdk",
-        "provider": "openai_agents_sdk_sandbox",
-    }
-    assert '"api_key"' not in stream_response.text
-    assert '"status":"failed"' in stream_response.text
+def test_sandbox_agent_shell_tools_are_reported_as_sandbox_capability():
+    assert public_tool_name_for_sdk_name("exec_command") == "sandbox.exec"
+    assert public_tool_name_for_sdk_name("write_stdin") == "sandbox.write_stdin"
+    assert capability_for_tool_name("exec_command") == "sandbox"
+    assert capability_for_tool_name("write_stdin") == "sandbox"

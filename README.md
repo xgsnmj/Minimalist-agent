@@ -2,6 +2,10 @@
 
 Minimalist Agent is a single-workspace Agent Platform for WorkBuddy-like Agent Conversations and administrator-governed Agent capabilities.
 
+## Engineering plans
+
+- [Agent Platform production hardening plan](docs/agent-platform-hardening-plan.md)
+
 ## Development
 
 Install dependencies:

@@ -60,7 +60,6 @@ def test_administrator_can_view_initialized_default_agent():
             "allowed_model_configuration_ids": [],
             "capability_policy": {
                 "mcp_server_ids": [],
-                "sandbox_enabled": False,
                 "search_enabled": False,
                 "page_read_enabled": False,
             },
@@ -102,7 +101,6 @@ def test_administrator_can_create_update_disable_enable_and_retire_agent():
             "allowed_model_configuration_ids": [primary_model_id, backup_model_id],
             "capability_policy": {
                 "mcp_server_ids": [mcp_server.id],
-                "sandbox_enabled": False,
                 "search_enabled": True,
                 "page_read_enabled": True,
             },
@@ -137,7 +135,6 @@ def test_administrator_can_create_update_disable_enable_and_retire_agent():
             },
             "capability_policy": {
                 "mcp_server_ids": [],
-                "sandbox_enabled": True,
                 "search_enabled": True,
                 "page_read_enabled": False,
             },
@@ -160,7 +157,7 @@ def test_administrator_can_create_update_disable_enable_and_retire_agent():
     assert update_response.json()["name"] == "Research Lead"
     assert update_response.json()["process_visibility"] == "standard"
     assert update_response.json()["sdk_settings"]["max_turns"] == 8
-    assert update_response.json()["capability_policy"]["sandbox_enabled"] is True
+    assert "sandbox_enabled" not in update_response.json()["capability_policy"]
     assert disable_response.status_code == 200
     assert disable_response.json()["status"] == "disabled"
     assert enable_response.status_code == 200
@@ -207,7 +204,6 @@ def test_agent_run_preparation_records_current_agent_instruction_snapshot():
             "allowed_model_configuration_ids": [configuration_id],
             "capability_policy": {
                 "mcp_server_ids": [],
-                "sandbox_enabled": False,
             "search_enabled": False,
             "page_read_enabled": False,
         },
@@ -224,7 +220,6 @@ def test_agent_store_persists_agent_configuration_across_store_instances():
             allowed_model_configuration_ids=[configuration_id],
             capability_policy={
                 "mcp_server_ids": [],
-                "sandbox_enabled": True,
                 "search_enabled": True,
                 "page_read_enabled": False,
             },
@@ -238,7 +233,6 @@ def test_agent_store_persists_agent_configuration_across_store_instances():
     assert agent.allowed_model_configuration_ids == [configuration_id]
     assert agent.instruction == "Persist this runtime instruction."
     assert agent.process_visibility == "verbose"
-    assert agent.capability_policy.sandbox_enabled is True
     assert agent.capability_policy.search_enabled is True
 
 

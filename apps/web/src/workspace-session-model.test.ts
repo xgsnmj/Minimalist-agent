@@ -13,7 +13,6 @@ describe("WorkspaceSessionModel", () => {
         capability_policy: {
           mcp_server_ids: [],
           page_read_enabled: false,
-          sandbox_enabled: false,
           search_enabled: false,
         },
         default_model_configuration_id: 1,

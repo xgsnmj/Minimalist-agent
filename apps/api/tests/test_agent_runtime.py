@@ -12,8 +12,10 @@ from apps.api.app.model_configurations import ModelConfigurationMutationRequest
 from apps.api.app.model_configurations import model_configuration_store
 from apps.api.app.run_event_log import run_event_log_store
 from apps.api.app.runtime import (
+    SandboxCapabilityProfile,
     _model_provider_route,
     _runner_input_for_run,
+    _sandbox_capability_profile_for_configuration,
     _runtime_tool_event_from_run_item,
     _runtime_tool_events_from_run_item,
     _use_openai_responses_for_configuration,
@@ -192,17 +194,22 @@ def test_openai_official_endpoint_defaults_to_responses_provider_route():
         configuration,
         runtime_tools=[],
     )
+    sandbox_profile = _sandbox_capability_profile_for_configuration(
+        configuration,
+        runtime_tools=[],
+    )
     provider = runtime_store._model_provider(
         configuration,
         use_responses=use_responses,
     )
 
     assert _model_provider_route(configuration) == "openai_responses"
+    assert sandbox_profile == SandboxCapabilityProfile.RESPONSES_FULL
     assert use_responses is True
     assert provider._use_responses is True
 
 
-def test_openai_compatible_gateway_uses_chat_completions_provider_route():
+def test_openai_compatible_gateway_defaults_to_chat_function_sandbox_profile():
     runtime_store.reset()
     configuration = model_configuration_store.create(
         ModelConfigurationMutationRequest(
@@ -215,6 +222,10 @@ def test_openai_compatible_gateway_uses_chat_completions_provider_route():
         )
     )
 
+    sandbox_profile = _sandbox_capability_profile_for_configuration(
+        configuration,
+        runtime_tools=[],
+    )
     use_responses = _use_openai_responses_for_configuration(
         configuration,
         runtime_tools=[],
@@ -225,8 +236,44 @@ def test_openai_compatible_gateway_uses_chat_completions_provider_route():
     )
 
     assert _model_provider_route(configuration) == "openai_compatible_chat_completions"
+    assert sandbox_profile == SandboxCapabilityProfile.CHAT_FUNCTIONS
     assert use_responses is False
     assert provider._use_responses is False
+
+
+def test_openai_compatible_gateway_can_opt_into_responses_full_sandbox_profile():
+    runtime_store.reset()
+    configuration = model_configuration_store.create(
+        ModelConfigurationMutationRequest(
+            provider_id="custom-openai-compatible",
+            name="Responses-compatible gateway",
+            model_name="gpt-5.5",
+            endpoint="https://relay.example.com/v1",
+            credential_reference="sk-direct",
+            native_tool_settings={
+                "sandbox_agent": {"profile": "responses_full"},
+            },
+            enabled=True,
+        )
+    )
+
+    sandbox_profile = _sandbox_capability_profile_for_configuration(
+        configuration,
+        runtime_tools=[],
+    )
+    use_responses = _use_openai_responses_for_configuration(
+        configuration,
+        runtime_tools=[],
+    )
+    provider = runtime_store._model_provider(
+        configuration,
+        use_responses=use_responses,
+    )
+
+    assert _model_provider_route(configuration) == "openai_compatible_chat_completions"
+    assert sandbox_profile == SandboxCapabilityProfile.RESPONSES_FULL
+    assert use_responses is True
+    assert provider._use_responses is True
 
 
 def test_runtime_rejects_provider_without_sdk_adapter():

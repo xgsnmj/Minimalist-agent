@@ -80,7 +80,6 @@ def create_search_enabled_run(client: TestClient, admin_token: str, user_token: 
             "allowed_model_configuration_ids": [model_id],
             "capability_policy": {
                 "mcp_server_ids": [],
-                "sandbox_enabled": False,
                 "search_enabled": True,
                 "page_read_enabled": False,
             },

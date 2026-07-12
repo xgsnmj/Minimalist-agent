@@ -43,7 +43,6 @@ type TestAgent = {
   allowed_model_configuration_ids: number[];
   capability_policy: {
     mcp_server_ids: number[];
-    sandbox_enabled: boolean;
     search_enabled: boolean;
     page_read_enabled: boolean;
   };
@@ -211,7 +210,6 @@ beforeEach(() => {
       allowed_model_configuration_ids: [1, 2],
       capability_policy: {
         mcp_server_ids: [1],
-        sandbox_enabled: true,
         search_enabled: true,
         page_read_enabled: false,
       },
@@ -234,7 +232,6 @@ beforeEach(() => {
       allowed_model_configuration_ids: [2, 1],
       capability_policy: {
         mcp_server_ids: [],
-        sandbox_enabled: false,
         search_enabled: true,
         page_read_enabled: true,
       },
@@ -719,7 +716,6 @@ beforeEach(() => {
           allowed_model_configuration_ids: requestNumberArray(body.allowed_model_configuration_ids),
           capability_policy: {
             mcp_server_ids: [],
-            sandbox_enabled: false,
             search_enabled: false,
             page_read_enabled: false,
             ...requestRecord(body.capability_policy),

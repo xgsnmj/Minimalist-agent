@@ -23,7 +23,6 @@ export type WorkspaceAgent = {
   defaultModelId: string | null;
   capabilitySnapshot: {
     mcpServerCount: number;
-    sandbox: boolean;
     search: boolean;
   };
 };
@@ -80,7 +79,6 @@ export const emptyWorkspaceAgent: WorkspaceAgent = {
   defaultModelId: null,
   capabilitySnapshot: {
     mcpServerCount: 0,
-    sandbox: false,
     search: false,
   },
 };
@@ -106,7 +104,6 @@ export function mapWorkspaceAgent(response: ApiWorkspaceAgent): WorkspaceAgent {
       : allowedModels[0]?.id ?? null,
     capabilitySnapshot: {
       mcpServerCount: response.agent.capability_policy.mcp_server_ids.length,
-      sandbox: response.agent.capability_policy.sandbox_enabled,
       search: response.agent.capability_policy.search_enabled,
     },
   };

@@ -2,7 +2,6 @@ import { authFetch, getAuthToken } from "./auth-api";
 
 export type ApiCapabilityPolicy = {
   mcp_server_ids: number[];
-  sandbox_enabled: boolean;
   search_enabled: boolean;
   page_read_enabled: boolean;
 };

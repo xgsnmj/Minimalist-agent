@@ -2,15 +2,21 @@ from __future__ import annotations
 
 from collections.abc import AsyncIterator
 from dataclasses import dataclass, field
+from enum import StrEnum
 import json
 import os
 import re
 import time
-from typing import Any
+from typing import Any, Literal
 from urllib.parse import urlparse
 
 from agents import Agent, Model, ModelProvider, ModelSettings, ModelTracing, OpenAIProvider, Runner, RunConfig
 from agents.items import ModelResponse, MessageOutputItem, ReasoningItem, ToolCallItem
+from agents.sandbox import SandboxAgent, SandboxRunConfig
+from agents.sandbox.capabilities import Capability, Shell
+from agents.sandbox.capabilities.tools import ViewImageTool
+from agents.sandbox.config import DEFAULT_PYTHON_SANDBOX_IMAGE
+from agents.sandbox.sandboxes import UnixLocalSandboxClient
 from agents.tracing import flush_traces, set_trace_processors
 from agents.tracing.processor_interface import TracingProcessor as TracingProcessorProtocol
 from agents.tracing.traces import Trace
@@ -72,6 +78,54 @@ _OPENAI_COMPATIBLE_PROVIDER_IDS = {
     "qwen-dashscope",
     "zhipu-glm",
 }
+
+_RESPONSES_COMPATIBLE_ENDPOINT_ENV_KEYS = (
+    "OPENAI_RESPONSES_COMPATIBLE_ENDPOINTS",
+    "OPENAI_RESPONSES_COMPATIBLE_BASE_URLS",
+)
+_SANDBOX_PROFILE_ALIASES = {
+    "default": "responses_full",
+    "full": "responses_full",
+    "responses": "responses_full",
+    "responses_full": "responses_full",
+    "openai_responses": "responses_full",
+    "openai_responses_full": "responses_full",
+    "chat": "chat_functions",
+    "chat_completions": "chat_functions",
+    "chat_function": "chat_functions",
+    "chat_functions": "chat_functions",
+    "chat_shell": "chat_functions",
+    "chat_shell_only": "chat_functions",
+    "shell": "chat_functions",
+    "shell_only": "chat_functions",
+}
+
+
+class SandboxCapabilityProfile(StrEnum):
+    RESPONSES_FULL = "responses_full"
+    CHAT_FUNCTIONS = "chat_functions"
+
+
+class SandboxRuntimeType(StrEnum):
+    LOCAL = "local"
+    DOCKER = "docker"
+
+
+_SANDBOX_RUNTIME_ALIASES = {
+    "local": SandboxRuntimeType.LOCAL,
+    "unix": SandboxRuntimeType.LOCAL,
+    "unix_local": SandboxRuntimeType.LOCAL,
+    "docker": SandboxRuntimeType.DOCKER,
+}
+
+
+class _ChatCompatibleFilesystem(Capability):
+    type: Literal["filesystem"] = "filesystem"
+
+    def tools(self) -> list[Any]:
+        if self.session is None:
+            raise ValueError("Filesystem capability is not bound to a SandboxSession")
+        return [ViewImageTool(session=self.session, user=self.run_as)]
 
 
 @dataclass
@@ -269,6 +323,10 @@ class RuntimeStore:
         model_name = model_configuration.model_name
         try:
             runtime_tools = sdk_tools_for_run(run)
+            sandbox_profile = _sandbox_capability_profile_for_configuration(
+                model_configuration,
+                runtime_tools=runtime_tools,
+            )
             use_responses = _use_openai_responses_for_configuration(
                 model_configuration,
                 runtime_tools=runtime_tools,
@@ -278,6 +336,8 @@ class RuntimeStore:
                 use_responses=use_responses,
             )
             model_settings = _model_settings_for_configuration(model_configuration)
+            sandbox_run_config = _sandbox_run_config_for_configuration(model_configuration)
+            sandbox_runtime_type = _sandbox_runtime_type_for_configuration(model_configuration)
             runner_input = _runner_input_for_run(run)
         except Exception as exc:
             agent_run_execution.apply_runtime_failure(
@@ -292,17 +352,17 @@ class RuntimeStore:
 
         agent_run_execution.begin_runtime_execution(run.id)
 
-        runtime_agent = Agent(
-            name=agent.name,
-            instructions=agent.instruction,
-            model=model_name,
-            tools=runtime_tools,
-            tool_use_behavior=run.capability_snapshot.sdk_settings.tool_use_behavior.value,
-            reset_tool_choice=run.capability_snapshot.sdk_settings.reset_tool_choice,
+        runtime_agent = _runtime_agent(
+            agent=agent,
+            model_name=model_name,
+            runtime_tools=runtime_tools,
+            run=run,
+            sandbox_profile=sandbox_profile,
         )
         run_config = RunConfig(
             model_provider=model_provider,
             model_settings=model_settings,
+            sandbox=sandbox_run_config,
             workflow_name="Agent workflow",
             trace_include_sensitive_data=False,
             trace_metadata={
@@ -313,6 +373,8 @@ class RuntimeStore:
                 "provider_id": provider_id,
                 "model_name": model_name,
                 "endpoint": model_configuration.endpoint,
+                "sandbox_capability_profile": sandbox_profile.value,
+                "sandbox_runtime_type": sandbox_runtime_type.value,
                 "max_turns": str(run.capability_snapshot.sdk_settings.max_turns),
                 "tool_use_behavior": run.capability_snapshot.sdk_settings.tool_use_behavior.value,
             },
@@ -351,6 +413,8 @@ class RuntimeStore:
         trace["provider_id"] = provider_id
         trace["model_name"] = model_name
         trace["endpoint"] = model_configuration.endpoint
+        trace["sandbox_capability_profile"] = sandbox_profile.value
+        trace["sandbox_runtime_type"] = sandbox_runtime_type.value
         agent_run_execution.apply_runtime_success(
             run_id=run.id,
             assistant_message=assistant_message,
@@ -404,6 +468,10 @@ class RuntimeStore:
         model_name = model_configuration.model_name
         try:
             runtime_tools = sdk_tools_for_run(run)
+            sandbox_profile = _sandbox_capability_profile_for_configuration(
+                model_configuration,
+                runtime_tools=runtime_tools,
+            )
             use_responses = _use_openai_responses_for_configuration(
                 model_configuration,
                 runtime_tools=runtime_tools,
@@ -413,6 +481,8 @@ class RuntimeStore:
                 use_responses=use_responses,
             )
             model_settings = _model_settings_for_configuration(model_configuration)
+            sandbox_run_config = _sandbox_run_config_for_configuration(model_configuration)
+            sandbox_runtime_type = _sandbox_runtime_type_for_configuration(model_configuration)
             runner_input = _runner_input_for_run(run)
         except Exception as exc:
             failed_run = agent_run_execution.apply_runtime_failure(
@@ -436,17 +506,17 @@ class RuntimeStore:
             "data": {"status": running_run.status.value},
         }
 
-        runtime_agent = Agent(
-            name=agent.name,
-            instructions=agent.instruction,
-            model=model_name,
-            tools=runtime_tools,
-            tool_use_behavior=run.capability_snapshot.sdk_settings.tool_use_behavior.value,
-            reset_tool_choice=run.capability_snapshot.sdk_settings.reset_tool_choice,
+        runtime_agent = _runtime_agent(
+            agent=agent,
+            model_name=model_name,
+            runtime_tools=runtime_tools,
+            run=run,
+            sandbox_profile=sandbox_profile,
         )
         run_config = RunConfig(
             model_provider=model_provider,
             model_settings=model_settings,
+            sandbox=sandbox_run_config,
             workflow_name="Agent workflow",
             trace_include_sensitive_data=False,
             trace_metadata={
@@ -457,6 +527,8 @@ class RuntimeStore:
                 "provider_id": provider_id,
                 "model_name": model_name,
                 "endpoint": model_configuration.endpoint,
+                "sandbox_capability_profile": sandbox_profile.value,
+                "sandbox_runtime_type": sandbox_runtime_type.value,
                 "max_turns": str(run.capability_snapshot.sdk_settings.max_turns),
                 "tool_use_behavior": run.capability_snapshot.sdk_settings.tool_use_behavior.value,
             },
@@ -533,6 +605,8 @@ class RuntimeStore:
         trace["provider_id"] = provider_id
         trace["model_name"] = model_name
         trace["endpoint"] = model_configuration.endpoint
+        trace["sandbox_capability_profile"] = sandbox_profile.value
+        trace["sandbox_runtime_type"] = sandbox_runtime_type.value
         agent_run_execution.apply_runtime_success(
             run_id=run.id,
             assistant_message=assistant_message,
@@ -579,15 +653,196 @@ class RuntimeStore:
         if self._model_provider_factory is not None:
             return self._model_provider_factory(configuration)
         route = _model_provider_route(configuration)
-        if use_responses and route != "openai_responses":
-            raise RuntimeError(
-                "OpenAI Responses-only SDK tools require the official OpenAI endpoint."
-            )
         return OpenAIProvider(
             api_key=resolve_model_api_key(configuration.credential_reference),
             base_url=configuration.endpoint,
             use_responses=(route == "openai_responses" or use_responses),
         )
+
+
+def _runtime_agent(
+    *,
+    agent: Any,
+    model_name: str,
+    runtime_tools: list[Any],
+    run: Any,
+    sandbox_profile: SandboxCapabilityProfile = SandboxCapabilityProfile.RESPONSES_FULL,
+) -> SandboxAgent:
+    agent_kwargs: dict[str, Any] = {
+        "name": agent.name,
+        "instructions": agent.instruction,
+        "model": model_name,
+        "tools": runtime_tools,
+        "tool_use_behavior": run.capability_snapshot.sdk_settings.tool_use_behavior.value,
+        "reset_tool_choice": run.capability_snapshot.sdk_settings.reset_tool_choice,
+    }
+    capabilities = _sandbox_capabilities_for_profile(sandbox_profile)
+    if capabilities is not None:
+        agent_kwargs["capabilities"] = capabilities
+    return SandboxAgent(**agent_kwargs)
+
+
+def _local_sandbox_run_config() -> SandboxRunConfig:
+    return SandboxRunConfig(client=UnixLocalSandboxClient())
+
+
+def _sandbox_run_config_for_configuration(
+    configuration: ModelConfiguration,
+) -> SandboxRunConfig:
+    runtime_settings = _sandbox_runtime_settings_for_configuration(configuration)
+    runtime_type = _coerce_sandbox_runtime_type(runtime_settings.get("type"))
+    if runtime_type == SandboxRuntimeType.LOCAL:
+        return _local_sandbox_run_config()
+    if runtime_type == SandboxRuntimeType.DOCKER:
+        return _docker_sandbox_run_config(runtime_settings)
+    raise RuntimeError(f"Unsupported SandboxAgent runtime type: {runtime_type}")
+
+
+def _sandbox_runtime_type_for_configuration(
+    configuration: ModelConfiguration,
+) -> SandboxRuntimeType:
+    runtime_settings = _sandbox_runtime_settings_for_configuration(configuration)
+    return _coerce_sandbox_runtime_type(runtime_settings.get("type"))
+
+
+def _docker_sandbox_run_config(runtime_settings: dict[str, Any]) -> SandboxRunConfig:
+    try:
+        import docker
+        from agents.sandbox.sandboxes import DockerSandboxClient, DockerSandboxClientOptions
+    except Exception as exc:
+        raise RuntimeError(
+            "Docker sandbox runtime requires the docker SDK. "
+            "Install the project dependencies with `uv sync`."
+        ) from exc
+
+    docker_host = _optional_text(
+        runtime_settings.get("docker_host")
+        or runtime_settings.get("host")
+        or runtime_settings.get("base_url")
+    )
+    use_ssh_client = _optional_bool_value(runtime_settings.get("use_ssh_client"))
+    docker_client_kwargs = _docker_client_kwargs(runtime_settings)
+    if docker_host:
+        docker_client_kwargs["base_url"] = docker_host
+        if use_ssh_client is None:
+            use_ssh_client = docker_host.startswith("ssh://")
+        docker_client_kwargs["use_ssh_client"] = bool(use_ssh_client)
+        docker_client = docker.DockerClient(**docker_client_kwargs)
+    else:
+        docker_host_from_env = os.getenv("DOCKER_HOST", "").strip()
+        if use_ssh_client is None and docker_host_from_env.startswith("ssh://"):
+            use_ssh_client = True
+        if use_ssh_client is not None:
+            docker_client_kwargs["use_ssh_client"] = use_ssh_client
+        docker_client = docker.from_env(**docker_client_kwargs)
+
+    image = (
+        _optional_text(runtime_settings.get("image"))
+        or os.getenv("SANDBOX_DOCKER_IMAGE", "").strip()
+        or DEFAULT_PYTHON_SANDBOX_IMAGE
+    )
+    return SandboxRunConfig(
+        client=DockerSandboxClient(docker_client),
+        options=DockerSandboxClientOptions(
+            image=image,
+            exposed_ports=_port_tuple(runtime_settings.get("exposed_ports")),
+        ),
+    )
+
+
+def _docker_client_kwargs(runtime_settings: dict[str, Any]) -> dict[str, Any]:
+    kwargs: dict[str, Any] = {}
+    version = (
+        _optional_text(runtime_settings.get("version"))
+        or os.getenv("SANDBOX_DOCKER_API_VERSION", "").strip()
+    )
+    timeout = _optional_int_value(runtime_settings.get("timeout"))
+    if version:
+        kwargs["version"] = version
+    if timeout is not None:
+        kwargs["timeout"] = timeout
+    return kwargs
+
+
+def _sandbox_agent_settings(configuration: ModelConfiguration) -> dict[str, Any]:
+    native_tool_settings = configuration.native_tool_settings
+    if not isinstance(native_tool_settings, dict):
+        return {}
+    return (
+        _record_from_mapping(native_tool_settings, "sandbox_agent")
+        or _record_from_mapping(native_tool_settings, "sandbox")
+        or {}
+    )
+
+
+def _sandbox_runtime_settings_for_configuration(
+    configuration: ModelConfiguration,
+) -> dict[str, Any]:
+    sandbox_settings = _sandbox_agent_settings(configuration)
+    runtime_settings = _record_from_mapping(sandbox_settings, "runtime")
+    return runtime_settings or {}
+
+
+def _coerce_sandbox_runtime_type(value: Any) -> SandboxRuntimeType:
+    raw_value = "local" if value is None else str(value).strip().lower().replace("-", "_")
+    runtime_type = _SANDBOX_RUNTIME_ALIASES.get(raw_value)
+    if runtime_type is None:
+        allowed = ", ".join(runtime.value for runtime in SandboxRuntimeType)
+        raise RuntimeError(f"Unsupported SandboxAgent runtime type '{value}'. Use one of: {allowed}.")
+    return runtime_type
+
+
+def _port_tuple(value: Any) -> tuple[int, ...]:
+    if value is None or value == "":
+        return ()
+    if isinstance(value, str):
+        raw_items = [item.strip() for item in value.split(",")]
+    elif isinstance(value, list | tuple | set):
+        raw_items = list(value)
+    else:
+        raise RuntimeError("SandboxAgent Docker exposed_ports must be a list or comma-separated string.")
+
+    ports: list[int] = []
+    for item in raw_items:
+        if item == "":
+            continue
+        try:
+            port = int(item)
+        except (TypeError, ValueError) as exc:
+            raise RuntimeError(f"Invalid SandboxAgent Docker exposed port: {item!r}.") from exc
+        if port < 1 or port > 65535:
+            raise RuntimeError(f"SandboxAgent Docker exposed port is out of range: {port}.")
+        ports.append(port)
+    return tuple(ports)
+
+
+def _optional_text(value: Any) -> str | None:
+    if value is None:
+        return None
+    text = str(value).strip()
+    return text or None
+
+
+def _optional_bool_value(value: Any) -> bool | None:
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        normalized = value.strip().lower()
+        if normalized in {"1", "true", "yes", "on"}:
+            return True
+        if normalized in {"0", "false", "no", "off"}:
+            return False
+    return None
+
+
+def _optional_int_value(value: Any) -> int | None:
+    if value is None or value == "":
+        return None
+    try:
+        parsed = int(value)
+    except (TypeError, ValueError) as exc:
+        raise RuntimeError(f"Expected integer value, got {value!r}.") from exc
+    return parsed if parsed > 0 else None
 
 
 def _resolve_model_configuration(configuration_id: int | None):
@@ -621,17 +876,131 @@ def _runner_input_for_run(run) -> str | list[dict[str, str]]:
     return messages or run.user_message
 
 
+def _sandbox_capability_profile_for_configuration(
+    configuration: ModelConfiguration,
+    *,
+    runtime_tools: list[Any],
+) -> SandboxCapabilityProfile:
+    explicit_profile = _configured_sandbox_capability_profile(configuration)
+    if explicit_profile is not None:
+        return explicit_profile
+    if _is_official_openai_configuration(configuration):
+        return SandboxCapabilityProfile.RESPONSES_FULL
+    if _is_configured_responses_compatible_endpoint(configuration.endpoint):
+        return SandboxCapabilityProfile.RESPONSES_FULL
+    if tools_require_openai_responses(runtime_tools):
+        return SandboxCapabilityProfile.RESPONSES_FULL
+    _model_provider_route(configuration)
+    return SandboxCapabilityProfile.CHAT_FUNCTIONS
+
+
+def _sandbox_capabilities_for_profile(
+    profile: SandboxCapabilityProfile,
+) -> list[Capability] | None:
+    if profile == SandboxCapabilityProfile.RESPONSES_FULL:
+        return None
+    if profile == SandboxCapabilityProfile.CHAT_FUNCTIONS:
+        return [_ChatCompatibleFilesystem(), Shell()]
+    raise RuntimeError(f"Unsupported SandboxAgent capability profile: {profile}")
+
+
 def _use_openai_responses_for_configuration(
     configuration: ModelConfiguration,
     *,
     runtime_tools: list[Any],
 ) -> bool:
-    requires_responses = tools_require_openai_responses(runtime_tools)
-    if requires_responses and not _is_official_openai_configuration(configuration):
-        raise RuntimeError(
-            "OpenAI hosted SDK tools require the official OpenAI Responses endpoint."
+    _model_provider_route(configuration)
+    profile = _sandbox_capability_profile_for_configuration(
+        configuration,
+        runtime_tools=runtime_tools,
+    )
+    return (
+        profile == SandboxCapabilityProfile.RESPONSES_FULL
+        or tools_require_openai_responses(runtime_tools)
+    )
+
+
+def _configured_sandbox_capability_profile(
+    configuration: ModelConfiguration,
+) -> SandboxCapabilityProfile | None:
+    native_tool_settings = configuration.native_tool_settings
+    if not isinstance(native_tool_settings, dict):
+        return None
+
+    sandbox_settings = _record_from_mapping(native_tool_settings, "sandbox_agent")
+    if sandbox_settings is None:
+        sandbox_settings = _record_from_mapping(native_tool_settings, "sandbox")
+
+    raw_profile: Any = None
+    if sandbox_settings is not None:
+        raw_profile = (
+            sandbox_settings.get("capability_profile")
+            or sandbox_settings.get("profile")
+            or sandbox_settings.get("compatibility")
         )
-    return _is_official_openai_configuration(configuration) or requires_responses
+    if raw_profile is None:
+        raw_profile = native_tool_settings.get("sandbox_capability_profile")
+
+    if raw_profile is not None:
+        return _coerce_sandbox_capability_profile(raw_profile)
+
+    compatibility_settings = _record_from_mapping(native_tool_settings, "api_compatibility")
+    if compatibility_settings is None:
+        return None
+    responses_tools = compatibility_settings.get("responses_tools")
+    if responses_tools is True:
+        return SandboxCapabilityProfile.RESPONSES_FULL
+    if responses_tools is False:
+        return SandboxCapabilityProfile.CHAT_FUNCTIONS
+    return None
+
+
+def _coerce_sandbox_capability_profile(value: Any) -> SandboxCapabilityProfile:
+    normalized = str(value).strip().lower().replace("-", "_")
+    alias = _SANDBOX_PROFILE_ALIASES.get(normalized)
+    if alias is None:
+        allowed = ", ".join(profile.value for profile in SandboxCapabilityProfile)
+        raise RuntimeError(
+            f"Unsupported SandboxAgent capability profile '{value}'. "
+            f"Use one of: {allowed}."
+        )
+    return SandboxCapabilityProfile(alias)
+
+
+def _record_from_mapping(mapping: dict[str, Any], key: str) -> dict[str, Any] | None:
+    value = mapping.get(key)
+    return value if isinstance(value, dict) else None
+
+
+def _is_configured_responses_compatible_endpoint(endpoint: str) -> bool:
+    for env_key in _RESPONSES_COMPATIBLE_ENDPOINT_ENV_KEYS:
+        configured_endpoints = os.getenv(env_key, "")
+        for configured_endpoint in configured_endpoints.split(","):
+            if _endpoint_matches(endpoint, configured_endpoint):
+                return True
+    return False
+
+
+def _endpoint_matches(endpoint: str, configured_endpoint: str) -> bool:
+    configured_endpoint = configured_endpoint.strip()
+    if not configured_endpoint:
+        return False
+    parsed_endpoint = urlparse(endpoint.strip())
+    if "://" not in configured_endpoint:
+        return parsed_endpoint.hostname == configured_endpoint.lower()
+    parsed_configured = urlparse(configured_endpoint)
+    if parsed_endpoint.hostname != parsed_configured.hostname:
+        return False
+    return _normalized_endpoint(endpoint) == _normalized_endpoint(configured_endpoint)
+
+
+def _normalized_endpoint(endpoint: str) -> str:
+    parsed = urlparse(endpoint.strip())
+    scheme = parsed.scheme.lower()
+    hostname = (parsed.hostname or "").lower()
+    port = f":{parsed.port}" if parsed.port is not None else ""
+    path = parsed.path.rstrip("/")
+    return f"{scheme}://{hostname}{port}{path}"
 
 
 def _model_provider_route(configuration: ModelConfiguration) -> str:

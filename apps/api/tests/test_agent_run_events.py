@@ -141,7 +141,6 @@ def test_conversation_response_includes_tool_events_without_process_summaries():
         AgentUpdateRequest(
             capability_policy=AgentCapabilityPolicyResponse(
                 mcp_server_ids=[],
-                sandbox_enabled=False,
                 search_enabled=True,
                 page_read_enabled=False,
             ),

@@ -35,7 +35,6 @@ class AgentSdkSettingsResponse(BaseModel):
 
 class AgentCapabilityPolicyResponse(BaseModel):
     mcp_server_ids: list[int]
-    sandbox_enabled: bool
     search_enabled: bool
     page_read_enabled: bool
 
@@ -66,7 +65,6 @@ class AgentMutationRequest(BaseModel):
     allowed_model_configuration_ids: list[int] = []
     capability_policy: AgentCapabilityPolicyResponse = AgentCapabilityPolicyResponse(
         mcp_server_ids=[],
-        sandbox_enabled=False,
         search_enabled=False,
         page_read_enabled=False,
     )
@@ -97,7 +95,6 @@ class AgentRunPreparationResponse(BaseModel):
 @dataclass
 class AgentCapabilityPolicy:
     mcp_server_ids: list[int] = field(default_factory=list)
-    sandbox_enabled: bool = False
     search_enabled: bool = False
     page_read_enabled: bool = False
 
@@ -298,7 +295,6 @@ def capability_policy_from_response(
 ) -> AgentCapabilityPolicy:
     return AgentCapabilityPolicy(
         mcp_server_ids=list(policy.mcp_server_ids),
-        sandbox_enabled=policy.sandbox_enabled,
         search_enabled=policy.search_enabled,
         page_read_enabled=policy.page_read_enabled,
     )
@@ -343,7 +339,6 @@ def _sdk_settings_from_payload(payload: dict) -> AgentSdkSettings:
 def _capability_policy_payload(policy: AgentCapabilityPolicy) -> dict:
     return {
         "mcp_server_ids": list(policy.mcp_server_ids),
-        "sandbox_enabled": policy.sandbox_enabled,
         "search_enabled": policy.search_enabled,
         "page_read_enabled": policy.page_read_enabled,
     }
@@ -352,7 +347,6 @@ def _capability_policy_payload(policy: AgentCapabilityPolicy) -> dict:
 def _capability_policy_from_payload(payload: dict) -> AgentCapabilityPolicy:
     return AgentCapabilityPolicy(
         mcp_server_ids=list(payload.get("mcp_server_ids", [])),
-        sandbox_enabled=bool(payload.get("sandbox_enabled", False)),
         search_enabled=bool(payload.get("search_enabled", False)),
         page_read_enabled=bool(payload.get("page_read_enabled", False)),
     )
@@ -381,7 +375,6 @@ def to_agent_response(agent: Agent) -> AgentResponse:
         allowed_model_configuration_ids=agent.allowed_model_configuration_ids,
         capability_policy=AgentCapabilityPolicyResponse(
             mcp_server_ids=agent.capability_policy.mcp_server_ids,
-            sandbox_enabled=agent.capability_policy.sandbox_enabled,
             search_enabled=agent.capability_policy.search_enabled,
             page_read_enabled=agent.capability_policy.page_read_enabled,
         ),
@@ -402,7 +395,6 @@ def to_agent_run_preparation_response(agent: Agent) -> AgentRunPreparationRespon
         allowed_model_configuration_ids=list(agent.allowed_model_configuration_ids),
         capability_policy=AgentCapabilityPolicyResponse(
             mcp_server_ids=list(agent.capability_policy.mcp_server_ids),
-            sandbox_enabled=agent.capability_policy.sandbox_enabled,
             search_enabled=agent.capability_policy.search_enabled,
             page_read_enabled=agent.capability_policy.page_read_enabled,
         ),

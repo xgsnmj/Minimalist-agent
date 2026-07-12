@@ -209,7 +209,6 @@ def test_administrator_authorizes_mcp_tool_for_agent_and_agents_sdk_exposes_it()
             "allowed_model_configuration_ids": [model_id],
             "capability_policy": {
                 "mcp_server_ids": [server["id"]],
-                "sandbox_enabled": False,
                 "search_enabled": False,
                 "page_read_enabled": False,
             },
@@ -330,7 +329,6 @@ def test_deferred_native_mcp_registers_tool_search_tool():
             "allowed_model_configuration_ids": [model_configuration.id],
             "capability_policy": {
                 "mcp_server_ids": [server["id"]],
-                "sandbox_enabled": False,
                 "search_enabled": False,
                 "page_read_enabled": False,
             },

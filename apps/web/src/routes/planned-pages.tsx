@@ -250,7 +250,6 @@ type ApiAgent = {
   allowed_model_configuration_ids: number[];
   capability_policy: {
     mcp_server_ids: number[];
-    sandbox_enabled: boolean;
     search_enabled: boolean;
     page_read_enabled: boolean;
   };
@@ -300,7 +299,6 @@ type ApiRunAuditDetail = {
     allowed_model_configuration_ids: number[];
     capability_policy: {
       mcp_server_ids: number[];
-      sandbox_enabled: boolean;
       search_enabled: boolean;
       page_read_enabled: boolean;
     };
@@ -787,7 +785,15 @@ function settingsSummary(settings: Record<string, unknown>) {
 }
 
 function nativeToolSettingsSummary(settings: Record<string, unknown>) {
+  const sandboxAgent = getNestedRecord(settings, "sandbox_agent");
+  const sandboxRuntime = getNestedRecord(sandboxAgent, "runtime");
+  const sandboxProfile =
+    typeof sandboxAgent.profile === "string" ? `Sandbox ${sandboxAgent.profile}` : null;
+  const sandboxRuntimeType =
+    typeof sandboxRuntime.type === "string" ? `Sandbox runtime ${sandboxRuntime.type}` : null;
   const enabledTools = [
+    sandboxRuntimeType,
+    sandboxProfile,
     settings.web_search ? "Web search" : null,
     settings.shell ? "Shell" : null,
     settings.file_search ? "File search" : null,
@@ -838,6 +844,12 @@ function stringListField(formData: FormData, name: string) {
     .filter(Boolean);
 }
 
+function integerListField(formData: FormData, name: string) {
+  return stringListField(formData, name)
+    .map((item) => Number.parseInt(item, 10))
+    .filter(Number.isFinite);
+}
+
 function buildModelSettings(formData: FormData) {
   const settings: Record<string, unknown> = {};
   const temperature = numericField(formData, "temperature");
@@ -875,6 +887,28 @@ function buildModelSettings(formData: FormData) {
 
 function buildNativeToolSettings(formData: FormData) {
   const settings: Record<string, unknown> = {};
+  const sandboxAgentSettings: Record<string, unknown> = {};
+  const sandboxAgentProfile = String(formData.get("sandboxAgentProfile") ?? "auto");
+  if (sandboxAgentProfile !== "auto") {
+    sandboxAgentSettings.profile = sandboxAgentProfile;
+  }
+  const sandboxRuntimeType = String(formData.get("sandboxRuntimeType") ?? "local");
+  const sandboxRuntime: Record<string, unknown> = { type: sandboxRuntimeType };
+  if (sandboxRuntimeType === "docker") {
+    const dockerImage = String(formData.get("sandboxDockerImage") ?? "").trim();
+    const dockerHost = String(formData.get("sandboxDockerHost") ?? "").trim();
+    const dockerVersion = String(formData.get("sandboxDockerVersion") ?? "").trim();
+    const dockerTimeout = integerField(formData, "sandboxDockerTimeout");
+    const dockerExposedPorts = integerListField(formData, "sandboxDockerExposedPorts");
+    if (dockerImage) sandboxRuntime.image = dockerImage;
+    if (dockerHost) sandboxRuntime.docker_host = dockerHost;
+    if (formData.has("sandboxDockerUseSshClient")) sandboxRuntime.use_ssh_client = true;
+    if (dockerExposedPorts.length > 0) sandboxRuntime.exposed_ports = dockerExposedPorts;
+    if (dockerVersion) sandboxRuntime.version = dockerVersion;
+    if (dockerTimeout !== undefined) sandboxRuntime.timeout = dockerTimeout;
+  }
+  sandboxAgentSettings.runtime = sandboxRuntime;
+  settings.sandbox_agent = sandboxAgentSettings;
   if (formData.has("webSearchEnabled")) {
     settings.web_search = {
       search_context_size: String(formData.get("webSearchContext") ?? "medium"),
@@ -2127,7 +2161,7 @@ function capabilitySummary(policy: ApiAgent["capability_policy"]) {
   const enabled = [
     policy.search_enabled ? "搜索" : null,
     policy.page_read_enabled ? "页面读取" : null,
-    policy.sandbox_enabled ? "沙箱" : null,
+    "沙箱",
     policy.mcp_server_ids.length > 0 ? "MCP" : null,
   ].filter(Boolean);
   return enabled.length > 0 ? enabled.join("、") : "未启用能力";
@@ -2137,7 +2171,7 @@ function capabilityPolicyLines(policy: ApiAgent["capability_policy"]) {
   return [
     policy.search_enabled ? "搜索能力已启用" : "搜索能力已停用",
     policy.page_read_enabled ? "页面读取能力已启用" : "页面读取能力已停用",
-    policy.sandbox_enabled ? "沙箱能力已启用" : "沙箱能力已停用",
+    "沙箱能力默认启用",
     policy.mcp_server_ids.length > 0
       ? `MCP 服务器授权：${policy.mcp_server_ids.map((id) => `#${id}`).join("、")}`
       : "未授权 MCP 服务器",
@@ -2341,6 +2375,8 @@ function ModelSettingsFields({ settings }: { settings: Record<string, unknown> }
 }
 
 function NativeToolSettingsFields({ settings }: { settings: Record<string, unknown> }) {
+  const sandboxAgent = getNestedRecord(settings, "sandbox_agent");
+  const sandboxRuntime = getNestedRecord(sandboxAgent, "runtime");
   const webSearch = getNestedRecord(settings, "web_search");
   const shell = getNestedRecord(settings, "shell");
   const shellEnvironment = getNestedRecord(shell, "environment");
@@ -2352,6 +2388,67 @@ function NativeToolSettingsFields({ settings }: { settings: Record<string, unkno
 
   return (
     <div className="native-tool-grid">
+      <section className="native-tool-card">
+        <label>
+          <span>SandboxAgent profile</span>
+          <Select name="sandboxAgentProfile" defaultValue={String(sandboxAgent.profile ?? "auto")}>
+            <SelectTrigger>
+              <SelectValue placeholder="auto" />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectGroup>
+                <SelectItem value="auto">auto</SelectItem>
+                <SelectItem value="responses_full">responses_full</SelectItem>
+                <SelectItem value="chat_functions">chat_functions</SelectItem>
+              </SelectGroup>
+            </SelectContent>
+          </Select>
+        </label>
+        <div className="sdk-field-grid compact-sdk-field-grid">
+          <label>
+            <span>Runtime</span>
+            <Select name="sandboxRuntimeType" defaultValue={String(sandboxRuntime.type ?? "local")}>
+              <SelectTrigger>
+                <SelectValue placeholder="local" />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectGroup>
+                  <SelectItem value="local">local</SelectItem>
+                  <SelectItem value="docker">docker</SelectItem>
+                </SelectGroup>
+              </SelectContent>
+            </Select>
+          </label>
+          <label>
+            <span>Docker image</span>
+            <Input name="sandboxDockerImage" defaultValue={String(sandboxRuntime.image ?? "")} placeholder="python:3.14-slim" />
+          </label>
+          <label className="config-wide-field">
+            <span>Docker host</span>
+            <Input name="sandboxDockerHost" defaultValue={String(sandboxRuntime.docker_host ?? "")} placeholder="ssh://docker-agent@example.com" />
+          </label>
+          <label className="config-checkbox">
+            <input defaultChecked={sandboxRuntime.use_ssh_client === true} name="sandboxDockerUseSshClient" type="checkbox" />
+            <span>use_ssh_client</span>
+          </label>
+          <label>
+            <span>Exposed ports</span>
+            <Input
+              name="sandboxDockerExposedPorts"
+              defaultValue={Array.isArray(sandboxRuntime.exposed_ports) ? sandboxRuntime.exposed_ports.join(", ") : ""}
+              placeholder="3000, 5173"
+            />
+          </label>
+          <label>
+            <span>Docker API version</span>
+            <Input name="sandboxDockerVersion" defaultValue={String(sandboxRuntime.version ?? "")} placeholder="auto" />
+          </label>
+          <label>
+            <span>Timeout seconds</span>
+            <Input name="sandboxDockerTimeout" defaultValue={String(sandboxRuntime.timeout ?? "")} inputMode="numeric" placeholder="SDK 默认" />
+          </label>
+        </div>
+      </section>
       <section className="native-tool-card">
         <label className="config-checkbox">
           <input defaultChecked={Boolean(settings.web_search)} name="webSearchEnabled" type="checkbox" />
@@ -2611,7 +2708,6 @@ function AgentLifecyclePanel() {
           allowed_model_configuration_ids: selectedModelIds(formData, defaultModelId),
           capability_policy: {
             mcp_server_ids: selectedMcpServerIds(formData),
-            sandbox_enabled: formData.get("sandboxEnabled") === "on",
             search_enabled: formData.get("searchEnabled") === "on",
             page_read_enabled: formData.get("pageReadEnabled") === "on",
           },
@@ -2658,7 +2754,6 @@ function AgentLifecyclePanel() {
           allowed_model_configuration_ids: selectedModelIds(formData, defaultModelId),
           capability_policy: {
             mcp_server_ids: selectedMcpServerIds(formData),
-            sandbox_enabled: formData.get("sandboxEnabled") === "on",
             search_enabled: formData.get("searchEnabled") === "on",
             page_read_enabled: formData.get("pageReadEnabled") === "on",
           },
@@ -2877,10 +2972,6 @@ function AgentLifecyclePanel() {
                     <input defaultChecked={selectedAgent.capabilityPolicyValue.page_read_enabled} name="pageReadEnabled" type="checkbox" />
                     <span>页面读取</span>
                   </label>
-                  <label className="config-checkbox">
-                    <input defaultChecked={selectedAgent.capabilityPolicyValue.sandbox_enabled} name="sandboxEnabled" type="checkbox" />
-                    <span>沙箱</span>
-                  </label>
                 </div>
                 <div className="config-checkbox-list" aria-label="MCP 服务器">
                   {mcpServers.map((server) => (
@@ -2978,10 +3069,6 @@ function AgentLifecyclePanel() {
                 <label className="checkbox-row">
                   <input name="pageReadEnabled" type="checkbox" />
                   <span>页面读取</span>
-                </label>
-                <label className="checkbox-row">
-                  <input name="sandboxEnabled" type="checkbox" />
-                  <span>沙箱</span>
                 </label>
               </fieldset>
               <fieldset className="checkbox-grid form-grid-span">
@@ -4225,9 +4312,6 @@ function SandboxStatusPanel() {
   const [artifactCount, setArtifactCount] = useState(0);
   const [loadError, setLoadError] = useState("");
   const [isLoading, setIsLoading] = useState(true);
-  const sandboxEnabledCount = agents.filter((agent) =>
-    agent.capabilityPolicy.includes("沙箱能力已启用"),
-  ).length;
 
   useEffect(() => {
     let isCurrent = true;
@@ -4277,8 +4361,8 @@ function SandboxStatusPanel() {
       {isLoading ? <p className="empty-state">正在加载沙箱能力状态...</p> : null}
       {loadError ? <p className="empty-state danger-state" role="alert">{loadError}</p> : null}
       <section className="detail-grid" aria-label="沙箱运行时状态">
-        <InfoTile title="授权智能体" value={`${sandboxEnabledCount} 个`} tone={sandboxEnabledCount > 0 ? "success" : "pending"} icon={TerminalSquare} />
-        <InfoTile title="策略来源" value="智能体能力策略" icon={ShieldCheck} />
+        <InfoTile title="运行时" value="默认启用" tone="success" icon={TerminalSquare} />
+        <InfoTile title="策略来源" value="SandboxAgent" icon={ShieldCheck} />
         <InfoTile title="产物存储" value={`${artifactCount} 个产物`} tone={artifactCount > 0 ? "success" : undefined} icon={Database} />
         <InfoTile title="近期调用" value="见运行审计" icon={Activity} />
       </section>
@@ -4293,17 +4377,14 @@ function SandboxStatusPanel() {
             </tr>
           </thead>
           <tbody>
-            {agents.map((agent) => {
-              const enabled = agent.capabilityPolicy.includes("沙箱能力已启用");
-              return (
-                <tr key={agent.id}>
-                  <td>{agent.name}</td>
-                  <td>{enabled ? "已启用" : "未启用"}</td>
-                  <td>{enabled ? "由运行审计记录产物" : "不捕获沙箱产物"}</td>
-                  <td>{agent.processVisibility}</td>
-                </tr>
-              );
-            })}
+            {agents.map((agent) => (
+              <tr key={agent.id}>
+                <td>{agent.name}</td>
+                <td>默认启用</td>
+                <td>由运行审计记录产物</td>
+                <td>{agent.processVisibility}</td>
+              </tr>
+            ))}
           </tbody>
         </table>
         {!isLoading && agents.length === 0 ? (

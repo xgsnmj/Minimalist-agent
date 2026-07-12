@@ -11,8 +11,7 @@ from apps.api.app import run_audit as run_audit_module
 from apps.api.app.run_attachments import run_attachment_store
 from apps.api.app.run_event_log import run_event_log_store
 from apps.api.app.runtime import runtime_store
-from apps.api.app.sandbox_runtime import sandbox_runtime_store
-from apps.api.tests.support import invoke_sdk_tool_for_tests, use_fake_agent_runtime
+from apps.api.tests.support import use_fake_agent_runtime
 
 
 def setup_function():
@@ -24,7 +23,6 @@ def setup_function():
     artifact_store.reset_for_tests()
     run_attachment_store.reset_for_tests()
     run_event_log_store.reset_for_tests()
-    sandbox_runtime_store.reset()
     runtime_store.reset()
     use_fake_agent_runtime()
 
@@ -87,7 +85,6 @@ def create_audited_run(client: TestClient, admin_token: str, user_token: str, mo
             "allowed_model_configuration_ids": [model_id],
             "capability_policy": {
                 "mcp_server_ids": [],
-                "sandbox_enabled": True,
                 "search_enabled": False,
                 "page_read_enabled": False,
             },
@@ -109,15 +106,6 @@ def create_audited_run(client: TestClient, admin_token: str, user_token: str, mo
         json={"message": "Summarize the task."},
     ).json()
     runtime_store.execute(run["id"])
-    invoke_sdk_tool_for_tests(
-        run_id=run["id"],
-        tool_name="sandbox.exec",
-        payload={
-            "command": "python audit.py",
-            "artifact_filename": "audit-report.md",
-            "artifact_body": "# Audit Report\n\nGenerated for Run Audit.",
-        },
-    )
     return conversation["id"], run["id"]
 
 
@@ -154,7 +142,7 @@ def test_administrator_can_filter_and_inspect_run_audit_with_full_trace():
 
     assert list_response.status_code == 200
     assert list_response.json()["retention"]["full_trace_retention_days"] == 90
-    assert list_response.json()["storage"]["artifact_count"] == 1
+    assert list_response.json()["storage"]["artifact_count"] == 0
     assert list_response.json()["runs"][0]["id"] == run_id
     assert list_response.json()["runs"][0]["status"] == "completed"
     assert list_response.json()["runs"][0]["owner_user_id"] == user_id
@@ -169,9 +157,11 @@ def test_administrator_can_filter_and_inspect_run_audit_with_full_trace():
         ]
         == "gpt-5"
     )
-    assert detail_response.json()["capability_snapshot"]["capability_policy"]["sandbox_enabled"] is True
-    assert detail_response.json()["tool_calls"][0]["tool_name"] == "sandbox.exec"
-    assert detail_response.json()["artifacts"][0]["filename"] == "audit-report.md"
+    assert "sandbox_enabled" not in detail_response.json()["capability_snapshot"][
+        "capability_policy"
+    ]
+    assert detail_response.json()["tool_calls"] == []
+    assert detail_response.json()["artifacts"] == []
     assert detail_response.json()["events"][0]["event_type"] == "run.status"
     assert detail_response.json()["full_trace_available"] is True
     assert detail_response.json()["full_trace_retention_days"] == 90
@@ -235,5 +225,5 @@ def test_run_audit_list_uses_batch_summary_queries(monkeypatch):
 
     assert response.status_code == 200
     assert response.json()["runs"][0]["id"] == run_id
-    assert response.json()["runs"][0]["tool_call_count"] == 1
-    assert response.json()["runs"][0]["artifact_count"] == 1
+    assert response.json()["runs"][0]["tool_call_count"] == 0
+    assert response.json()["runs"][0]["artifact_count"] == 0

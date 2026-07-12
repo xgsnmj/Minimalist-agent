@@ -89,7 +89,6 @@ def create_page_read_enabled_run(
             "allowed_model_configuration_ids": [model_id],
             "capability_policy": {
                 "mcp_server_ids": [],
-                "sandbox_enabled": False,
                 "search_enabled": search_enabled,
                 "page_read_enabled": page_read_enabled,
             },
